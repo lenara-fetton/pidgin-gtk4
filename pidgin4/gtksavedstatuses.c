@@ -42,6 +42,7 @@
 #include "gtkutils.h"
 #include "pidgincomposeentry.h"
 #include "pidginselftest.h"
+#include "pidginserverfeatures.h"
 
 #define PREFS_DIALOG "/pidgin4/status"
 
@@ -240,6 +241,7 @@ typedef struct
 	char *original_title;
 	GtkWidget *title;
 	GtkWidget *type;
+	GtkWidget *invisible_note;      /* round 2: no XEP-0186 on a server */
 	GtkWidget *message;
 
 	/* PurpleAccount -> SubStatusEditor */
@@ -254,9 +256,38 @@ typedef struct
 
 	GtkWidget *window;
 	GtkWidget *box;
+	GtkWidget *invisible_note;
 	GtkWidget *message_box;
 	GtkWidget *message;
 } SubStatusEditor;
+
+/*
+ * Round 2: an Invisible choice for an account whose server can't be
+ * invisible (XEP-0186) just appears available (the prpl falls back); the
+ * choice stays, with a note. A dim label named "pidgin-invisible-note".
+ */
+static GtkWidget *
+invisible_note_new(void)
+{
+	GtkWidget *note = gtk_label_new(NULL);
+
+	gtk_label_set_wrap(GTK_LABEL(note), TRUE);
+	gtk_label_set_xalign(GTK_LABEL(note), 0.0);
+	gtk_widget_add_css_class(note, "dim-label");
+	gtk_widget_set_name(note, "pidgin-invisible-note");
+	gtk_widget_set_visible(note, FALSE);
+	return note;
+}
+
+static void
+invisible_note_set(GtkWidget *note, gboolean invisible, PurpleAccount *account)
+{
+	char *text = invisible ? pidgin_invisible_unsupported_note(account) : NULL;
+
+	gtk_label_set_text(GTK_LABEL(note), text ? text : "");
+	gtk_widget_set_visible(note, text != NULL);
+	g_free(text);
+}
 
 static StatusWindow *status_window = NULL;
 static GList *status_editors = NULL;
@@ -665,6 +696,13 @@ status_editor_get_type(StatusEditor *dialog)
 }
 
 static void
+status_editor_type_changed_cb(GObject *dropdown, GParamSpec *pspec, StatusEditor *dialog)
+{
+	invisible_note_set(dialog->invisible_note,
+	                   status_editor_get_type(dialog) == PURPLE_STATUS_INVISIBLE, NULL);
+}
+
+static void
 status_editor_ok_cb(GtkButton *button, StatusEditor *dialog)
 {
 	const char *title;
@@ -946,11 +984,16 @@ static void
 substatus_bind_cb(GtkSignalListItemFactory *factory, GtkListItem *li, StatusEditor *dialog)
 {
 	PidginSubstatusRow *row = gtk_list_item_get_item(li);
+	char *note = NULL;
 
 	if (row->enabled)
 		icon_label_set(li, NULL, primitive_icon_name(row->primitive), row->name);
 	else
 		icon_label_set(li, NULL, NULL, NULL);
+	if (row->enabled && row->primitive == PURPLE_STATUS_INVISIBLE && account_exists(row->account))
+		note = pidgin_invisible_unsupported_note(row->account);
+	gtk_widget_set_tooltip_text(gtk_list_item_get_child(li), note);
+	g_free(note);
 }
 
 static void
@@ -1036,6 +1079,11 @@ pidgin_status_editor_show(gboolean edit, PurpleSavedStatus *saved_status)
 	dialog->type = create_status_type_menu(saved_status != NULL
 		? purple_savedstatus_get_type(saved_status) : PURPLE_STATUS_AWAY);
 	pidgin_add_widget_to_vbox(GTK_BOX(vbox), _("_Status:"), sg, dialog->type, TRUE, NULL);
+	dialog->invisible_note = invisible_note_new();
+	gtk_box_append(GTK_BOX(vbox), dialog->invisible_note);
+	g_signal_connect(dialog->type, "notify::selected",
+	                 G_CALLBACK(status_editor_type_changed_cb), dialog);
+	status_editor_type_changed_cb(G_OBJECT(dialog->type), NULL, dialog);
 
 	/* Status message */
 	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, PIDGIN_HIG_BOX_SPACE);
@@ -1126,6 +1174,8 @@ substatus_selection_changed_cb(GObject *dropdown, GParamSpec *pspec, SubStatusEd
 
 	gtk_widget_set_sensitive(select->message_box,
 		type != NULL && purple_status_type_get_attr(type, "message") != NULL);
+	invisible_note_set(select->invisible_note, type != NULL &&
+		purple_status_type_get_primitive(type) == PURPLE_STATUS_INVISIBLE, select->account);
 }
 
 static void
@@ -1259,6 +1309,8 @@ edit_substatus(StatusEditor *status_editor, PurpleAccount *account)
 	if (status_id != NULL)
 		pidgin_item_dropdown_select_id(dialog->box, status_id);
 	pidgin_add_widget_to_vbox(GTK_BOX(vbox), _("_Status:"), sg, dialog->box, FALSE, NULL);
+	dialog->invisible_note = invisible_note_new();
+	gtk_box_append(GTK_BOX(vbox), dialog->invisible_note);
 
 	/* Status message */
 	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, PIDGIN_HIG_BOX_SPACE);

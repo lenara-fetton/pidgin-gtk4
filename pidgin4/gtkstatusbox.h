@@ -50,4 +50,8 @@ void pidgin_status_box_set_network_available(gboolean available);
  */
 void pidgin_status_box_selftest(void);
 
+/** For the round-2 selftest: rebuilds the popover's list (as opening it
+ * does) and returns it (a GtkListBox), or NULL without a status box. */
+GtkWidget *pidgin_status_box_get_list_for_tests(void);
+
 #endif /* _PIDGINSTATUSBOX_H_ */

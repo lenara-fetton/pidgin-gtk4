@@ -546,6 +546,154 @@ test_report_spam(void)
 }
 
 /**************************************************************************
+ * 2. Invisible
+ **************************************************************************/
+
+static GtkWidget *
+find_type(GtkWidget *widget, GType type)
+{
+	GtkWidget *child, *found;
+
+	if (widget == NULL)
+		return NULL;
+	if (G_TYPE_CHECK_INSTANCE_TYPE(widget, type))
+		return widget;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if ((found = find_type(child, type)) != NULL)
+			return found;
+	return NULL;
+}
+
+/* The status box's Invisible row. */
+static GtkWidget *
+invisible_row(void)
+{
+	GtkWidget *list = pidgin_status_box_get_list_for_tests();
+	GtkListBoxRow *row;
+	int i;
+
+	for (i = 0; list && (row = gtk_list_box_get_row_at_index(GTK_LIST_BOX(list), i)); i++)
+		if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "row-data")) ==
+		        PURPLE_STATUS_INVISIBLE &&
+		    GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "row-type")) == 0)
+			return GTK_WIDGET(row);
+	return NULL;
+}
+
+static void
+test_invisible(void)
+{
+	GtkWidget *row, *win, *note, *dropdown;
+	char *text;
+
+	/* the helpers */
+	ipc_invisible = FALSE;
+	CHECK(pidgin_account_invisible_supported(r2_account) == 0, "supported: %d",
+	      pidgin_account_invisible_supported(r2_account));
+	text = pidgin_invisible_unsupported_note(NULL);
+	CHECK(text != NULL && strstr(text, R2_USER) != NULL &&
+	      strstr(text, "you will appear available") != NULL, "note: %s", text);
+	g_free(text);
+	text = pidgin_invisible_unsupported_note(r2_account);
+	CHECK(purple_strequal(text, "The server doesn't support invisibility; you will "
+	                            "appear available."), "account note: %s", text);
+	g_free(text);
+	ipc_invisible = TRUE;
+	CHECK(pidgin_account_invisible_supported(r2_account) == 1, "not supported");
+	text = pidgin_invisible_unsupported_note(NULL);
+	CHECK(text == NULL || strstr(text, R2_USER) == NULL, "note while supported: %s", text);
+	g_free(text);
+
+	/* the status box: a tooltip and an icon on Invisible, still usable */
+	ipc_invisible = FALSE;
+	row = invisible_row();
+	CHECK(row != NULL, "no Invisible row in the status box");
+	if (row != NULL) {
+		const char *tip = gtk_widget_get_tooltip_text(row);
+
+		CHECK(tip != NULL && strstr(tip, "doesn't support invisibility") != NULL &&
+		      strstr(tip, R2_USER) != NULL, "row tooltip: %s", tip);
+		CHECK(find_class(row, "pidgin-invisible-note", NULL) != NULL, "no note icon");
+		CHECK(gtk_list_box_row_get_activatable(GTK_LIST_BOX_ROW(row)) &&
+		      gtk_widget_get_sensitive(row), "Invisible not selectable");
+	}
+	ipc_invisible = TRUE;
+	row = invisible_row();
+	CHECK(row != NULL && gtk_widget_get_tooltip_text(row) == NULL &&
+	      find_class(row, "pidgin-invisible-note", NULL) == NULL,
+	      "a note while supported: %s", row ? gtk_widget_get_tooltip_text(row) : "-");
+	ipc_invisible = FALSE;
+
+	/* the saved-status editor: a note under Status when Invisible */
+	pidgin_status_editor_show(FALSE, NULL);
+	spin(200);
+	win = find_window("status");
+	note = find_named(win, "pidgin-invisible-note");
+	dropdown = find_type(win, GTK_TYPE_DROP_DOWN);
+	CHECK(win != NULL && note != NULL && dropdown != NULL, "no status editor");
+	if (note != NULL && dropdown != NULL) {
+		CHECK(!gtk_widget_get_visible(note), "a note for Away");
+		pidgin_item_dropdown_select_data(dropdown, GINT_TO_POINTER(PURPLE_STATUS_INVISIBLE));
+		spin(50);
+		CHECK(gtk_widget_get_visible(note) &&
+		      strstr(gtk_label_get_text(GTK_LABEL(note)), R2_USER) != NULL,
+		      "no note for Invisible: %s", gtk_label_get_text(GTK_LABEL(note)));
+		ipc_invisible = TRUE;
+		pidgin_item_dropdown_select_data(dropdown, GINT_TO_POINTER(PURPLE_STATUS_AVAILABLE));
+		pidgin_item_dropdown_select_data(dropdown, GINT_TO_POINTER(PURPLE_STATUS_INVISIBLE));
+		spin(50);
+		CHECK(!gtk_widget_get_visible(note), "a note while supported");
+		ipc_invisible = FALSE;
+	}
+
+	/* its per-account editor */
+	if (win != NULL) {
+		GtkWidget *view;
+		GListModel *model;
+		GList *l;
+		guint pos = 0;
+
+		if (find_type(win, GTK_TYPE_EXPANDER) != NULL)
+			gtk_expander_set_expanded(GTK_EXPANDER(find_type(win, GTK_TYPE_EXPANDER)), TRUE);
+		spin(100);
+		view = find_type(win, GTK_TYPE_COLUMN_VIEW);
+		model = view ? G_LIST_MODEL(gtk_column_view_get_model(GTK_COLUMN_VIEW(view))) : NULL;
+
+		for (l = purple_accounts_get_all(); l != NULL && l->data != r2_account; l = l->next)
+			pos++;
+		CHECK(model != NULL && pos < g_list_model_get_n_items(model), "no account row");
+		if (model != NULL && pos < g_list_model_get_n_items(model)) {
+			GtkWidget *sub, *subnote, *box;
+
+			g_signal_emit_by_name(view, "activate", pos);
+			spin(200);
+			sub = find_window("substatus");
+			subnote = find_named(sub, "pidgin-invisible-note");
+			box = find_type(sub, GTK_TYPE_DROP_DOWN);
+			CHECK(sub != NULL && subnote != NULL && box != NULL, "no substatus editor");
+			if (subnote != NULL && box != NULL) {
+				pidgin_item_dropdown_select_id(box, "available");
+				spin(50);
+				CHECK(!gtk_widget_get_visible(subnote), "a note for Available");
+				pidgin_item_dropdown_select_id(box, "invisible");
+				spin(50);
+				CHECK(gtk_widget_get_visible(subnote) &&
+				      purple_strequal(gtk_label_get_text(GTK_LABEL(subnote)),
+				          "The server doesn't support invisibility; you will "
+				          "appear available."),
+				      "substatus note: %s", gtk_label_get_text(GTK_LABEL(subnote)));
+			}
+			if (sub != NULL)
+				gtk_window_destroy(GTK_WINDOW(sub));
+			spin(50);
+		}
+		gtk_window_destroy(GTK_WINDOW(win));
+		spin(100);
+	}
+}
+
+/**************************************************************************
  * Driver
  **************************************************************************/
 
@@ -568,6 +716,8 @@ selftest_run(gpointer data)
 	test_privacy_window();
 	g_print(R2 ": report spam\n");
 	test_report_spam();
+	g_print(R2 ": invisible\n");
+	test_invisible();
 
 done:
 	while (purple_get_conversations() != NULL)

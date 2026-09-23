@@ -42,6 +42,7 @@
 #include "gtkstatusbox.h"
 #include "gtkutils.h"
 #include "pidgincomposeentry.h"
+#include "pidginserverfeatures.h"
 
 /* Seconds after the last keystroke before a status message is applied. */
 #define TYPING_TIMEOUT 4
@@ -351,11 +352,27 @@ rebuild_list(void)
 
 	gtk_list_box_remove_all(GTK_LIST_BOX(statusbox->list));
 
-	for (i = 0; i < G_N_ELEMENTS(primitives); i++)
-		gtk_list_box_append(GTK_LIST_BOX(statusbox->list),
-			status_row(ROW_PRIMITIVE, primitive_icon_name(primitives[i]),
-			           purple_primitive_get_name_from_type(primitives[i]),
-			           primitives[i]));
+	for (i = 0; i < G_N_ELEMENTS(primitives); i++) {
+		GtkWidget *row = status_row(ROW_PRIMITIVE, primitive_icon_name(primitives[i]),
+		                            purple_primitive_get_name_from_type(primitives[i]),
+		                            primitives[i]);
+		/* Round 2: a connected account whose server can't be invisible
+		 * (XEP-0186) appears available; still selectable. */
+		char *note = primitives[i] == PURPLE_STATUS_INVISIBLE
+			? pidgin_invisible_unsupported_note(NULL) : NULL;
+
+		if (note != NULL) {
+			GtkWidget *hbox = gtk_list_box_row_get_child(GTK_LIST_BOX_ROW(row));
+			GtkWidget *icon = gtk_image_new_from_icon_name("dialog-information-symbolic");
+
+			gtk_widget_add_css_class(icon, "dim-label");
+			gtk_widget_add_css_class(icon, "pidgin-invisible-note");
+			gtk_box_append(GTK_BOX(hbox), icon);
+			gtk_widget_set_tooltip_text(row, note);
+			g_free(note);
+		}
+		gtk_list_box_append(GTK_LIST_BOX(statusbox->list), row);
+	}
 
 	/* Popular statuses, as Pidgin 2 lists them. */
 	popular = purple_savedstatuses_get_popular(6);
@@ -811,6 +828,15 @@ selftest_run_cb(gpointer data)
 
 	g_timeout_add_seconds(TYPING_TIMEOUT + 2, selftest_check_cb, NULL);
 	return G_SOURCE_REMOVE;
+}
+
+GtkWidget *
+pidgin_status_box_get_list_for_tests(void)
+{
+	if (statusbox == NULL)
+		return NULL;
+	rebuild_list();
+	return statusbox->list;
 }
 
 void

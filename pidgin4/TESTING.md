@@ -814,6 +814,18 @@ but no XEP-0186.
       item is missing.
 - [ ] The same item in an IM window's Conversation menu (not in rooms).
 
+### Invisible (XEP-0186)
+- [ ] On a server without XEP-0186 (the local Prosody), the status box's
+      Invisible row has an info icon and the tooltip "The server of
+      <account> doesn't support invisibility; you will appear available
+      there."; it can still be chosen, and another client then sees you
+      available. The saved-status editor shows the same note under Status
+      when Invisible is picked, the per-account list ("Use a different
+      status for some accounts") has it as the Invisible cell's tooltip,
+      and the per-account editor shows "The server doesn't support
+      invisibility; you will appear available." With the account offline
+      nothing is known and no note is shown.
+
 For headless test runs only:
 - `PIDGIN4_REQUEST_SELFTEST=1` opens one request of every kind at startup.
 - `PIDGIN4_ACCOUNT_SELFTEST=1` opens the accounts window, then opens and
@@ -906,7 +918,9 @@ For headless test runs only:
   window's greyed modes, tooltip and note (and that an unsupported mode
   isn't applied); the Report Spam items in the buddy menu and the
   Conversation menu (only when supported, not for blocked contacts) and
-  the dialog's IPC arguments. It removes its account and quits with
+  the dialog's IPC arguments; the invisible notes in the status box, the
+  saved-status editor and its per-account editor (and none while
+  supported). It removes its account and quits with
   status 0 ("PASS (N checks)"). Scratch profile only.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
