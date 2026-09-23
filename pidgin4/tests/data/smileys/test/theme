@@ -1,0 +1,12 @@
+Name=Test
+Description=Smileys for the pidgin4 unit tests
+Icon=happy.png
+Author=pidgin4
+
+[default]
+happy.png	:)	:-)
+happy.png	>:o
+! happy.png	:hidden:
+
+[XMPP]
+happy.png	=)	:)
