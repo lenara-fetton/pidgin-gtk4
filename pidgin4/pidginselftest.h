@@ -52,6 +52,12 @@ void pidgin_selftest_log(const char *module, const char *format, ...)
 void pidgin_selftest_fail(const char *module, const char *format, ...)
 	G_GNUC_PRINTF(2, 3);
 
+/**
+ * With PIDGIN4_SELFTEST_SHOTS=DIR set, saves @widget (e.g. a window) as
+ * DIR/@name.png, for checking layouts of headless runs. No-op otherwise.
+ */
+void pidgin_selftest_screenshot(GtkWidget *widget, const char *name);
+
 /** TRUE while the windows selftest runs (modules can skip slow work). */
 gboolean pidgin_selftest_is_running(void);
 

@@ -67,6 +67,11 @@ void pidgin_pref_bind_sensitive(GtkWidget *widget, const char *pref,
 void pidgin_pref_bind_sensitive_string(GtkWidget *widget, const char *pref,
                                        const char *value);
 
+/** Makes @widget sensitive only while the string @pref differs from
+ * @value. */
+void pidgin_pref_bind_insensitive_string(GtkWidget *widget, const char *pref,
+                                         const char *value);
+
 /* Convenience constructors: a widget bound to @pref. */
 GtkWidget *pidgin_pref_checkbox_new(const char *label, const char *pref);
 GtkWidget *pidgin_pref_spin_new(const char *pref, int min, int max);

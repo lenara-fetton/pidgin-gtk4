@@ -44,6 +44,7 @@ typedef enum {
 	BIND_DROPDOWN_INT,
 	BIND_SENSITIVE,
 	BIND_SENSITIVE_STRING,
+	BIND_INSENSITIVE_STRING,
 } BindType;
 
 typedef struct {
@@ -169,8 +170,10 @@ binding_update_widget(PrefBinding *b)
 			purple_prefs_get_bool(b->pref) != b->invert);
 		break;
 	case BIND_SENSITIVE_STRING:
+	case BIND_INSENSITIVE_STRING:
 		gtk_widget_set_sensitive(w,
-			purple_strequal(purple_prefs_get_string(b->pref), b->value));
+			purple_strequal(purple_prefs_get_string(b->pref), b->value) !=
+			(b->type == BIND_INSENSITIVE_STRING));
 		break;
 	}
 	b->updating = FALSE;
@@ -367,6 +370,20 @@ pidgin_pref_bind_sensitive_string(GtkWidget *widget, const char *pref,
 	g_return_if_fail(pref != NULL);
 
 	b = binding_new(widget, BIND_SENSITIVE_STRING, pref);
+	b->value = g_strdup(value);
+	binding_connect_pref(b);
+}
+
+void
+pidgin_pref_bind_insensitive_string(GtkWidget *widget, const char *pref,
+                                    const char *value)
+{
+	PrefBinding *b;
+
+	g_return_if_fail(GTK_IS_WIDGET(widget));
+	g_return_if_fail(pref != NULL);
+
+	b = binding_new(widget, BIND_INSENSITIVE_STRING, pref);
 	b->value = g_strdup(value);
 	binding_connect_pref(b);
 }

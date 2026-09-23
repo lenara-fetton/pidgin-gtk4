@@ -138,6 +138,46 @@ pidgin_selftest_wait(gboolean (*cond)(gpointer data), gpointer data,
 	return result;
 }
 
+void
+pidgin_selftest_screenshot(GtkWidget *widget, const char *name)
+{
+	const char *dir = g_getenv("PIDGIN4_SELFTEST_SHOTS");
+	GdkPaintable *paintable;
+	GtkSnapshot *snapshot;
+	GskRenderNode *node;
+	GskRenderer *renderer;
+	GdkTexture *texture;
+	GtkNative *native;
+	char *path;
+	int w, h;
+
+	if (dir == NULL || widget == NULL || !gtk_widget_get_realized(widget))
+		return;
+	w = gtk_widget_get_width(widget);
+	h = gtk_widget_get_height(widget);
+	native = gtk_widget_get_native(widget);
+	if (w <= 0 || h <= 0 || native == NULL)
+		return;
+
+	paintable = gtk_widget_paintable_new(widget);
+	snapshot = gtk_snapshot_new();
+	gdk_paintable_snapshot(paintable, snapshot, w, h);
+	node = gtk_snapshot_free_to_node(snapshot);
+	renderer = gtk_native_get_renderer(native);
+	if (node != NULL && renderer != NULL) {
+		texture = gsk_renderer_render_texture(renderer, node,
+			&GRAPHENE_RECT_INIT(0, 0, w, h));
+		g_mkdir_with_parents(dir, 0700);
+		path = g_strdup_printf("%s/%s.png", dir, name);
+		gdk_texture_save_to_png(texture, path);
+		g_free(path);
+		g_object_unref(texture);
+	}
+	if (node != NULL)
+		gsk_render_node_unref(node);
+	g_object_unref(paintable);
+}
+
 static gboolean
 module_selected(const char *spec, const char *name)
 {
