@@ -18,6 +18,9 @@
 #        idle both ways, XEP-0447 <file-sharing> on uploads (a text file
 #        from the UI, a PNG with dimensions from the ctl plugin), and the
 #        invisible status on a server without XEP-0186.
+#        Up, bob reacts and replies, alice retracts; alice inserts an image
+#        (Conversation → Insert Image) with some text and sends: the text
+#        goes as a message and the image by HTTP upload, bob gets its URL.
 #
 # The coordinates assume the default window sizes and a fresh server (no
 # history), which run.sh start provides. Exit status 0 when all checks
@@ -303,6 +306,40 @@ expect alice "$ma" "XEP-0186: the server has no invisibility" "invisible without
 ! since alice "$ma" | grep -q "Sending.*urn:xmpp:invisible:0"
 check $? "no <invisible/> sent to a server without XEP-0186"
 ctl alice status available
+# Insert Image in the room: with the server's upload service the image
+# goes into the entry; on send the text goes as a message and the image
+# is uploaded (XEP-0363), its URL posted to the room.
+python3 - "$work/insert-test.png" <<'EOF'
+import sys, zlib, struct
+w, h = 24, 16
+raw = b''.join(b'\x00' + bytes([0x22, 0x66, 0xcc]) * w for _ in range(h))
+def chunk(t, d):
+    c = struct.pack('>I', len(d)) + t + d
+    return c + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+open(sys.argv[1], 'wb').write(b'\x89PNG\r\n\x1a\n' +
+    chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)) +
+    chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+EOF
+focus alice "$ca"
+m=$(mark alice); mb=$(mark bob)
+click alice "$ca" 46 11
+DISPLAY=$(disp alice) xdotool mousemove 50 546 click 1
+if f=$(win alice "Open File|Insert Image"); then
+	focus alice "$f"; key alice ctrl+l
+	type_text alice "$work/insert-test.png"; sleep 0.5; key alice Return
+fi
+sleep 1
+focus alice "$ca"; to_entry alice "$ca"
+type_text alice "a picture"
+shot alice muc-4-image-inserted "$ca"
+key alice Return
+expect alice "$m" "Sending.*<body>a picture</body>" "alice sent the text next to the image"
+wait_log alice "$m" "http-upload: insert-test.png uploaded to http://127.0.0.1:" 20
+check $? "alice uploaded the inserted image"
+expect bob "$mb" "Recv.*<body>http://127.0.0.1:[0-9]*/file_share/[^<]*insert-test.png</body>" "bob got the image's upload link"
+sleep 1; shot bob muc-5-image "$cb"
+[ -z "$(ls -A "$work/profile-alice/pidgin4/paste" 2>/dev/null)" ]
+check $? "the uploaded image's copy in pidgin4/paste/ was removed"
 
 # ---- logs -------------------------------------------------------------
 for u in alice bob alice2; do

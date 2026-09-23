@@ -4408,6 +4408,7 @@ void jabber_plugin_init(PurplePlugin *plugin)
 	/* M8 round 2: privacy-modes, status-invisible-supported, report-spam,
 	 * report-spam-supported IPC */
 	jabber_blocking_init(plugin);
+	jabber_http_upload_ipc_init(plugin); /* M8: http-upload-* IPC */
 
 	purple_signal_register(plugin, "jabber-receiving-iq",
 			purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,

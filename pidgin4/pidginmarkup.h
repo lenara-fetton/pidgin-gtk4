@@ -315,10 +315,23 @@ PidginFormatCaps pidgin_format_caps_from_features(PurpleConnectionFlags features
 
 /**
  * The capabilities for a conversation on @account: from its connection
- * flags, except XMPP (prpl-jabber), which gets PIDGIN_FORMAT_STYLING_ALL
- * (plus IMAGE unless NO_IMAGES).
+ * flags, except XMPP (prpl-jabber), which gets PIDGIN_FORMAT_STYLING_ALL.
+ * Neither includes images sent by upload (see below): gtkconv.c adds
+ * IMAGE for the conversations that take them.
  */
 PidginFormatCaps pidgin_format_caps_for_account(PurpleAccount *account);
+
+/**
+ * Whether @account's prpl sends files by HTTP upload now: its IPC
+ * "http-upload-available" (the jabber prpl, XEP-0363, once the server's
+ * upload service is known) answers TRUE for the connected account.
+ * Inserted images can then go as uploads (pidgin4 gtkconv.c).
+ */
+gboolean pidgin_format_account_uploads_images(PurpleAccount *account);
+
+/** The prpl's IPC "http-upload-max-size" for @account: the largest file
+ *  the upload service takes, 0 if unknown or unlimited. */
+guint64 pidgin_format_account_upload_max_size(PurpleAccount *account);
 
 /**************************************************************************
  * GtkTextBuffer formatting tags and serialization

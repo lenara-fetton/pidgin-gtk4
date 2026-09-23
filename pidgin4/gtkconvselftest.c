@@ -1007,6 +1007,255 @@ test_attach(PurpleConversation *conv)
 	CHECK(!gtk_widget_get_visible(button), "attach left shown");
 }
 
+/* The calls of @command in the prpl's call log, as their args, "\n"-joined */
+static char *
+logged_calls(const char *command)
+{
+	GPtrArray *log = pidgin_selftest_prpl_get_call_log();
+	GString *out = g_string_new(NULL);
+	char *prefix = g_strconcat(command, "|", NULL);
+	guint i;
+
+	for (i = 0; log != NULL && i < log->len; i++) {
+		const char *c = g_ptr_array_index(log, i);
+
+		if (!g_str_has_prefix(c, prefix))
+			continue;
+		if (out->len > 0)
+			g_string_append_c(out, '\n');
+		g_string_append(out, c + strlen(prefix));
+	}
+	g_free(prefix);
+	return g_string_free(out, FALSE);
+}
+
+static void
+end_xfers(void)
+{
+	GList *l, *xfers = g_list_copy(pidgin_selftest_prpl_get_xfers());
+
+	for (l = xfers; l != NULL; l = l->next)
+		purple_xfer_cancel_local(l->data);
+	g_list_free(xfers);
+	pidgin_selftest_prpl_forget_xfer();
+	spin(300);
+}
+
+/* The path of the file in a "send-file" / "chat-send-file" log entry
+ * ("who|path|") */
+static char *
+logged_path(const char *line)
+{
+	char **parts = g_strsplit(line ? line : "", "|", -1);
+	char *path = g_strv_length(parts) >= 2 ? g_strdup(parts[1]) : NULL;
+
+	g_strfreev(parts);
+	return path;
+}
+
+/* Insert Image by upload (XEP-0363 on XMPP: the prpl's IPC
+ * "http-upload-available"): images go into the entry (Insert Image,
+ * paste, drop) with no confirmation, in IMs and chats; on send the text
+ * goes as one message and each image, in order, as a file under
+ * <profile>/pidgin4/paste/. Larger than "http-upload-max-size": an error
+ * line and nothing sent. Without the service: no Insert Image, and a
+ * paste asks to send a file. */
+static void
+test_upload_images(PurpleConversation *conv, PurpleConversation *chat)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
+	char *dir = g_build_filename(purple_user_dir(), "pidgin4", "paste", NULL);
+	char *ims, *files, **lines, *path, *dropped;
+	int id;
+	guint n;
+
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/confirm_file_send", TRUE);
+	pidgin_selftest_prpl_set_caps(FALSE, TRUE);
+	pidgin_selftest_prpl_set_upload(TRUE, 0);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	if (chat != NULL)
+		pidgin_conv_update_buttons_by_protocol(chat);
+
+	CHECK(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE, "upload: no image caps");
+	CHECK(pidgin_conv_action_enabled(gtkconv, "insert-image"), "upload: Insert Image disabled");
+	CHECK(pidgin_compose_entry_get_paste_images(entry), "upload: images not pasted");
+
+	/* text, an image from a file (Insert Image), a pasted image */
+	pidgin_compose_entry_clear(entry);
+	pidgin_compose_entry_set_markup(entry, "two pictures ");
+	id = add_test_image();
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	paste_image_clipboard(entry, NULL);
+	CHECK(confirm_dialog(conv) == NULL, "upload: the paste asked to send a file");
+	{
+		GArray *ids = pidgin_compose_entry_get_image_ids(entry);
+
+		CHECK(ids->len == 2, "upload: %u images in the entry", ids->len);
+		g_array_unref(ids);
+	}
+	pidgin_selftest_prpl_clear_call_log();
+	pidgin_selftest_prpl_forget_xfer();
+	CHECK(pidgin_compose_entry_send(entry), "upload: send");
+	spin(300);
+	CHECK(pidgin_compose_entry_is_empty(entry), "upload: entry not cleared");
+	ims = logged_calls("send-im");
+	CHECK(purple_strequal(ims, ST_BUDDY "|two pictures|"), "upload: send-im \"%s\"", ims);
+	files = logged_calls("send-file");
+	lines = g_strsplit(files, "\n", -1);
+	CHECK(g_strv_length(lines) == 2, "upload: send-file \"%s\"", files);
+	if (g_strv_length(lines) == 2) {
+		char *p1 = logged_path(lines[0]), *p2 = logged_path(lines[1]);
+		char *b1 = g_path_get_basename(p1), *b2 = g_path_get_basename(p2);
+		char *d1 = g_path_get_dirname(p1), *d2 = g_path_get_dirname(p2);
+
+		CHECK(g_str_has_prefix(lines[0], ST_BUDDY "|") && g_str_has_prefix(lines[1], ST_BUDDY "|"),
+		      "upload: sent to %s", files);
+		CHECK(purple_strequal(d1, dir) && purple_strequal(d2, dir),
+		      "upload: files not under pidgin4/paste: %s", files);
+		CHECK(purple_strequal(b1, "selftest.png"), "upload: first file %s", b1);
+		CHECK(g_str_has_prefix(b2, "pasted-") && g_str_has_suffix(b2, ".png"),
+		      "upload: second file %s", b2);
+		CHECK(g_file_test(p1, G_FILE_TEST_EXISTS) && g_file_test(p2, G_FILE_TEST_EXISTS),
+		      "upload: files gone before the transfers ended");
+		CHECK(g_list_length(pidgin_selftest_prpl_get_xfers()) == 2, "upload: %u transfers",
+		      g_list_length(pidgin_selftest_prpl_get_xfers()));
+		end_xfers();
+		CHECK(!g_file_test(p1, G_FILE_TEST_EXISTS) && !g_file_test(p2, G_FILE_TEST_EXISTS),
+		      "upload: files left after the transfers ended");
+		g_free(d1);
+		g_free(d2);
+		g_free(b1);
+		g_free(b2);
+		g_free(p1);
+		g_free(p2);
+	}
+	g_strfreev(lines);
+	g_free(files);
+	g_free(ims);
+	end_xfers();
+
+	/* an image alone: no message, one file; a dropped image goes into the
+	 * entry too, and is sent as the dropped file was */
+	dropped = g_build_filename(purple_user_dir(), "selftest-upload-drop.png", NULL);
+	{
+		gsize len;
+		gpointer data = make_png(10, 10, &len);
+
+		CHECK(g_file_set_contents(dropped, data, len, NULL), "writing %s", dropped);
+		g_free(data);
+	}
+	path = drop_file(conv, dropped);
+	CHECK(path == NULL && confirm_dialog(conv) == NULL, "upload: drop asked %s", path);
+	g_free(path);
+	CHECK(entry_has_anchor(entry), "upload: the dropped image isn't in the entry");
+	pidgin_selftest_prpl_clear_call_log();
+	CHECK(pidgin_compose_entry_send(entry), "upload: image-only send");
+	spin(300);
+	ims = logged_calls("send-im");
+	files = logged_calls("send-file");
+	CHECK(*ims == '\0', "upload: image-only send-im \"%s\"", ims);
+	path = logged_path(files);
+	CHECK(strchr(files, '\n') == NULL && path != NULL &&
+	      g_str_has_suffix(path, G_DIR_SEPARATOR_S "selftest-upload-drop.png"),
+	      "upload: image-only send-file \"%s\"", files);
+	g_free(path);
+	g_free(files);
+	g_free(ims);
+	end_xfers();
+	g_unlink(dropped);
+	g_free(dropped);
+
+	/* larger than the service takes: an error line, nothing sent, the
+	 * entry kept */
+	pidgin_selftest_prpl_set_upload(TRUE, 64);
+	pidgin_compose_entry_set_markup(entry, "too big ");
+	id = add_test_image();
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	pidgin_selftest_prpl_clear_call_log();
+	n = n_messages(conv);
+	CHECK(!pidgin_compose_entry_send(entry), "upload: too large sent");
+	spin(200);
+	CHECK(n_messages(conv) == n + 1 &&
+	      strstr(pidgin_message_get_html(last_message(conv)), "larger than the server") != NULL,
+	      "upload: no error line (%s)",
+	      n_messages(conv) > n ? pidgin_message_get_html(last_message(conv)) : "-");
+	CHECK(pidgin_selftest_prpl_get_call_log()->len == 0, "upload: too large: %s",
+	      pidgin_selftest_prpl_get_call_log()->len > 0
+	          ? (char *)g_ptr_array_index(pidgin_selftest_prpl_get_call_log(), 0) : "");
+	CHECK(entry_has_anchor(entry), "upload: too large: the entry lost the image");
+	pidgin_compose_entry_clear(entry);
+	pidgin_selftest_prpl_set_upload(TRUE, 0);
+
+	/* a chat: Insert Image, and chat_send_file */
+	if (chat != NULL) {
+		PidginConversation *gtkchat = PIDGIN_CONVERSATION(chat);
+		PidginComposeEntry *chat_entry = PIDGIN_COMPOSE_ENTRY(gtkchat->entry);
+
+		pidgin_conv_window_switch_gtkconv(gtkchat->win, gtkchat);
+		pidgin_conv_update_buttons_by_protocol(chat);
+		CHECK(pidgin_conv_action_enabled(gtkchat, "insert-image"),
+		      "upload: Insert Image disabled in a chat");
+		pidgin_compose_entry_set_markup(chat_entry, "room picture ");
+		id = add_test_image();
+		pidgin_compose_entry_insert_image(chat_entry, id);
+		purple_imgstore_unref_by_id(id);
+		pidgin_selftest_prpl_clear_call_log();
+		n = n_messages(chat);
+		CHECK(pidgin_compose_entry_send(chat_entry), "upload: chat send");
+		spin(300);
+		files = logged_calls("chat-send-file");
+		path = logged_path(files);
+		CHECK(g_str_has_prefix(files, ST_ROOM "|") && strchr(files, '\n') == NULL &&
+		      path != NULL && g_str_has_suffix(path, G_DIR_SEPARATOR_S "selftest.png"),
+		      "upload: chat-send-file \"%s\"", files);
+		{
+			/* the room's reflection, then the transfer's status lines */
+			gboolean found = FALSE;
+			guint i;
+
+			for (i = n; i < n_messages(chat); i++)
+				if (strstr(pidgin_message_get_html(nth_message(chat, i)), "room picture"))
+					found = TRUE;
+			CHECK(found, "upload: the chat text wasn't sent");
+		}
+		g_free(path);
+		g_free(files);
+		end_xfers();
+		pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+	}
+
+	/* no upload service: no Insert Image, and a paste asks to send a file */
+	pidgin_selftest_prpl_set_upload(FALSE, 0);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(!(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE),
+	      "no upload: image caps");
+	CHECK(!pidgin_conv_action_enabled(gtkconv, "insert-image"),
+	      "no upload: Insert Image enabled");
+	if (chat != NULL) {
+		pidgin_conv_update_buttons_by_protocol(chat);
+		CHECK(!pidgin_conv_action_enabled(PIDGIN_CONVERSATION(chat), "insert-image"),
+		      "no upload: Insert Image enabled in a chat");
+	}
+	pidgin_selftest_prpl_clear_call_log();
+	pidgin_compose_entry_clear(entry);
+	paste_image_clipboard(entry, NULL);
+	CHECK(!entry_has_anchor(entry), "no upload: the paste went into the entry");
+	CHECK(confirm_dialog(conv) != NULL, "no upload: no confirmation");
+	confirm_answer(conv, FALSE);
+	CHECK(pidgin_selftest_prpl_get_call_log()->len == 0, "no upload: something was sent");
+
+	pidgin_selftest_prpl_set_caps(TRUE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	if (chat != NULL)
+		pidgin_conv_update_buttons_by_protocol(chat);
+	g_free(dir);
+	hold("upload images");
+}
+
 /**************************************************************************
  * Shared URLs and received files shown inline
  **************************************************************************/
@@ -1320,11 +1569,11 @@ test_received_files(PurpleConversation *conv)
 }
 
 /* The media card of a row's attachment: shown in the view, Play and Open
- * Folder go to the launcher (test hook), and no player without a media
- * backend. */
+ * Folder go to the launcher (test hook), and a player only with
+ * @player (a media backend and inline playback on). */
 static void
 check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentKind kind,
-                 const char *target, gboolean local, const char *what)
+                 const char *target, gboolean local, gboolean player, const char *what)
 {
 	PidginAttachment *att = msg ? pidgin_message_get_attachment(msg) : NULL;
 	GtkWidget *card, *button;
@@ -1344,9 +1593,8 @@ check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentK
 	card = pidgin_attachment_widget_new(att);
 	g_object_ref_sink(card);
 	CHECK(find_widget(card, "pidgin-media-name", NULL) != NULL, "%s: no name", what);
-	CHECK((find_widget(card, "pidgin-media-player", NULL) != NULL) ==
-	      pidgin_media_backend_available(), "%s: a player without a backend, or none with",
-	      what);
+	CHECK((find_widget(card, "pidgin-media-player", NULL) != NULL) == player,
+	      "%s: %s", what, player ? "no player" : "a player");
 	pidgin_attachment_set_launch_hook(launch_hook);
 	button = find_widget(card, "pidgin-media-play", NULL);
 	g_clear_pointer(&launched, g_free);
@@ -1369,30 +1617,128 @@ check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentK
 	g_object_unref(card);
 }
 
+/* Whether @card still has its player after up to @ms (it goes when the
+ * file can't be opened or the backend reports an error) */
+static gboolean
+player_after(GtkWidget *card, guint ms, gboolean until_gone)
+{
+	guint waited;
+
+	for (waited = 0; waited < ms; waited += 50) {
+		gboolean has = find_widget(card, "pidgin-media-player", NULL) != NULL;
+
+		if (until_gone && !has)
+			return FALSE;
+		spin(50);
+	}
+	return find_widget(card, "pidgin-media-player", NULL) != NULL;
+}
+
+/* A card of its own for @att, with its player once the file is open or
+ * failed (the caller unrefs it) */
+static GtkWidget *
+own_card(PidginAttachment *att)
+{
+	GtkWidget *card = pidgin_attachment_widget_new(att);
+
+	g_object_ref_sink(card);
+	g_object_unref(att);
+	return card;
+}
+
+/* The inline player (a media backend, detected at run time, and
+ * /pidgin4/media/inline_playback on): a real (bundled) WAV keeps it; a
+ * file that isn't media, a missing file and a URL GTK can't read lose it
+ * (no critical from GTK's GStreamer backend) and keep the card. */
+static void
+test_media_player(PurpleConversation *conv, const char *dir, const char *fake_mp4)
+{
+	gboolean backend = pidgin_media_backend_available();
+	char *wav = g_build_filename(dir, "silence.wav", NULL);
+	char *missing = g_build_filename(dir, "gone.ogg", NULL);
+	char *url, *esc;
+	GBytes *bytes = g_resources_lookup_data("/com/minowick/Pidgin4/media/silence.wav", 0, NULL);
+	PidginMessage *msg;
+	GtkWidget *card;
+
+	CHECK(bytes != NULL && g_file_set_contents(wav, g_bytes_get_data(bytes, NULL),
+	                                           g_bytes_get_size(bytes), NULL),
+	      "writing %s", wav);
+	g_clear_pointer(&bytes, g_bytes_unref);
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", TRUE);
+
+	/* a received WAV: the card, with the player if there is a backend */
+	receive_file(conv, wav);
+	spin(600);
+	esc = g_markup_escape_text(wav, -1);
+	msg = find_message(conv, esc);
+	g_free(esc);
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, wav, TRUE, backend, "received wav");
+	card = own_card(pidgin_attachment_new_for_file(wav, PIDGIN_ATTACHMENT_AUDIO));
+	CHECK(player_after(card, 1500, FALSE) == backend, "wav: %s after it was opened",
+	      backend ? "no player" : "a player");
+	g_object_unref(card);
+
+	if (backend) {
+		/* not media: the backend's error removes the player */
+		card = own_card(pidgin_attachment_new_for_file(fake_mp4, PIDGIN_ATTACHMENT_VIDEO));
+		CHECK(find_widget(card, "pidgin-media-player", NULL) != NULL, "fake mp4: no player");
+		CHECK(!player_after(card, 5000, TRUE), "fake mp4: the player stayed");
+		CHECK(find_widget(card, "pidgin-media-name", NULL) != NULL, "fake mp4: no card");
+		g_object_unref(card);
+
+		/* a file that isn't there */
+		card = own_card(pidgin_attachment_new_for_file(missing, PIDGIN_ATTACHMENT_AUDIO));
+		CHECK(!player_after(card, 2000, TRUE), "missing file: the player stayed");
+		CHECK(find_widget(card, "pidgin-media-play", NULL) != NULL, "missing file: no card");
+		g_object_unref(card);
+
+		/* a URL (no gvfs: not readable; with it: not media) */
+		url = g_strconcat(share_base, "/share/clip", NULL);
+		card = own_card(pidgin_attachment_new_for_uri(url, PIDGIN_ATTACHMENT_VIDEO, 10));
+		CHECK(!player_after(card, 5000, TRUE), "URL: the player stayed");
+		CHECK(find_widget(card, "pidgin-media-play", NULL) != NULL, "URL: no card");
+		g_object_unref(card);
+		g_free(url);
+
+		/* a card going away before its file is open */
+		card = own_card(pidgin_attachment_new_for_file(wav, PIDGIN_ATTACHMENT_AUDIO));
+		g_object_unref(card);
+		spin(300);
+	}
+	g_unlink(wav);
+	g_free(missing);
+	g_free(wav);
+}
+
 /* Audio and video: received transfers, an XMPP share (by its HEAD
- * Content-Type), a lone URL on an allowlisted host (as Discord's). */
+ * Content-Type), a lone URL on an allowlisted host (as Discord's). The
+ * media backend is detected at run time (GTK with or without GStreamer);
+ * PIDGIN4_SELFTEST_MEDIA_BACKEND=1 requires one, =0 turns it off for the
+ * run (selftest_run()). The cards of files that aren't media are checked
+ * with inline playback off; test_media_player() does the player. */
 static void
 test_media(PurpleConversation *conv)
 {
 	char *dir = g_build_filename(purple_user_dir(), "selftest-media", NULL);
 	char *mp4 = g_build_filename(dir, "clip.mp4", NULL);
 	char *ogg = g_build_filename(dir, "voice.ogg", NULL);
+	const char *env = g_getenv("PIDGIN4_SELFTEST_MEDIA_BACKEND");
 	char *url, *esc;
 	PidginMessage *msg;
 
-	/* This machine's GTK is built without GStreamer (USE=-gstreamer):
-	 * no inline player. PIDGIN4_SELFTEST_MEDIA_BACKEND=1 after rebuilding
-	 * GTK with it. */
 	g_print("PIDGIN4_CONV_SELFTEST: media backend: %s\n",
 	        pidgin_media_backend_available() ? "yes" : "no");
-	CHECK(pidgin_media_backend_available() ==
-	      purple_strequal(g_getenv("PIDGIN4_SELFTEST_MEDIA_BACKEND"), "1"),
-	      "media backend check: %d", pidgin_media_backend_available());
+	if (env != NULL && *env != '\0')
+		CHECK(pidgin_media_backend_available() == purple_strequal(env, "1"),
+		      "media backend check: %d (PIDGIN4_SELFTEST_MEDIA_BACKEND=%s)",
+		      pidgin_media_backend_available(), env);
 
 	g_mkdir_with_parents(dir, 0700);
 	g_file_set_contents(mp4, "not really a video", -1, NULL);
 	g_file_set_contents(ogg, "not really audio", -1, NULL);
 	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", FALSE);
 
 	receive_file(conv, mp4);
 	spin(600);
@@ -1400,7 +1746,7 @@ test_media(PurpleConversation *conv)
 	msg = find_message(conv, esc);
 	g_free(esc);
 	CHECK(msg != NULL, "no line for the received video");
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, mp4, TRUE, "received mp4");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, mp4, TRUE, FALSE, "received mp4");
 	CHECK(msg == NULL || pidgin_attachment_get_size(pidgin_message_get_attachment(msg)) == 18,
 	      "received mp4 size");
 
@@ -1409,12 +1755,12 @@ test_media(PurpleConversation *conv)
 	esc = g_markup_escape_text(ogg, -1);
 	msg = find_message(conv, esc);
 	g_free(esc);
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, ogg, TRUE, "received ogg");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, ogg, TRUE, FALSE, "received ogg");
 
 	/* an XMPP share without an extension: video/mp4 by HEAD */
 	url = g_strconcat(share_base, "/share/clip", NULL);
 	msg = receive(conv, url, 1200);
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, url, FALSE, "shared clip");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, url, FALSE, FALSE, "shared clip");
 	CHECK(msg == NULL || pidgin_message_get_attachment(msg) == NULL ||
 	      pidgin_attachment_get_size(pidgin_message_get_attachment(msg)) == 10,
 	      "shared clip size");
@@ -1430,8 +1776,11 @@ test_media(PurpleConversation *conv)
 	pidgin_image_loader_allow_host(pidgin_image_loader_get_default(), "127.0.0.1");
 	url = g_strconcat(share_base, "/share/voice-message2.ogg", NULL);
 	msg = receive(conv, url, 300);
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, url, FALSE, "allowlisted ogg");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, url, FALSE, FALSE, "allowlisted ogg");
 	g_free(url);
+
+	test_media_player(conv, dir, mp4);
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", TRUE);
 	hold("media");
 
 	g_unlink(mp4);
@@ -2111,6 +2460,11 @@ selftest_run(gpointer data)
 	PidginWindow *win;
 	int before;
 
+	/* PIDGIN4_SELFTEST_MEDIA_BACKEND=0: the path of a GTK without a media
+	 * backend, whatever this one has (test_media()) */
+	if (purple_strequal(g_getenv("PIDGIN4_SELFTEST_MEDIA_BACKEND"), "0"))
+		pidgin_media_backend_disable_for_tests();
+
 	/* The protocol (tests/selftest-prpl.c) and a throwaway account */
 	CHECK(pidgin_selftest_prpl_register() != NULL, "selftest prpl didn't load");
 
@@ -2125,6 +2479,7 @@ selftest_run(gpointer data)
 	test_attention(im);
 	test_paste_image(im);
 	test_attach(im);
+	test_upload_images(im, chat);
 	test_xmpp_shares(im);
 	test_received_files(im);
 	test_media(im);

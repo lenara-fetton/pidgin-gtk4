@@ -33,7 +33,11 @@
  *    /pidgin4/media/inline_playback is on (the default), the card also
  *    embeds a GtkVideo (controls, no autoplay, at most
  *    PIDGIN_ATTACHMENT_VIDEO_WIDTH px wide); without one (GTK built
- *    without GStreamer) only the card shows.
+ *    without GStreamer) only the card shows. The player is given a stream
+ *    opened asynchronously, never the GFile (GTK's GStreamer backend
+ *    fails an assertion on a file it can't open); if the file can't be
+ *    opened, or the backend reports an error (not media, no codec), the
+ *    player is removed and the card stays.
  */
 #ifndef _PIDGINATTACHMENT_H_
 #define _PIDGINATTACHMENT_H_
@@ -105,6 +109,10 @@ void pidgin_attachment_play(GtkWidget *widget, PidginAttachment *attachment);
  * can't decode even that) turns it off for the next cards.
  */
 gboolean pidgin_media_backend_available(void);
+
+/** TEST ONLY: from now on pidgin_media_backend_available() is FALSE (the
+ *  path of a GTK built without GStreamer). */
+void pidgin_media_backend_disable_for_tests(void);
 
 /**
  * TEST ONLY: called instead of launching anything; @action is "open",

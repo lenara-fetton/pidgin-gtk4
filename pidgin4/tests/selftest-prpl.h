@@ -34,6 +34,20 @@ const char *pidgin_selftest_prpl_get_call(const char *command);
 void pidgin_selftest_prpl_clear_call(const char *command);
 
 /**
+ * Every recorded call since the last clear_call_log(), in order, as
+ * "command|args" (args as get_call() gives them). Transfer none.
+ */
+GPtrArray *pidgin_selftest_prpl_get_call_log(void);
+void pidgin_selftest_prpl_clear_call_log(void);
+
+/**
+ * What the IPC commands "http-upload-available" and "http-upload-max-size"
+ * (as the jabber prpl's, XEP-0363) answer; the defaults: FALSE, 0. Call
+ * pidgin_conv_update_buttons_by_protocol() after.
+ */
+void pidgin_selftest_prpl_set_upload(gboolean available, guint64 max_size);
+
+/**
  * Toggles OPT_PROTO_IM_IMAGE and file transfer (send_file,
  * can_receive_file, chat_send_file, chat_can_receive_file; recorded as
  * "send-file" and "chat-send-file"). The defaults: images, no files. Call
@@ -47,6 +61,9 @@ void pidgin_selftest_prpl_set_caps(gboolean im_images, gboolean files);
  * purple_xfer_cancel_local()) and then calls forget_xfer().
  */
 PurpleXfer *pidgin_selftest_prpl_get_last_xfer(void);
+/** All transfers started since the last forget_xfer(), oldest first. */
+GList *pidgin_selftest_prpl_get_xfers(void);
+/** Forgets the last transfer and the list. */
 void pidgin_selftest_prpl_forget_xfer(void);
 
 /** Runs the main loop for @ms milliseconds. */

@@ -2117,6 +2117,39 @@ pidgin_format_caps_from_features(PurpleConnectionFlags features)
 	return caps;
 }
 
+gboolean
+pidgin_format_account_uploads_images(PurpleAccount *account)
+{
+	PurpleConnection *gc;
+	PurplePlugin *prpl;
+
+	g_return_val_if_fail(account != NULL, FALSE);
+
+	gc = purple_account_get_connection(account);
+	if (gc == NULL || !PURPLE_CONNECTION_IS_CONNECTED(gc) || (prpl = gc->prpl) == NULL ||
+	    !purple_plugin_ipc_get_params(prpl, "http-upload-available", NULL, NULL, NULL))
+		return FALSE;
+	return GPOINTER_TO_INT(purple_plugin_ipc_call(prpl, "http-upload-available", NULL,
+	                                              account)) != 0;
+}
+
+guint64
+pidgin_format_account_upload_max_size(PurpleAccount *account)
+{
+	PurpleConnection *gc;
+	PurplePlugin *prpl;
+
+	g_return_val_if_fail(account != NULL, 0);
+
+	gc = purple_account_get_connection(account);
+	if (gc == NULL || (prpl = gc->prpl) == NULL ||
+	    !purple_plugin_ipc_get_params(prpl, "http-upload-max-size", NULL, NULL, NULL))
+		return 0;
+	/* a guint64 marshalled as a pointer (64-bit) */
+	return GPOINTER_TO_SIZE(purple_plugin_ipc_call(prpl, "http-upload-max-size", NULL,
+	                                               account));
+}
+
 PidginFormatCaps
 pidgin_format_caps_for_account(PurpleAccount *account)
 {

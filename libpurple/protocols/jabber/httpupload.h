@@ -156,6 +156,19 @@ void jabber_http_upload_chat_send_file(PurpleConnection *gc, int id,
 void jabber_http_upload_set_service(PurpleConnection *gc, const char *jid,
 		goffset max_file_size);
 
+/**
+ * Registers the IPC commands on the prpl @a plugin:
+ *   gboolean http-upload-available(PurpleAccount *): TRUE when the
+ *     account is connected, has discovered an upload service and has it
+ *     enabled ("http_upload");
+ *   guint64 http-upload-max-size(PurpleAccount *): the service's
+ *     max-file-size, 0 when unknown or unlimited (returned as a pointer by
+ *     purple_plugin_ipc_call(): GPOINTER_TO_SIZE() it; 64-bit only).
+ * The open conversations of an account get PURPLE_CONV_UPDATE_FEATURES
+ * when its service is discovered.
+ */
+void jabber_http_upload_ipc_init(PurplePlugin *plugin);
+
 void jabber_http_upload_init(void);
 void jabber_http_upload_uninit(void);
 

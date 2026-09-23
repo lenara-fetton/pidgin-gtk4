@@ -397,8 +397,20 @@ is best), another IRC client, the Discord web client.
       sent (HTTP upload on XMPP when the server has it). Our own upload's
       URL, and images on the account's own XMPP domain, show inline;
       Discord CDN images show inline.
-- [ ] Paste a screenshot (Ctrl+V, or right click → Paste Image) into an
-      XMPP chat: a "Send Image" dialog floats over the conversation
+- [ ] Insert Image in an XMPP chat uploads each image; Conversations
+      shows them inline. On a server with HTTP upload, Insert Image is
+      enabled in XMPP IMs and rooms, and a pasted screenshot or a
+      dropped image file goes into the entry (no dialog). Type some text
+      around two images and send: the text goes as one message, then
+      each image, in order, uploads (transfer lines, then its URL
+      message); the other side (Conversations, Dino) shows the pictures
+      inline, and `~/.purple…/pidgin4/paste/` is empty again once the
+      uploads finished. An image bigger than the server's limit gives an
+      error line, sends nothing and stays in the entry.
+- [ ] Paste a screenshot (Ctrl+V, or right click → Paste Image) into a
+      conversation that can only send files (an XMPP server without HTTP
+      upload, or a prpl with file transfer but no images): a "Send
+      Image" dialog floats over the conversation
       window (modal to it) with the preview, the name, size in pixels,
       file size and PNG/JPEG, and "Send to <buddy> via <account>";
       Escape (Cancel) sends nothing and leaves nothing in
