@@ -1045,6 +1045,80 @@ Constraint: every change must keep `libdiscord.so` and `libsteam.so` loadable an
 - **Steam rich presence** (`~/pidgin-opensteamworks`): the plugin publishes `game` (name) and `game_app_id` as status attributes on the existing status type, which is plain 2.14 API. pidgin4 shows them as a secondary line or emblem on the buddy row and in the tooltip. Stock Pidgin ignores the extra attributes.
 - **Request-UI coverage**: the M2 verification includes Discord QR login, Steam Guard (code and mobile-approve) and captcha prompts.
 
+**Status: done, except the checks with accounts signed in, which are left to the user** (the M9 section of `pidgin4/TESTING.md`). 2026-09-23.
+
+**Branches** (committed, not pushed; the users' checkouts and the `.so` files their symlinks point to are untouched):
+- `~/purple-discord`: branch `pidgin4-message-meta`, worktree `~/purple-discord-pidgin4`, commit `c5f7c41` on top of `fix/high-severity-review` (`d0f8f34`).
+- `~/pidgin-opensteamworks`: branch `pidgin4-rich-presence`, worktree `~/pidgin-opensteamworks-pidgin4`, commit `8ae6171` on top of `master` (`e3e1f97`).
+
+**Discord** (`libdiscord.c`). Everything new is gated per connection on `DiscordAccount.native_meta`, read at login from `purple_core_get_ui_info()["message-meta"] == "1"`. Without it (stock Pidgin 2) no new code path runs, and the output is unchanged; the test below checks that for a reply, an edit, a delete and a message with a custom emoji.
+- **`receiving-message-meta`** before each message the plugin shows. Keys:
+  - `conv-type`, `sender`, `timestamp` (the ISO timestamp as unix seconds);
+  - `stanza-id` **and** `server-id`, both the message's snowflake;
+  - `reply-to` (`referenced_message.id`, or `message_reference.message_id` for a reply to a deleted message), `reply-to-sender` and a new optional key `reply-to-text` (the first 200 characters of the replied-to text, which pidgin4 now uses as the preview when it doesn't have that message);
+  - `outgoing` for our own messages sent from another client;
+  - `correction-of` (and no ids) for an edit shown as a new line.
+
+  Why both ids: Discord ids are assigned by the server and unique, and pidgin4 treats stanza-id hits of non-XMPP prpls like server-id hits (`ids_are_unique()`), so either key gives the same dedup. A message is dropped only when its id is already in `messages.db`, i.e. pidgin4 showed it before. A live message is never dropped the first time. The plugin's own replays (history fetches on opening a channel, `limit=100` refetches, gateway replays after a resume, the thread-parent fetch) are dropped. The plugin honours `discard`: the whole message is skipped, including its attachments and history reaction lines. It never sets `discard` itself. Edits and pins reuse the message's id, so they carry no ids (otherwise pidgin4 would drop them). The thread-start context line (`DISCORD_MESSAGE_CONTEXT`) carries none either. With native metadata, a message and its attachments are **one row**, so reactions, edits and deletes apply to all of it.
+- **Own sends.** The UI only attaches ids that arrive before the write, and the id only exists after the REST round trip. So with native metadata the plugin holds back its local echo: `send_im` returns 0 (libpurple writes nothing), and `chat_send` doesn't write. The message is shown from whichever comes first: the gateway `MESSAGE_CREATE` carrying our nonce, or the REST reply. It is written as `PURPLE_MESSAGE_SEND` with its ids. The copy that comes second is dropped by pidgin4's dedup. A failed send writes "Unable to send message: <Discord's message>". `sending-message-meta` isn't used. The `/reply` and `/thread` commands keep their old local echo.
+- **Edits.** `MESSAGE_UPDATE` → `message-corrected(account, conv, id, id, body, sender)`. The body is the HTML the plugin would render (markdown, mentions, embeds, thread formatting), without the `EDIT: ` prefix. If no handler takes it, the `EDIT:` line is written as before. Updates without an `edited_timestamp` (link embeds arriving) are ignored with native metadata, instead of becoming `EDIT:` lines.
+- **Deletes.** `MESSAGE_DELETE(_BULK)` → `message-retracted(account, conv, id, author, NULL)`, for messages whose author the plugin remembers (a bounded, 4096-entry per-connection map of id → real channel and sender, filled as messages are shown). Unknown authors (for example after a restart) and unhandled events get the old "Message at … was deleted" line. Without an author, pidgin4 would treat a room deletion as moderation.
+- **Reactions.** `MESSAGE_REACTION_ADD/REMOVE` → `message-reaction(account, conv, message id, emoji, sender, add)`. On FALSE the old fetch-and-text-line path runs. **Emoji representation:** the Unicode emoji itself, and `:name:` for custom emoji, because pidgin4 shows reactions as text chips, not markup. The plugin remembers name → id from messages, reactions and the guild's emoji list, to map `:name:` back for the API (the conversation's guild first). Senders are the room nick (as in `serv_got_chat_in`, our own nick included) and, in IMs, the username, or our account's username for ourselves. Reactions listed on fetched history messages stay text lines, because the API gives counts rather than who reacted. Our own ones (`me`) do go into the reaction cache.
+- **Images.** Custom emoji become `<img src="https://cdn.discordapp.com/emojis/ID.png?size=48" alt=":name:" width="22" height="22">` (`.gif` when animated). Image attachments become a link plus `<img src="<media.discordapp.net proxy_url, sized by image-size>">`; spoilers and other files stay plain URLs. There is no imgstore download or custom smiley fetch. pidgin4's loader allowlist decides, so `display-images` isn't consulted with native metadata.
+- **IPC**, registered on the plugin in `load` with the M8 signatures (the debug log says `Registered IPC commands send-correction, send-reaction, send-retraction and send-reply`). All return FALSE unless the account is a connected Discord account on a message-meta UI.
+  - `send-correction`: PATCH, with the plain body converted like a typed message (mentions, custom emoji, markdown escaping).
+  - `send-reaction`: the complete new set is diffed against the cache of our own reactions into PUT/DELETE `…/reactions/<url-encoded emoji>/@me`, and the cache is updated at once.
+  - `send-retraction`: DELETE.
+  - `send-reply`: POST with `message_reference`; `reply_to_jid` and `quoted_text` are ignored, since Discord shows the reply. It is shown when echoed.
+
+  Actions on thread messages go to the thread's channel. The results come back through the gateway like changes from any other client. There is no `send-marker`: pidgin4's unseen update already reaches the plugin's `conversation-updated` ack, so `markable` is never set.
+- Threads render as before.
+
+**Steam** (`steam-mobile/libsteam.c`). The plugin already had an independent, unsettable `ingame` status type (a `PURPLE_STATUS_TUNE` primitive) with a `game` attribute. It now also has `game_app_id` (a decimal string, unset for non-Steam games), set and cleared together with `game` through `purple_prpl_got_user_status()`.
+
+The plan said "on the available status type". The existing independent status is libpurple's place for this: it doesn't disturb the exclusive statuses, and stock Pidgin ignores it. So the attribute went there rather than duplicating it on every exclusive status. The "In game X" status text is unchanged, and Steam Guard and login weren't touched. `tests/test_load.c` checks the attributes.
+
+**pidgin4** (this branch):
+- `gtkblist.c` has a new `presence_game()`: the game of the first active status with a `game` attribute (Steam's `ingame`, XMPP's tune). It skips types without that attribute, since asking for one is a critical. It drives:
+  - the game emblem (before the tune/music one);
+  - the secondary line (`Playing X`, unless the prpl's text already names the game, as Steam's "In game X" does);
+  - a tooltip `Game` entry (unless the prpl listed it).
+- `pidginconvmeta.c` uses `reply-to-text` as the reply preview when the target isn't in the view or the index.
+- The key is documented in `doc/conversation-signals.dox`.
+- The row actions' IPC gate (`prpl_has_command()` on the conversation's prpl plugin) covers Discord as it is.
+
+**Gates and tests:**
+- **Symbol gate** (`comm -23` of undefined `purple_*`/`serv_*` against `/usr/lib64/libpurple.so.0.14.14`): prints nothing for either new `.so`. New libpurple imports for Discord, all 2.14: `purple_account_get_protocol_id`, `purple_core_get_ui_info`, three `purple_marshal_BOOLEAN__…`, `purple_plugin_ipc_register`/`_unregister_all` and `purple_signal_emit`/`_return_1`. None for Steam. `scripts/check-abi.sh --no-abidiff <both .so>`: "all ABI gates passed".
+- **Stock Pidgin 2.14.14 load test.** `/usr/bin/pidgin -c <scratch copy of ~/.purple-gtk4 without logs, plugins/ = symlinks to the two new builds> -n -d` ran for 20 s under Xvfb + `dbus-run-session`, and SIGTERM made it quit cleanly. Both plugins probed and loaded (`Registered IPC commands …`, Steam `status_types`), with no errors or criticals. Both were unloaded at exit. `accounts.xml` still has its 34 accounts (2 Discord, 2 Steam); it was rewritten, but it is identical once sorted.
+- **pidgin4 load test.** The same run with `pidgin4 -c … -n -d -m` (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`) behaved the same, with 0 criticals, for both the installed pidgin4 and this branch's build.
+- **`scripts/tests/discord-m9/run.sh`** (145 checks, also with `--asan`) `#include`s `libdiscord.c`. It runs the system libpurple with a null UI with and without `message-meta`, registers the M8 signals, loads the plugin as a prpl and feeds it gateway payloads in the Discord API documentation's shapes. It covers every item above, the IPC commands and the unchanged stock output.
+- **Steam `tests/test_load`**: PASSED.
+- **pidgin4**: `meson test` 14 OK, 1 skipped, and zero build warnings.
+- **Rich-presence check.** A scratch UI plugin in pidgin4 gave a Steam buddy (on a pretend connection) the `ingame` status. The tooltip showed "Game: Team Fortress &lt;2&gt;" (escaped), and it went away when the status was cleared.
+- No account was signed in.
+
+**Building and installing, when you're ready.** Build with the system headers (`PKG_CONFIG_PATH` unset; `pkg-config --cflags purple` must say `/usr/include/libpurple`):
+```sh
+make -C ~/purple-discord-pidgin4 libdiscord.so
+make -C ~/pidgin-opensteamworks-pidgin4/steam-mobile
+```
+To install, either merge the branches into the usual checkouts and rebuild there, so the existing symlinks pick them up:
+```sh
+git -C ~/purple-discord merge pidgin4-message-meta && make -C ~/purple-discord libdiscord.so
+git -C ~/pidgin-opensteamworks merge pidgin4-rich-presence && make -C ~/pidgin-opensteamworks/steam-mobile
+```
+or point `~/.purple/plugins/*.so` at the worktree builds. **The new `.so` files are drop-in for the stock Pidgin 2.14.14:** same ABI, and old output when the UI has no `message-meta`, so switching doesn't have to wait for the pidgin4 cutover. For pidgin4 itself, rebuild and install it from `gtk4-port` once this branch is merged (`scripts/build-pidgin4.sh --test`; it was only built with `--no-install` here).
+
+**Open issues:**
+- Own sends appear after the server's reply (a round trip) rather than immediately.
+- History reactions are still text lines. Deletions of messages not shown in this process fall back to the text line.
+- A custom emoji can only be reacted with once its id has been seen. `:name:` is ambiguous across guilds (the conversation's guild wins).
+- With native metadata, late link embeds (embed-only `MESSAGE_UPDATE`) aren't shown.
+- Group DMs: the plugin sets no chat nick there (as before), so pidgin4's own-message and own-reaction matching by nick may miss.
+- `MESSAGE_REACTION_REMOVE_ALL`/`_EMOJI` aren't handled (as before).
+- The purple-3 build (`libdiscord3.so`) wasn't built.
+- Not tested against live Discord or Steam: those round trips are the user's M9 checklist in `pidgin4/TESTING.md`.
+
 ## Critical files
 - **Build:** `configure.ac`; new `pidgin4/meson.build`, `pidgin4/pidgin-internal.h`, `pidgin4/resources/*.gresource.xml`.
 - **Core UI:** `pidgin4/gtkmain.c`, `gtkutils.c`, `gtkblist.c`, `gtkconv.c`, `gtkstatusbox.c`, `gtkrequest.c`, `gtknotify.c`, `gtkaccount.c`, `gtkprefs.c`, `gtkdocklet*.c`, `gtkidle.c`, `pidginstock.c`.

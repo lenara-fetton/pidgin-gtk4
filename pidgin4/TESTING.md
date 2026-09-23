@@ -1,4 +1,4 @@
-# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status, M4 conversations, M6 desktop integration)
+# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status, M4 conversations, M6 desktop integration, M9 Discord and Steam)
 
 The automated checks (unit tests, the headless selftests and
 `scripts/check-profile-compat.sh`) never sign an account in. The checks
@@ -403,6 +403,69 @@ is best), another IRC client, the Discord web client.
       open it in Pidgin 2's log viewer.
 - [ ] Restart pidgin4: the MAM catch-up doesn't repeat messages already
       shown, including after a Pidgin 2 session in between.
+
+## M9: Discord and Steam (with the patched plugins, accounts signed in)
+
+The patched plugins are on the branches `pidgin4-message-meta`
+(`~/purple-discord-pidgin4`) and `pidgin4-rich-presence`
+(`~/pidgin-opensteamworks-pidgin4/steam-mobile`); see M9 in
+`doc/PIDGIN-UPGRADE.md` for building them. To try them without touching
+the `.so` files Pidgin 2 uses, point the dev profile's plugins at the
+worktree builds:
+
+```sh
+ln -sf ~/purple-discord-pidgin4/libdiscord.so ~/.purple-gtk4/plugins/libdiscord.so
+ln -sf ~/pidgin-opensteamworks-pidgin4/steam-mobile/libsteam.so ~/.purple-gtk4/plugins/libsteam.so
+```
+
+Quit Pidgin 2 first (Discord and Steam don't like two sessions; see
+*Before you start*), and sign in one account at a time with `-l`.
+
+### Discord
+Use a second Discord client (the web app or the phone) as the other side,
+in a DM and in a small server channel.
+
+- [ ] Messages from the other client appear once. Reopening a channel (the
+      plugin fetches its history again) or a gateway reconnect doesn't
+      repeat them.
+- [ ] Your own messages appear right after the server confirms them (a
+      short delay; Discord assigns the id). A failed send (e.g. a channel
+      you can't write to) shows "Unable to send message: …". Messages you
+      send from the other client appear as sent ("outgoing").
+- [ ] Replies from the other client show the replied-to message above the
+      row (its text, even when that message isn't loaded here); there is
+      no "┌──@name: …" line any more.
+- [ ] Reply from the row menu: the other client shows a Discord reply to
+      that message.
+- [ ] An edit on the other side updates the row ("edited" marker) instead
+      of an `EDIT:` line. Up-arrow edits your last message; the other
+      client shows the new text.
+- [ ] Reactions from the other side appear as chips under the message
+      (custom emoji as `:name:`); removing them works. Reacting here, and
+      removing your reaction, shows up on the other side; custom server
+      emoji work if they were seen before (in a message or a reaction).
+- [ ] Deleting one of your messages here deletes it on Discord; a deletion
+      on the other side shows "This message was deleted." (for messages
+      shown in this session; older ones get the usual "Message at … was
+      deleted" line).
+- [ ] Custom emoji in messages render as images, and image attachments as
+      inline images (from `cdn.discordapp.com`/`media.discordapp.net`),
+      with a link to the file. Spoiler images stay links.
+- [ ] Threads look as before (indicator and colour-coded timestamp).
+- [ ] The HTML log has the readable lines for edits, reactions and
+      deletions (`X edited: …`, `X reacted 👍 to: …`); open it in Pidgin
+      2's log viewer.
+- [ ] Afterwards, with the same `.so` files, Pidgin 2 on the dev profile
+      still shows replies as quote lines, edits as `EDIT:` lines and
+      reactions as text: its output is unchanged.
+
+### Steam
+- [ ] A friend who is playing shows the game emblem on the buddy row and
+      "In game <name>" as the secondary line (large list), and the game in
+      the tooltip. When they stop, the emblem and the line go.
+- [ ] A non-Steam game shows its name too ("In non-Steam game …").
+- [ ] Steam Guard and login are unchanged; Pidgin 2 shows friends' games
+      as before.
 
 ## Developer aids
 
