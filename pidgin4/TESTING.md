@@ -1,4 +1,4 @@
-# pidgin4 M2: manual sign-in checklist
+# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status)
 
 The automated checks (unit tests, the headless selftests and
 `scripts/check-profile-compat.sh`) never sign an account in. The checks
@@ -27,9 +27,10 @@ below do, so they are for you to run by hand.
   scripts/build-pidgin4.sh --test                       # ~/.local/pidgin4/bin/pidgin4
   scripts/build-pidgin4.sh --desktop-integration        # optional: launcher, icons
   ```
-- **What M2 can't do yet.** There are no conversation windows (M4) and no
-  buddy list (M3). Received messages are logged to `logs/` but not shown.
-  This build is for signing in and staying connected, not for chatting.
+- **What it can't do yet.** There are no conversation windows (M4).
+  Received messages are logged to `logs/` but not shown, and "IM" on a
+  buddy only creates the conversation. This build is for signing in,
+  staying connected and the buddy list (M3), not for chatting.
 
 ## Starting
 
@@ -40,9 +41,12 @@ $P -c ~/.purple-gtk4 -l 'user@host' -d   # enable/sign in only this account
 $P -c ~/.purple-gtk4 -n                  # no sign-in at all
 ```
 
-The accounts window is the main window until M3. Closing it hides it, and
-pidgin4 keeps running. Quit with Ctrl+Q, the main menu → Quit, or
-`kill -TERM`. Starting pidgin4 again brings the accounts window back.
+The buddy list is the main window (M3). Closing it quits pidgin4 (saving
+everything) unless `/pidgin4/blist/close_hides` is set in `prefs.xml`,
+until the tray arrives in M6. Quit also with Ctrl+Q, Buddies → Quit, or
+`kill -TERM`. Starting pidgin4 again raises the buddy list. The accounts
+window (Accounts → Manage Accounts) opens by itself only when no account
+is enabled.
 
 ## Checklist
 
@@ -54,7 +58,7 @@ pidgin4 keeps running. Quit with Ctrl+Q, the main menu → Quit, or
       `~/.purple`: use it only to check the dialog, then quit.
 - [ ] `pidgin4 -v` prints the version, git revision and libpurple version.
 - [ ] A second `pidgin4 -c ~/.purple-gtk4` raises the running instance's
-      accounts window and exits.
+      buddy list and exits.
 - [ ] Ctrl+Q and `kill -TERM <pid>` both disconnect, save and exit with
       status 0. With `-d`, the log ends with `Unloading plugin` lines.
 - [ ] Under Sway, `swaymsg -t get_tree` shows `app_id: com.minowick.Pidgin4`.
@@ -71,8 +75,9 @@ pidgin4 keeps running. Quit with Ctrl+Q, the main menu → Quit, or
       entry, a "Save password" check and OK disabled until something is
       typed. Signing in works. Cancel also works: the account goes back
       to offline and nothing crashes.
-- [ ] **Wrong password**: type a wrong one. You get an alert saying
-      "<account> disconnected", with Close / Modify Account / Re-enable.
+- [ ] **Wrong password**: type a wrong one. The buddy list shows
+      "<account> disabled" at the top, with Re-enable / Modify Account /
+      Dismiss.
       The account is disabled (fatal error). Modify Account opens the
       editor.
 - [ ] **Discord, token login**: the Discord accounts sign in.
@@ -97,8 +102,9 @@ pidgin4 keeps running. Quit with Ctrl+Q, the main menu → Quit, or
       cable. Accounts drop and then reconnect by themselves.
 - [ ] Kill one connection server-side, or wait for an IRC ping timeout.
       The account reconnects after a random 8–60 s delay, with the delay
-      doubling on repeated failures. No alert is shown for these
-      non-fatal errors; the Status column shows the error while it waits.
+      doubling on repeated failures. The buddy list shows
+      "<account> disconnected" for these
+      non-fatal errors until it reconnects; the Status column shows it too.
 - [ ] Leave it running for a few hours. Nothing disconnects for good, and
       memory use (`ps -o rss`) stays flat.
 
@@ -137,12 +143,110 @@ pidgin4 keeps running. Quit with Ctrl+Q, the main menu → Quit, or
 - [ ] Optionally, run Pidgin 2 on `~/.purple-gtk4` (`pidgin -m -c ~/.purple-gtk4`)
       and check that the accounts, buddy list and prefs are intact.
 
+## M3: buddy list and status (with accounts signed in)
+
+The headless checks never sign in, so everything about live presence is
+for you. Sign in as above (quit Pidgin 2 first, or use `-l NAME`).
+
+### Presence
+- [ ] Online buddies of each signed-in account appear under their groups,
+      sorted as Buddies → Sort Buddies says (alphabetical by default).
+      Status icons match: available, away, busy, extended away, and the
+      greyed idle look.
+- [ ] With Buddies → Show → Buddy Details on, the second line shows the
+      status message (XMPP), the game (Steam) or "Offline", and
+      "Idle 1h 05m" for idle buddies. With it off, idle buddies show
+      "1:05" at the right and no second line.
+- [ ] A buddy signing on or off shows the log-in/log-out icon for about
+      10 seconds, then the normal one (offline buddies then disappear
+      unless Show → Offline Buddies is on).
+- [ ] Buddy icons (avatars) appear for XMPP, Discord and Steam contacts,
+      greyed when offline or idle.
+- [ ] Show → Protocol Icons adds the protocol icon to each row; prpl
+      emblems (e.g. Steam's game emblem, blocked, mobile) show at the
+      right.
+- [ ] Hovering a buddy shows the tooltip: name, protocol icon, the
+      prpl's fields (XMPP: status, subscription, resource; Discord/Steam:
+      their own), idle, "Logged In", and the avatar. A contact with
+      several online buddies shows each of them. If the `cap` plugin is
+      loaded, its lines appear too (the `drawing-tooltip` signal).
+- [ ] Group headers show "(online/total)" when collapsed. Collapse a
+      group, quit, start again: it stays collapsed, and Pidgin 2 shows
+      it collapsed as well (the shared `collapsed` setting in
+      `blist.xml`).
+
+### Menus
+- [ ] Accounts: every enabled account has a submenu with Edit Account,
+      the prpl's actions when connected (XMPP: Set User Info..., Search
+      for Users...; Discord/Steam: theirs) and Disable. Disabled
+      accounts are under "Enable Account".
+- [ ] Right-click a buddy: Get Info, IM, Send File (where the prpl can),
+      Show/Hide When Offline, the prpl's own items (e.g. XMPP
+      subscription items, Discord's), Move to, Block/Unblock, Alias...,
+      Remove. The Menu key and Shift+F10 open it for the selected row.
+- [ ] Get Info (menu or Ctrl+O on a row) opens the Buddy Information
+      window.
+- [ ] Alias... / Rename (F2) change the name; Pidgin 2 shows the new
+      alias afterwards.
+- [ ] Buddies → Add Buddy... adds a buddy on a connected account and the
+      server list gets it (check with another client). Add Group and
+      Add Chat work; Join a Chat joins (the chat window is M4, but the
+      room is joined: see the debug window).
+- [ ] Right-click a chat → Auto-Join: after reconnecting, the chat is
+      joined automatically.
+
+### Status box
+- [ ] The button at the bottom shows the current status. Picking Away,
+      typing a message and waiting 4 seconds (or pressing Enter) sets
+      it on every account; other clients see the message. Offline signs
+      everything off; Available signs it back on.
+- [ ] A popular saved status from the list activates it.
+- [ ] While accounts connect, a spinner replaces the status icon.
+- [ ] The icon button next to it → Choose Buddy Icon...: pick an image;
+      other clients see the new avatar on accounts that use the global
+      icon. Remove Buddy Icon clears it.
+- [ ] In Modify Account, "Use this buddy icon for this account" with an
+      image, saved: that account gets its own avatar.
+
+### Errors and requests
+- [ ] A wrong password (or other fatal error) shows "<account> disabled"
+      at the top of the buddy list with Re-enable / Modify Account /
+      Dismiss, instead of an alert. A non-fatal disconnect shows
+      "<account> disconnected" with Reconnect until it reconnects by
+      itself.
+- [ ] Signing in the same account elsewhere with a prpl that reports it
+      (XMPP resource conflict, some IRC networks) shows "Welcome back!"
+      listing the accounts, with Re-enable.
+- [ ] An XMPP subscription request shows "Authorize buddy?" in the
+      buddy list; the name link opens the user info; Authorize adds them
+      (and offers Add Buddy if they are not on the list).
+
+### Drag and drop
+- [ ] Drag a contact onto another group: it moves there (and in Pidgin 2
+      afterwards). Drag onto a contact to reorder (with Sort Buddies →
+      Manually) or into an expanded contact to merge.
+- [ ] Drag an image file from the file manager onto a buddy: you are
+      asked to set it as the buddy icon or send it. Another file is
+      sent with a file transfer (the transfer window is M5; watch the
+      debug window).
+
 ## Developer aids
 
 For headless test runs only:
 - `PIDGIN4_REQUEST_SELFTEST=1` opens one request of every kind at startup.
-- `PIDGIN4_ACCOUNT_SELFTEST=1` opens and cancels every account editor.
+- `PIDGIN4_ACCOUNT_SELFTEST=1` opens the accounts window, then opens and
+  cancels every account editor.
+- `PIDGIN4_BLIST_SELFTEST=1` shows every node (Show → Offline Buddies,
+  Empty Groups and Buddies of Disconnected Accounts), collapses and
+  expands every group, builds every context menu and tooltip, toggles
+  every Show option and sort method, logs the counts
+  (`gtkblist: selftest: ...`, e.g. "visible 72 groups, 319 contacts"),
+  restores the prefs and group states, and quits.
+- `PIDGIN4_STATUS_SELFTEST=1` picks Away with a message through the
+  status box and checks the current saved status, then quits. It only
+  runs when **no account is enabled** (otherwise it logs "skipped"), so
+  use it on a scratch profile whose accounts are all disabled.
 
-Neither saves anything or signs anything in. See `scripts/check-profile-compat.sh`
+None of them signs anything in. See `scripts/check-profile-compat.sh`
 for the Xvfb setup (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`,
 `dbus-run-session`).
