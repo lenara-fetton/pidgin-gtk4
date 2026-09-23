@@ -50,6 +50,7 @@
 
 #include "gtkrequest.h"
 #include "gtkutils.h"
+#include "pidgincompletion.h"
 #include "pidgincomposeentry.h"
 #include "pidginformattoolbar.h"
 
@@ -763,10 +764,8 @@ create_string_field(PidginRequestData *data, PurpleRequestField *field)
 {
 	const char *value = purple_request_field_string_get_default_value(field);
 	gboolean editable = purple_request_field_string_is_editable(field);
+	const char *hint = purple_request_field_get_type_hint(field);
 	GtkWidget *widget;
-
-	/* TODO(M5): username completion for the "screenname" type hints
-	 * (GtkEntryCompletion is deprecated; needs a completion popover). */
 
 	if (purple_request_field_string_is_multiline(field)) {
 		GtkWidget *view = text_view_new(value, editable, FALSE);
@@ -784,6 +783,26 @@ create_string_field(PidginRequestData *data, PurpleRequestField *field)
 		gtk_widget_set_hexpand(widget, TRUE);
 		connect_field(data, widget, "changed",
 		              G_CALLBACK(field_string_entry_changed_cb), field);
+
+		/* Buddy name completion (Pidgin 2's setup_screenname_autocomplete):
+		 * picking a buddy also sets the group's "account" field. */
+		if (editable && !purple_request_field_string_is_masked(field) &&
+		    hint != NULL && purple_str_has_prefix(hint, "screenname")) {
+			PurpleRequestField *account_field = NULL;
+			GList *l;
+
+			for (l = purple_request_field_group_get_fields(
+			         purple_request_field_get_group(field));
+			     l != NULL; l = l->next) {
+				if (purple_request_field_get_type(l->data) == PURPLE_REQUEST_FIELD_ACCOUNT &&
+				    purple_strequal(purple_request_field_get_type_hint(l->data), "account")) {
+					account_field = l->data;
+					break;
+				}
+			}
+			pidgin_buddy_completion_attach_to_field(widget, account_field,
+				purple_strequal(hint, "screenname-all"));
+		}
 	}
 
 	return widget;

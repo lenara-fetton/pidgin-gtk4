@@ -275,6 +275,7 @@ test('msgview-selftest', msgview_demo, env : selftest_env, timeout : 300,
 widget_tests = [
 	'prefbinding',
 	'pluginpref',
+	'completion',
 ]
 foreach name : widget_tests
 	test_exe = executable('test-' + name,
