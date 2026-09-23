@@ -268,6 +268,20 @@ foreach size : ['16x16', '22x22', '32x32', '48x48']
 	endforeach
 endforeach
 
+# Pidgin 2's smiley themes (pidginsmileytheme.c looks in
+# <datadir>/pixmaps/pidgin/emotes). Only the GTK 2 build installs them, and
+# the packaged libpurple is built without it, so install them here from
+# its tree (move them into pidgin4/ when pidgin/ is removed).
+emotes_src = meson.project_source_root() / '..' / 'pidgin' / 'pixmaps' / 'emotes'
+foreach theme : [['default', 'default/24'], ['small', 'small/16'], ['none', 'none']]
+	theme_src = emotes_src / theme[1]
+	theme_pngs = run_command('find', theme_src, '-maxdepth', '1', '-name', '*.png',
+		check : true).stdout().strip()
+	install_data(theme_src / 'theme',
+		theme_pngs == '' ? [] : theme_pngs.split('\n'),
+		install_dir : datadir / 'pixmaps' / 'pidgin' / 'emotes' / theme[0])
+endforeach
+
 # Tests
 test_menu = executable('test-pidginmenu',
 	'tests/test-pidginmenu.c', 'pidginmenu.c',
