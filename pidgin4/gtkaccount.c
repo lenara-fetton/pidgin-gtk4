@@ -31,14 +31,11 @@
  * step by step so accounts.xml keeps the same semantics.
  *
  * Not ported yet:
- *   - buddy icon selection in the editor, and the default icon of new
- *     accounts (/pidgin/accounts/buddyicon): TODO(M3);
  *   - drag-and-drop reordering of accounts (purple_accounts_reorder):
  *     TODO(M5);
  *   - the voice/video tab: dropped (no voice/video in this build).
- * Pidgin 2 showed account requests (authorize, "added you", "add buddy?")
- * as mini-dialogs in the buddy list; here they are small windows.
- * TODO(M3): move them into the buddy list.
+ * Account requests (authorize, "added you", "add buddy?") are mini-dialogs
+ * in the buddy list, as in Pidgin 2.
  */
 #include "pidgin-internal.h"
 #include "pidgin.h"
@@ -62,7 +59,9 @@
 #include "util.h"
 
 #include "gtkaccount.h"
+#include "gtkblist.h"
 #include "gtkutils.h"
+#include "pidginminidialog.h"
 #include "pidginmenu.h"
 
 #define PREFS_DIALOG PIDGIN4_PREFS_ROOT "/accounts/dialog"
@@ -171,6 +170,11 @@ typedef struct
 	/* User Options */
 	GtkWidget *user_slot;
 	GtkWidget *new_mail_check;
+	GtkWidget *icon_check;
+	GtkWidget *icon_hbox;
+	GtkWidget *icon_picture;
+	GBytes *icon_data;       /* converted for the prpl, or NULL */
+	char *icon_path;         /* the file it came from */
 
 	/* Protocol Options */
 	GtkWidget *protocol_frame;
@@ -552,6 +556,128 @@ add_login_options(AccountPrefsDialog *dialog, GtkWidget *parent)
 					PURPLE_CALLBACK(update_editable), dialog);
 }
 
+/* Pidgin 2's set_dialog_icon(). Takes @data and @path. */
+static void
+set_dialog_icon(AccountPrefsDialog *dialog, GBytes *data, char *path)
+{
+	GdkTexture *texture = NULL;
+
+	g_clear_pointer(&dialog->icon_data, g_bytes_unref);
+	g_free(dialog->icon_path);
+	dialog->icon_data = data;
+	dialog->icon_path = path;
+
+	if (dialog->icon_picture == NULL)
+		return;
+
+	if (data != NULL)
+		texture = pidgin_texture_new_from_data(g_bytes_get_data(data, NULL),
+		                                       g_bytes_get_size(data));
+	if (texture != NULL) {
+		gtk_picture_set_paintable(GTK_PICTURE(dialog->icon_picture), GDK_PAINTABLE(texture));
+		g_object_unref(texture);
+	} else {
+		GtkIconTheme *theme = gtk_icon_theme_get_for_display(
+			gtk_widget_get_display(dialog->icon_picture));
+		GtkIconPaintable *icon = gtk_icon_theme_lookup_icon(theme,
+			"avatar-default-symbolic", NULL, 48, 1, GTK_TEXT_DIR_NONE, 0);
+
+		gtk_picture_set_paintable(GTK_PICTURE(dialog->icon_picture), GDK_PAINTABLE(icon));
+		g_object_unref(icon);
+	}
+}
+
+/* Converts @path for the dialog's prpl and shows it. */
+static void
+set_dialog_icon_from_file(AccountPrefsDialog *dialog, const char *path)
+{
+	gpointer data;
+	size_t len = 0;
+
+	if (dialog->plugin == NULL || dialog->prpl_info == NULL ||
+	    dialog->prpl_info->icon_spec.format == NULL)
+		return;
+
+	data = pidgin_convert_buddy_icon(dialog->plugin, path, &len);
+	if (data == NULL)
+		return;
+	set_dialog_icon(dialog, g_bytes_new_take(data, len), g_strdup(path));
+	gtk_check_button_set_active(GTK_CHECK_BUTTON(dialog->icon_check), TRUE);
+}
+
+static void
+icon_chosen_cb(GObject *source, GAsyncResult *result, gpointer data)
+{
+	AccountPrefsDialog *dialog;
+	GtkWidget *window = data;
+	GFile *file = gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, NULL);
+	char *path;
+
+	/* The editor may be gone. */
+	dialog = g_object_get_data(G_OBJECT(window), "pidgin-account-dialog");
+	if (file == NULL || dialog == NULL) {
+		g_clear_object(&file);
+		g_object_unref(window);
+		return;
+	}
+	path = g_file_get_path(file);
+	if (path != NULL)
+		set_dialog_icon_from_file(dialog, path);
+	g_free(path);
+	g_object_unref(file);
+	g_object_unref(window);
+}
+
+static void
+icon_select_cb(GtkWidget *button, AccountPrefsDialog *dialog)
+{
+	GtkFileDialog *fd = gtk_file_dialog_new();
+	GtkFileFilter *filter = gtk_file_filter_new();
+
+	gtk_file_filter_set_name(filter, _("Images"));
+	gtk_file_filter_add_mime_type(filter, "image/*");
+	gtk_file_dialog_set_default_filter(fd, filter);
+	gtk_file_dialog_set_title(fd, _("Buddy Icon"));
+	gtk_file_dialog_open(fd, GTK_WINDOW(dialog->window), NULL, icon_chosen_cb,
+	                     g_object_ref(dialog->window));
+	g_object_unref(filter);
+	g_object_unref(fd);
+}
+
+static void
+icon_reset_cb(GtkWidget *button, AccountPrefsDialog *dialog)
+{
+	set_dialog_icon(dialog, NULL, NULL);
+}
+
+static void
+icon_check_cb(GtkCheckButton *check, GParamSpec *pspec, AccountPrefsDialog *dialog)
+{
+	gtk_widget_set_sensitive(dialog->icon_hbox, gtk_check_button_get_active(check));
+}
+
+/* Dropping an image file on the editor sets the account's icon. */
+static gboolean
+icon_drop_cb(GtkDropTarget *target, const GValue *value, double x, double y,
+             AccountPrefsDialog *dialog)
+{
+	GSList *files;
+	char *path;
+
+	if (!G_VALUE_HOLDS(value, GDK_TYPE_FILE_LIST))
+		return FALSE;
+	files = gdk_file_list_get_files(g_value_get_boxed(value));
+	if (files == NULL)
+		return FALSE;
+	path = g_file_get_path(files->data);
+	g_slist_free(files);
+	if (path == NULL)
+		return FALSE;
+	set_dialog_icon_from_file(dialog, path);
+	g_free(path);
+	return TRUE;
+}
+
 static void
 add_user_options(AccountPrefsDialog *dialog, GtkWidget *parent)
 {
@@ -571,13 +697,63 @@ add_user_options(AccountPrefsDialog *dialog, GtkWidget *parent)
 		gtk_check_button_new_with_mnemonic(_("New _mail notifications"));
 	gtk_box_append(GTK_BOX(vbox), dialog->new_mail_check);
 
-	/* TODO(M3): "Use this buddy icon for this account" with the icon
-	 * chooser. Until then the account's icon settings are left alone. */
+	/* Buddy icon */
+	dialog->icon_check = gtk_check_button_new_with_mnemonic(
+		_("Use this buddy _icon for this account:"));
+	g_signal_connect(dialog->icon_check, "notify::active", G_CALLBACK(icon_check_cb), dialog);
+	gtk_box_append(GTK_BOX(vbox), dialog->icon_check);
+
+	dialog->icon_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, PIDGIN_HIG_BOX_SPACE);
+	gtk_widget_set_margin_start(dialog->icon_hbox, PIDGIN_HIG_BORDER);
+	gtk_box_append(GTK_BOX(vbox), dialog->icon_hbox);
+	{
+		GtkWidget *button = gtk_button_new();
+		GtkWidget *remove = gtk_button_new_with_mnemonic(_("Remo_ve"));
+
+		dialog->icon_picture = gtk_picture_new();
+		gtk_picture_set_content_fit(GTK_PICTURE(dialog->icon_picture), GTK_CONTENT_FIT_CONTAIN);
+		gtk_widget_set_size_request(dialog->icon_picture, 48, 48);
+		gtk_button_set_child(GTK_BUTTON(button), dialog->icon_picture);
+		gtk_widget_set_tooltip_text(button, _("Choose a buddy icon"));
+		g_signal_connect(button, "clicked", G_CALLBACK(icon_select_cb), dialog);
+		gtk_box_append(GTK_BOX(dialog->icon_hbox), button);
+
+		gtk_widget_set_valign(remove, GTK_ALIGN_CENTER);
+		g_signal_connect(remove, "clicked", G_CALLBACK(icon_reset_cb), dialog);
+		gtk_box_append(GTK_BOX(dialog->icon_hbox), remove);
+	}
 
 	if (dialog->prpl_info != NULL) {
 		if (!(dialog->prpl_info->options & OPT_PROTO_MAIL_CHECK))
 			gtk_widget_set_visible(dialog->new_mail_check, FALSE);
 	}
+
+	if (dialog->prpl_info == NULL || dialog->prpl_info->icon_spec.format == NULL) {
+		gtk_widget_set_visible(dialog->icon_check, FALSE);
+		gtk_widget_set_visible(dialog->icon_hbox, FALSE);
+	}
+
+	if (dialog->account != NULL && dialog->icon_data == NULL && dialog->icon_path == NULL) {
+		PurpleStoredImage *img = purple_buddy_icons_find_account_icon(dialog->account);
+
+		gtk_check_button_set_active(GTK_CHECK_BUTTON(dialog->icon_check),
+			!purple_account_get_bool(dialog->account, "use-global-buddyicon", TRUE));
+		if (img != NULL) {
+			set_dialog_icon(dialog,
+				g_bytes_new(purple_imgstore_get_data(img), purple_imgstore_get_size(img)),
+				g_strdup(purple_account_get_buddy_icon_path(dialog->account)));
+			purple_imgstore_unref(img);
+		} else {
+			set_dialog_icon(dialog, NULL, NULL);
+		}
+	} else {
+		/* Rebuilt after a protocol change: keep what was picked. */
+		set_dialog_icon(dialog,
+			dialog->icon_data ? g_bytes_ref(dialog->icon_data) : NULL,
+			g_strdup(dialog->icon_path));
+	}
+	gtk_widget_set_sensitive(dialog->icon_hbox,
+		gtk_check_button_get_active(GTK_CHECK_BUTTON(dialog->icon_check)));
 
 	if (dialog->account != NULL) {
 		if (purple_account_get_alias(dialog->account))
@@ -928,6 +1104,9 @@ add_proxy_options(AccountPrefsDialog *dialog, GtkWidget *parent)
 static void
 account_win_destroy_cb(GtkWidget *w, AccountPrefsDialog *dialog)
 {
+	/* A pending file chooser checks this. */
+	g_object_set_data(G_OBJECT(w), "pidgin-account-dialog", NULL);
+
 	if (dialog->account != NULL &&
 	    account_pref_wins != NULL &&
 	    g_hash_table_lookup(account_pref_wins, dialog->account) == dialog)
@@ -940,6 +1119,8 @@ account_win_destroy_cb(GtkWidget *w, AccountPrefsDialog *dialog)
 	}
 	g_free(dialog->protocol_id);
 	g_object_unref(dialog->sg);
+	g_clear_pointer(&dialog->icon_data, g_bytes_unref);
+	g_free(dialog->icon_path);
 
 	purple_signals_disconnect_by_handle(dialog);
 
@@ -1037,9 +1218,35 @@ ok_account_prefs_cb(GtkWidget *w, AccountPrefsDialog *dialog)
 	else
 		purple_account_set_alias(account, NULL);
 
-	/* Buddy Icon: TODO(M3). Pidgin 2 set "use-global-buddyicon" and the
-	 * account icon here; pidgin4 leaves them unchanged for now (a new
-	 * account then uses the global icon, the default of that setting). */
+	/* Buddy Icon (Pidgin 2's ok_account_prefs_cb) */
+	if (dialog->prpl_info != NULL && dialog->prpl_info->icon_spec.format != NULL) {
+		gboolean own_icon = gtk_check_button_get_active(GTK_CHECK_BUTTON(dialog->icon_check));
+		gboolean icon_change = new_acct ||
+			purple_account_get_bool(account, "use-global-buddyicon", TRUE) == own_icon;
+		const char *filename;
+
+		purple_account_set_bool(account, "use-global-buddyicon", !own_icon);
+
+		if (own_icon) {
+			if (dialog->icon_data != NULL) {
+				gsize len = g_bytes_get_size(dialog->icon_data);
+
+				purple_buddy_icons_set_account_icon(account,
+					g_memdup2(g_bytes_get_data(dialog->icon_data, NULL), len), len);
+				purple_account_set_buddy_icon_path(account, dialog->icon_path);
+			} else {
+				purple_buddy_icons_set_account_icon(account, NULL, 0);
+				purple_account_set_buddy_icon_path(account, NULL);
+			}
+		} else if ((filename = purple_prefs_get_path(PIDGIN_PREFS_ROOT "/accounts/buddyicon")) &&
+		           *filename != '\0' && icon_change) {
+			size_t len = 0;
+			gpointer data = pidgin_convert_buddy_icon(dialog->plugin, filename, &len);
+
+			purple_account_set_buddy_icon_path(account, filename);
+			purple_buddy_icons_set_account_icon(account, data, len);
+		}
+	}
 
 	/* Remember Password */
 	purple_account_set_remember_password(account,
@@ -1308,7 +1515,13 @@ pidgin_account_dialog_show(PidginAccountDialogType type,
 
 	update_register_button(dialog);
 
-	/* TODO(M3): dropping an image file on the editor set the buddy icon. */
+	/* Dropping an image file on the editor sets the buddy icon. */
+	{
+		GtkDropTarget *target = gtk_drop_target_new(GDK_TYPE_FILE_LIST, GDK_ACTION_COPY);
+
+		g_signal_connect(target, "drop", G_CALLBACK(icon_drop_cb), dialog);
+		gtk_widget_add_controller(win, GTK_EVENT_CONTROLLER(target));
+	}
 
 	/* Show the window. */
 	gtk_window_present(GTK_WINDOW(win));
@@ -1732,8 +1945,7 @@ save_window_size(void)
 static gboolean
 accounts_close_request_cb(GtkWindow *window, gpointer data)
 {
-	/* The window only hides (hide-on-close); it is the main window until
-	 * the buddy list exists (TODO(M3)), and pidgin4 keeps running. */
+	/* The window only hides (hide-on-close), so it reopens as it was. */
 	save_window_size();
 	return FALSE;
 }
@@ -1942,6 +2154,9 @@ account_removed_cb(PurpleAccount *account, gpointer unused)
 
 /**************************************************************************
  * Account UI ops: requests from the prpls
+ *
+ * As in Pidgin 2 these are mini-dialogs in the buddy list's alert area
+ * (pidgin_blist_add_alert()), not windows.
  **************************************************************************/
 
 typedef struct
@@ -1966,19 +2181,15 @@ struct auth_request
 };
 
 static GtkWidget *
-request_window_new(const char *title)
+request_window_new(PurpleAccount *account, const char *title)
 {
-	GtkWindow *parent = NULL;
-	GtkWidget *win;
+	PidginMiniDialog *md = pidgin_mini_dialog_new(title, NULL, NULL);
+	GIcon *icon = pidgin_create_prpl_gicon(account, NULL);
 
-	if (accounts_window != NULL && gtk_widget_get_visible(accounts_window->window))
-		parent = GTK_WINDOW(accounts_window->window);
-	else
-		parent = pidgin_get_active_window();
-
-	win = pidgin_dialog_new(title, parent, "account-request", FALSE);
-	request_windows = g_list_prepend(request_windows, win);
-	return win;
+	pidgin_mini_dialog_set_gicon(md, icon);
+	g_object_unref(icon);
+	request_windows = g_list_prepend(request_windows, md);
+	return GTK_WIDGET(md);
 }
 
 static void
@@ -1988,9 +2199,15 @@ request_window_forget(GtkWidget *win)
 }
 
 static void
-request_close_button_cb(GtkWidget *button, GtkWidget *win)
+request_window_close(GtkWidget *win)
 {
-	gtk_window_destroy(GTK_WINDOW(win));
+	pidgin_mini_dialog_close(PIDGIN_MINI_DIALOG(win));
+}
+
+static void
+request_close_button_cb(PidginMiniDialog *md, GtkButton *button, gpointer data)
+{
+	/* The mini-dialog closes itself. */
 }
 
 static void
@@ -2002,15 +2219,6 @@ request_window_destroy_cb(GtkWidget *win, gpointer data)
 static void
 request_add_buddy(PurpleAccount *account, const char *username, const char *alias)
 {
-	PurpleBlistUiOps *ops = purple_blist_get_ui_ops();
-
-	/* TODO(M3): the buddy list provides the add-buddy dialog. With the
-	 * M2 stub blist ops purple_blist_request_add_buddy() does nothing. */
-	if (ops == NULL || ops->request_add_buddy == NULL)
-		purple_debug_warning("gtkaccount", "Cannot add %s to the buddy list of %s "
-			"yet: the buddy list is not ported (M3)\n", username,
-			purple_account_get_username(account));
-
 	purple_blist_request_add_buddy(account, username, NULL, alias);
 }
 
@@ -2042,19 +2250,18 @@ pidgin_accounts_notify_added(PurpleAccount *account, const char *remote_user,
 {
 	char *buffer;
 	PurpleConnection *gc;
-	GtkWidget *win, *button;
+	GtkWidget *win;
 
 	gc = purple_account_get_connection(account);
 
 	buffer = make_info(account, gc, remote_user, id, alias, msg);
 
-	win = request_window_new(purple_account_get_username(account));
+	win = request_window_new(account, purple_account_get_username(account));
 	g_signal_connect(win, "destroy", G_CALLBACK(request_window_destroy_cb), NULL);
-	pidgin_dialog_add_message(win, "dialog-information", NULL, buffer, FALSE);
-	button = pidgin_dialog_add_button(win, _("_Close"),
-		G_CALLBACK(request_close_button_cb), win);
-	gtk_window_set_default_widget(GTK_WINDOW(win), button);
-	gtk_window_present(GTK_WINDOW(win));
+	pidgin_mini_dialog_set_description(PIDGIN_MINI_DIALOG(win), buffer);
+	pidgin_mini_dialog_add_button(PIDGIN_MINI_DIALOG(win), _("_Close"),
+		request_close_button_cb, NULL);
+	pidgin_blist_add_alert(win);
 
 	g_free(buffer);
 }
@@ -2068,15 +2275,13 @@ free_add_user_data(PidginAccountAddUserData *data)
 }
 
 static void
-add_user_cb(GtkWidget *button, GtkWidget *win)
+add_user_cb(PidginMiniDialog *md, GtkButton *button, gpointer unused)
 {
-	PidginAccountAddUserData *data = g_object_get_data(G_OBJECT(win), "pidgin-add-data");
+	PidginAccountAddUserData *data = g_object_get_data(G_OBJECT(md), "pidgin-add-data");
 	PurpleConnection *gc = purple_account_get_connection(data->account);
 
 	if (g_list_find(purple_connections_get_all(), gc))
 		request_add_buddy(data->account, data->username, data->alias);
-
-	gtk_window_destroy(GTK_WINDOW(win));
 }
 
 static void
@@ -2087,7 +2292,7 @@ pidgin_accounts_request_add(PurpleAccount *account, const char *remote_user,
 	char *buffer;
 	PurpleConnection *gc;
 	PidginAccountAddUserData *data;
-	GtkWidget *win, *button;
+	GtkWidget *win;
 
 	gc = purple_account_get_connection(account);
 
@@ -2098,16 +2303,15 @@ pidgin_accounts_request_add(PurpleAccount *account, const char *remote_user,
 
 	buffer = make_info(account, gc, remote_user, id, alias, msg);
 
-	win = request_window_new(purple_account_get_username(account));
+	win = request_window_new(account, _("Add buddy to your list?"));
 	g_object_set_data_full(G_OBJECT(win), "pidgin-add-data", data,
 	                       (GDestroyNotify)free_add_user_data);
 	g_signal_connect(win, "destroy", G_CALLBACK(request_window_destroy_cb), NULL);
-	pidgin_dialog_add_message(win, "dialog-question",
-		_("Add buddy to your list?"), buffer, FALSE);
-	pidgin_dialog_add_button(win, _("_Cancel"), G_CALLBACK(request_close_button_cb), win);
-	button = pidgin_dialog_add_button(win, _("_Add"), G_CALLBACK(add_user_cb), win);
-	gtk_window_set_default_widget(GTK_WINDOW(win), button);
-	gtk_window_present(GTK_WINDOW(win));
+	pidgin_mini_dialog_set_description(PIDGIN_MINI_DIALOG(win), buffer);
+	pidgin_mini_dialog_add_button(PIDGIN_MINI_DIALOG(win), _("_Add"), add_user_cb, NULL);
+	pidgin_mini_dialog_add_button(PIDGIN_MINI_DIALOG(win), _("_Cancel"),
+		request_close_button_cb, NULL);
+	pidgin_blist_add_alert(win);
 
 	g_free(buffer);
 }
@@ -2121,22 +2325,20 @@ free_auth_request(struct auth_request *ar)
 }
 
 static void
-authorize_and_add_cb(GtkWidget *button, struct auth_request *ar)
+authorize_and_add_cb(PidginMiniDialog *md, GtkButton *button, struct auth_request *ar)
 {
 	ar->answered = TRUE;
 	ar->auth_cb(ar->data);
 	if (ar->add_buddy_after_auth) {
 		request_add_buddy(ar->account, ar->username, ar->alias);
 	}
-	gtk_window_destroy(GTK_WINDOW(ar->window));
 }
 
 static void
-deny_no_add_cb(GtkWidget *button, struct auth_request *ar)
+deny_no_add_cb(PidginMiniDialog *md, GtkButton *button, struct auth_request *ar)
 {
 	ar->answered = TRUE;
 	ar->deny_cb(ar->data);
-	gtk_window_destroy(GTK_WINDOW(ar->window));
 }
 
 static gboolean
@@ -2152,7 +2354,7 @@ auth_activate_link_cb(GtkLabel *label, const char *uri, struct auth_request *ar)
 	return FALSE;
 }
 
-/* The request window is going away: tell libpurple (unless it is the one
+/* The request is going away: tell libpurple (unless it is the one
  * closing it), which is a no-op after authorize/deny. */
 static void
 auth_window_destroy_cb(GtkWidget *win, struct auth_request *ar)
@@ -2179,7 +2381,7 @@ pidgin_accounts_request_authorization(PurpleAccount *account,
 {
 	char *buffer;
 	PurpleConnection *gc;
-	GtkWidget *win, *button, *hbox, *image, *content;
+	GtkWidget *win;
 	struct auth_request *aa;
 	const char *our_name;
 	gboolean have_valid_alias = alias && *alias;
@@ -2219,31 +2421,23 @@ pidgin_accounts_request_authorization(PurpleAccount *account,
 	aa->account = account;
 	aa->add_buddy_after_auth = !on_list;
 
-	aa->window = win = request_window_new(_("Authorize buddy?"));
+	aa->window = win = request_window_new(account, _("Authorize buddy?"));
 	g_signal_connect(win, "destroy", G_CALLBACK(auth_window_destroy_cb), aa);
 
-	hbox = pidgin_dialog_add_message(win, NULL, _("Authorize buddy?"), buffer, TRUE);
-	image = pidgin_create_prpl_image(account, NULL, PIDGIN_PRPL_ICON_LARGE);
-	gtk_widget_set_valign(image, GTK_ALIGN_START);
-	gtk_box_prepend(GTK_BOX(hbox), image);
-
-	/* The "viewinfo" link in the description */
-	content = gtk_widget_get_last_child(hbox);
-	for (content = gtk_widget_get_first_child(content); content != NULL;
-	     content = gtk_widget_get_next_sibling(content)) {
-		if (GTK_IS_LABEL(content))
-			g_signal_connect(content, "activate-link",
-			                 G_CALLBACK(auth_activate_link_cb), aa);
-	}
+	pidgin_mini_dialog_set_description_markup(PIDGIN_MINI_DIALOG(win), buffer);
+	g_signal_connect(pidgin_mini_dialog_get_description_label(PIDGIN_MINI_DIALOG(win)),
+	                 "activate-link", G_CALLBACK(auth_activate_link_cb), aa);
 
 	/* TODO(M4): "Send Instant Message" needs the conversation window. */
-	pidgin_dialog_add_button(win, _("_Deny"), G_CALLBACK(deny_no_add_cb), aa);
-	button = pidgin_dialog_add_button(win, _("_Authorize"), G_CALLBACK(authorize_and_add_cb), aa);
-	gtk_window_set_default_widget(GTK_WINDOW(win), button);
-
-	gtk_window_present(GTK_WINDOW(win));
+	pidgin_mini_dialog_add_button(PIDGIN_MINI_DIALOG(win), _("_Authorize"),
+		(PidginMiniDialogCallback)authorize_and_add_cb, aa);
+	pidgin_mini_dialog_add_button(PIDGIN_MINI_DIALOG(win), _("_Deny"),
+		(PidginMiniDialogCallback)deny_no_add_cb, aa);
 
 	g_free(buffer);
+
+	/* Keep it alive while libpurple holds it as the ui_handle. */
+	pidgin_blist_add_alert(win);
 
 	return win;
 }
@@ -2257,7 +2451,7 @@ pidgin_accounts_request_close(void *ui_handle)
 	if (g_list_find(request_windows, win) == NULL)
 		return;
 	g_object_set_data(G_OBJECT(win), "pidgin-closing", GINT_TO_POINTER(1));
-	gtk_window_destroy(GTK_WINDOW(win));
+	request_window_close(win);
 }
 
 static PurpleAccountUiOps ui_ops =
@@ -2347,8 +2541,14 @@ pidgin_account_uninit(void)
 	}
 	g_list_free(dialogs);
 
-	while (request_windows != NULL)
-		gtk_window_destroy(GTK_WINDOW(request_windows->data));
+	while (request_windows != NULL) {
+		GtkWidget *win = request_windows->data;
+
+		/* Closing disposes it, and its destroy handler forgets it; if
+		 * something else still holds it, forget it here. */
+		pidgin_mini_dialog_close(PIDGIN_MINI_DIALOG(win));
+		request_window_forget(win);
+	}
 
 	pidgin_accounts_window_hide();
 
