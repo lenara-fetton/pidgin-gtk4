@@ -29,6 +29,7 @@
 #include "util.h"
 #include "cmds.h"
 #include "irc.h"
+#include "sasl.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +58,7 @@ static struct _irc_msg {
 
 	void (*cb)(struct irc_conn *irc, const char *name, const char *from, char **args);
 } _irc_msgs[] = {
+	{ "001", "n:", 0, irc_msg_welcome },		/* Registration complete	*/
 	{ "005", "n*", 2, irc_msg_features },		/* Feature list			*/
 	{ "251", "n:", 1, irc_msg_luser },		/* Client & Server count	*/
 	{ "255", "n:", 1, irc_msg_luser },		/* Client & Server count Mk. II	*/
@@ -108,15 +110,19 @@ static struct _irc_msg {
 	{ "501", "n:", 2, irc_msg_badmode },		/* Unknown mode flag		*/
 	{ "506", "nc:", 3, irc_msg_nosend },		/* Must identify to send	*/
 	{ "515", "nc:", 3, irc_msg_regonly },		/* Registration required	*/
-#ifdef HAVE_CYRUS_SASL
-	{ "903", "*", 0, irc_msg_authok},		/* SASL auth successful		*/
-	{ "904", "*", 0, irc_msg_authtryagain },	/* SASL auth failed, can recover*/
-	{ "905", "*", 0, irc_msg_authfail },		/* SASL auth failed		*/
-	{ "906", "*", 0, irc_msg_authfail },		/* SASL auth failed		*/
-	{ "907", "*", 0, irc_msg_authfail },		/* SASL auth failed		*/
-	{ "cap", "vv:", 3, irc_msg_cap },		/* SASL capable			*/
-	{ "authenticate", ":", 1, irc_msg_authenticate }, /* SASL authenticate		*/
-#endif
+	{ "900", "nvv:", 0, irc_msg_sasl_loggedin },	/* SASL: logged in as account	*/
+	{ "902", "n:", 0, irc_msg_sasl_fail },		/* SASL: nick locked		*/
+	{ "903", "n:", 0, irc_msg_sasl_success },	/* SASL auth successful		*/
+	{ "904", "n:", 0, irc_msg_sasl_fail },		/* SASL auth failed		*/
+	{ "905", "n:", 0, irc_msg_sasl_fail },		/* SASL message too long	*/
+	{ "906", "n:", 0, irc_msg_sasl_fail },		/* SASL aborted			*/
+	{ "907", "n:", 0, irc_msg_sasl_success },	/* SASL: already authenticated	*/
+	{ "908", "nv:", 2, irc_msg_sasl_mechs },	/* SASL mechanisms available	*/
+	{ "cap", "vv*", 2, irc_msg_cap },		/* IRCv3 capability negotiation	*/
+	{ "authenticate", "*", 1, irc_msg_authenticate }, /* SASL authenticate		*/
+	{ "account", "v", 1, irc_msg_account },		/* IRCv3 account-notify		*/
+	{ "away", ":", 0, irc_msg_awaynotify },		/* IRCv3 away-notify		*/
+	{ "chghost", "vv", 2, irc_msg_chghost },	/* IRCv3 chghost		*/
 	{ "invite", "n:", 2, irc_msg_invite },		/* Invited			*/
 	{ "join", ":", 1, irc_msg_join },		/* Joined a channel		*/
 	{ "kick", "cn:", 3, irc_msg_kick },		/* KICK				*/

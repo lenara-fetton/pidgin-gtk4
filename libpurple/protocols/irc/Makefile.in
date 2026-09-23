@@ -132,10 +132,11 @@ LTLIBRARIES = $(noinst_LTLIBRARIES) $(pkg_LTLIBRARIES)
 am__DEPENDENCIES_1 =
 @STATIC_IRC_FALSE@libirc_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
 @STATIC_IRC_FALSE@	$(am__DEPENDENCIES_1)
-am__libirc_la_SOURCES_DIST = cmds.c dcc_send.c irc.c irc.h msgs.c \
-	parse.c
-am__objects_1 = libirc_la-cmds.lo libirc_la-dcc_send.lo \
-	libirc_la-irc.lo libirc_la-msgs.lo libirc_la-parse.lo
+am__libirc_la_SOURCES_DIST = cap.c cmds.c dcc_send.c irc.c irc.h \
+	msgs.c parse.c sasl.c sasl.h
+am__objects_1 = libirc_la-cap.lo libirc_la-cmds.lo \
+	libirc_la-dcc_send.lo libirc_la-irc.lo libirc_la-msgs.lo \
+	libirc_la-parse.lo libirc_la-sasl.lo
 @STATIC_IRC_FALSE@am_libirc_la_OBJECTS = $(am__objects_1)
 @STATIC_IRC_TRUE@am_libirc_la_OBJECTS = $(am__objects_1)
 libirc_la_OBJECTS = $(am_libirc_la_OBJECTS)
@@ -163,10 +164,11 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/libirc_la-cmds.Plo \
+am__depfiles_remade = ./$(DEPDIR)/libirc_la-cap.Plo \
+	./$(DEPDIR)/libirc_la-cmds.Plo \
 	./$(DEPDIR)/libirc_la-dcc_send.Plo \
 	./$(DEPDIR)/libirc_la-irc.Plo ./$(DEPDIR)/libirc_la-msgs.Plo \
-	./$(DEPDIR)/libirc_la-parse.Plo
+	./$(DEPDIR)/libirc_la-parse.Plo ./$(DEPDIR)/libirc_la-sasl.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -482,12 +484,15 @@ EXTRA_DIST = \
 
 pkgdir = $(libdir)/purple-$(PURPLE_MAJOR_VERSION)
 IRCSOURCES = \
+	cap.c \
 	cmds.c \
 	dcc_send.c \
 	irc.c \
 	irc.h \
 	msgs.c \
-	parse.c
+	parse.c \
+	sasl.c \
+	sasl.h
 
 AM_CFLAGS = $(st)
 libirc_la_LDFLAGS = -module -avoid-version
@@ -590,11 +595,13 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libirc_la-cap.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libirc_la-cmds.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libirc_la-dcc_send.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libirc_la-irc.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libirc_la-msgs.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libirc_la-parse.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libirc_la-sasl.Plo@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -622,6 +629,13 @@ am--depfiles: $(am__depfiles_remade)
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='$<' object='$@' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LTCOMPILE) -c -o $@ $<
+
+libirc_la-cap.lo: cap.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libirc_la_CFLAGS) $(CFLAGS) -MT libirc_la-cap.lo -MD -MP -MF $(DEPDIR)/libirc_la-cap.Tpo -c -o libirc_la-cap.lo `test -f 'cap.c' || echo '$(srcdir)/'`cap.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libirc_la-cap.Tpo $(DEPDIR)/libirc_la-cap.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='cap.c' object='libirc_la-cap.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libirc_la_CFLAGS) $(CFLAGS) -c -o libirc_la-cap.lo `test -f 'cap.c' || echo '$(srcdir)/'`cap.c
 
 libirc_la-cmds.lo: cmds.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libirc_la_CFLAGS) $(CFLAGS) -MT libirc_la-cmds.lo -MD -MP -MF $(DEPDIR)/libirc_la-cmds.Tpo -c -o libirc_la-cmds.lo `test -f 'cmds.c' || echo '$(srcdir)/'`cmds.c
@@ -657,6 +671,13 @@ libirc_la-parse.lo: parse.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='parse.c' object='libirc_la-parse.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libirc_la_CFLAGS) $(CFLAGS) -c -o libirc_la-parse.lo `test -f 'parse.c' || echo '$(srcdir)/'`parse.c
+
+libirc_la-sasl.lo: sasl.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libirc_la_CFLAGS) $(CFLAGS) -MT libirc_la-sasl.lo -MD -MP -MF $(DEPDIR)/libirc_la-sasl.Tpo -c -o libirc_la-sasl.lo `test -f 'sasl.c' || echo '$(srcdir)/'`sasl.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libirc_la-sasl.Tpo $(DEPDIR)/libirc_la-sasl.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='sasl.c' object='libirc_la-sasl.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libirc_la_CFLAGS) $(CFLAGS) -c -o libirc_la-sasl.lo `test -f 'sasl.c' || echo '$(srcdir)/'`sasl.c
 
 mostlyclean-libtool:
 	-rm -f *.lo
@@ -792,11 +813,13 @@ clean-am: clean-generic clean-libtool clean-noinstLTLIBRARIES \
 	clean-pkgLTLIBRARIES mostlyclean-am
 
 distclean: distclean-am
+	-rm -f ./$(DEPDIR)/libirc_la-cap.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-cmds.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-dcc_send.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-irc.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-msgs.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-parse.Plo
+	-rm -f ./$(DEPDIR)/libirc_la-sasl.Plo
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -842,11 +865,13 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
+	-rm -f ./$(DEPDIR)/libirc_la-cap.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-cmds.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-dcc_send.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-irc.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-msgs.Plo
 	-rm -f ./$(DEPDIR)/libirc_la-parse.Plo
+	-rm -f ./$(DEPDIR)/libirc_la-sasl.Plo
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 

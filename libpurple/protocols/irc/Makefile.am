@@ -4,12 +4,15 @@ EXTRA_DIST = \
 pkgdir = $(libdir)/purple-$(PURPLE_MAJOR_VERSION)
 
 IRCSOURCES = \
+	cap.c \
 	cmds.c \
 	dcc_send.c \
 	irc.c \
 	irc.h \
 	msgs.c \
-	parse.c
+	parse.c \
+	sasl.c \
+	sasl.h
 
 AM_CFLAGS = $(st)
 

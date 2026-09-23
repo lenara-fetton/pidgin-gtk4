@@ -29,11 +29,13 @@
 #include "internal.h"
 
 #include "conversation.h"
+#include "core.h"
 #include "blist.h"
 #include "notify.h"
 #include "util.h"
 #include "debug.h"
 #include "irc.h"
+#include "sasl.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -672,6 +674,12 @@ void irc_msg_unknown(struct irc_conn *irc, const char *name, const char *from, c
 	char *buf;
 
 	g_return_if_fail(gc);
+
+	/* A server without IRCv3 capability negotiation. */
+	if (!g_ascii_strcasecmp(args[1], "CAP")) {
+		irc_cap_unsupported(irc);
+		return;
+	}
 
 	buf = g_strdup_printf(_("Unknown message '%s'"), args[1]);
 	purple_notify_error(gc, _("Unknown message"), buf, _("The IRC server received a message it did not understand."));
@@ -1398,6 +1406,107 @@ void irc_msg_quit(struct irc_conn *irc, const char *name, const char *from, char
 	return;
 }
 
+/* away-notify: ":nick!user@host AWAY :message" when someone sharing a
+ * channel with us goes away, and a bare "AWAY" when they come back. */
+void irc_msg_awaynotify(struct irc_conn *irc, const char *name, const char *from, char **args)
+{
+	PurpleConnection *gc = purple_account_get_connection(irc->account);
+	const char *message = args[0];
+	gboolean away = (message != NULL && *message != '\0');
+	struct irc_buddy *ib;
+	GSList *chats;
+	char *nick;
+
+	g_return_if_fail(gc);
+
+	nick = irc_mask_nick(from);
+
+	for (chats = gc->buddy_chats; chats; chats = chats->next) {
+		PurpleConvChat *chat = PURPLE_CONV_CHAT(chats->data);
+		PurpleConvChatBuddy *cb = purple_conv_chat_cb_find(chat, nick);
+		PurpleConvChatBuddyFlags flags;
+
+		if (cb == NULL)
+			continue;
+		flags = away ? (cb->flags | PURPLE_CBFLAGS_AWAY)
+		             : (cb->flags & ~PURPLE_CBFLAGS_AWAY);
+		if (flags != cb->flags)
+			purple_conv_chat_user_set_flags(chat, cb->name, flags);
+	}
+
+	/* Buddies: online/offline still comes from ISON polling. */
+	if ((ib = g_hash_table_lookup(irc->buddies, nick)) != NULL) {
+		ib->away = away;
+		if (ib->online) {
+			if (away)
+				purple_prpl_got_user_status(irc->account, nick, "away",
+				                            "message", message, NULL);
+			else
+				purple_prpl_got_user_status(irc->account, nick,
+				                            "available", NULL);
+		}
+	}
+
+	g_free(nick);
+}
+
+/* account-notify: ":nick!user@host ACCOUNT accountname", or "*" on logout. */
+void irc_msg_account(struct irc_conn *irc, const char *name, const char *from, char **args)
+{
+	PurpleConnection *gc = purple_account_get_connection(irc->account);
+	const char *account = purple_strequal(args[0], "*") ? NULL : args[0];
+	struct irc_buddy *ib;
+	GSList *chats;
+	char *nick;
+
+	g_return_if_fail(gc);
+
+	nick = irc_mask_nick(from);
+
+	for (chats = gc->buddy_chats; chats; chats = chats->next) {
+		PurpleConvChat *chat = PURPLE_CONV_CHAT(chats->data);
+		PurpleConvChatBuddy *cb = purple_conv_chat_cb_find(chat, nick);
+
+		if (cb == NULL)
+			continue;
+		if (account)
+			purple_conv_chat_cb_set_attribute(chat, cb, "account", account);
+		else
+			g_hash_table_remove(cb->attributes, "account");
+	}
+
+	if ((ib = g_hash_table_lookup(irc->buddies, nick)) != NULL) {
+		g_free(ib->account);
+		ib->account = g_strdup(account);
+	}
+
+	g_free(nick);
+}
+
+/* chghost: ":nick!olduser@oldhost CHGHOST newuser newhost" */
+void irc_msg_chghost(struct irc_conn *irc, const char *name, const char *from, char **args)
+{
+	PurpleConnection *gc = purple_account_get_connection(irc->account);
+	GSList *chats;
+	char *nick, *userhost;
+
+	g_return_if_fail(gc);
+
+	nick = irc_mask_nick(from);
+	userhost = g_strdup_printf("%s@%s", args[0], args[1]);
+
+	for (chats = gc->buddy_chats; chats; chats = chats->next) {
+		PurpleConvChat *chat = PURPLE_CONV_CHAT(chats->data);
+		PurpleConvChatBuddy *cb = purple_conv_chat_cb_find(chat, nick);
+
+		if (cb)
+			purple_conv_chat_cb_set_attribute(chat, cb, "userhost", userhost);
+	}
+
+	g_free(userhost);
+	g_free(nick);
+}
+
 void irc_msg_unavailable(struct irc_conn *irc, const char *name, const char *from, char **args)
 {
 	PurpleConnection *gc = purple_account_get_connection(irc->account);
@@ -1586,9 +1695,10 @@ irc_auth_start_cyrus(struct irc_conn *irc)
 	g_free(buf);
 }
 
-/* SASL authentication */
+/* SASL authentication through Cyrus SASL: the "cyrus" SASL mechanism
+ * setting. Called by sasl.c once the sasl capability is ACKed. */
 void
-irc_msg_cap(struct irc_conn *irc, const char *name, const char *from, char **args)
+irc_sasl_cyrus_start(struct irc_conn *irc)
 {
 	int ret = 0;
 	int id = 0;
@@ -1596,17 +1706,6 @@ irc_msg_cap(struct irc_conn *irc, const char *name, const char *from, char **arg
 	const char *mech_list = NULL;
 	char *pos;
 	size_t index;
-
-	if (strncmp(g_strstrip(args[2]), "sasl", 5))
-		return;
-	if (strncmp(args[1], "ACK", 4)) {
-		const char *tmp = _("SASL authentication failed: Server does not support SASL authentication.");
-		purple_connection_error_reason (gc,
-			PURPLE_CONNECTION_ERROR_AUTHENTICATION_IMPOSSIBLE, tmp);
-
-		irc_sasl_finish(irc);
-		return;
-	}
 
 	if (sasl_client_init(NULL) != SASL_OK) {
 		const char *tmp = _("SASL authentication failed: Initializing SASL failed.");
@@ -1719,25 +1818,13 @@ irc_msg_auth(struct irc_conn *irc, char *arg)
 	g_free(serverin);
 }
 
-void
-irc_msg_authenticate(struct irc_conn *irc, const char *name, const char *from, char **args)
-{
-	irc_msg_auth(irc, args[0]);
-}
-
+/* 903 with Cyrus; sasl.c then sends CAP END. */
 void
 irc_msg_authok(struct irc_conn *irc, const char *name, const char *from, char **args)
 {
-	char *buf;
-
 	sasl_dispose(&irc->sasl_conn);
 	irc->sasl_conn = NULL;
 	purple_debug_info("irc", "Successfully authenticated using SASL.\n");
-
-	/* Finish auth session */
-	buf = irc_format(irc, "vv", "CAP", "END");
-	irc_priority_send(irc, buf);
-	g_free(buf);
 }
 
 void
@@ -1805,8 +1892,6 @@ irc_msg_authfail(struct irc_conn *irc, const char *name, const char *from, char 
 static void
 irc_sasl_finish(struct irc_conn *irc)
 {
-	char *buf;
-
 	sasl_dispose(&irc->sasl_conn);
 	irc->sasl_conn = NULL;
 
@@ -1814,9 +1899,8 @@ irc_sasl_finish(struct irc_conn *irc)
 	irc->sasl_cb = NULL;
 
 	/* Auth failed, abort */
-	buf = irc_format(irc, "vv", "CAP", "END");
-	irc_priority_send(irc, buf);
-	g_free(buf);
+	irc->sasl_state = IRC_SASL_FAILED;
+	irc_cap_end(irc);
 }
 #endif
 

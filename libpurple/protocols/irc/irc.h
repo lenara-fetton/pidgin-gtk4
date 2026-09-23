@@ -248,10 +248,12 @@ void irc_msg_unknown(struct irc_conn *irc, const char *name, const char *from, c
 void irc_msg_wallops(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_whois(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_who(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_msg_awaynotify(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_msg_account(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_msg_chghost(struct irc_conn *irc, const char *name, const char *from, char **args);
 #ifdef HAVE_CYRUS_SASL
-void irc_msg_cap(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_sasl_cyrus_start(struct irc_conn *irc);
 void irc_msg_auth(struct irc_conn *irc, char *arg);
-void irc_msg_authenticate(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_authok(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_authtryagain(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_authfail(struct irc_conn *irc, const char *name, const char *from, char **args);

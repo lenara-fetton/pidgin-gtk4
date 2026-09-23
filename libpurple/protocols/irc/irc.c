@@ -37,6 +37,7 @@
 #include "version.h"
 
 #include "irc.h"
+#include "sasl.h"
 
 #define PING_TIMEOUT 60
 
@@ -98,7 +99,15 @@ static int do_send(struct irc_conn *irc, const char *buf, gsize len)
 	}
 
 	if(purple_debug_is_verbose()) {
-		char *clean = purple_utf8_salvage(tosend);
+		char *clean;
+
+		/* Don't log SASL credentials (anything longer than a
+		 * mechanism name or "+"). */
+		if (!g_ascii_strncasecmp(tosend, "AUTHENTICATE ", 13) &&
+		    strlen(tosend) > 13 + 20)
+			clean = g_strdup("AUTHENTICATE <hidden>");
+		else
+			clean = purple_utf8_salvage(tosend);
 		clean = g_strstrip(clean);
 		purple_debug_misc("irc", "<< %s\n", clean);
 		g_free(clean);
@@ -457,17 +466,16 @@ static gboolean do_login(PurpleConnection *gc) {
 	struct irc_conn *irc = gc->proto_data;
 	const char *pass = purple_connection_get_password(gc);
 	gint interval, burst;
-#ifdef HAVE_CYRUS_SASL
-	const gboolean use_sasl = purple_account_get_bool(irc->account, "sasl", FALSE);
-#endif
 
-	if (pass && *pass) {
-#ifdef HAVE_CYRUS_SASL
-		if (use_sasl)
-			buf = irc_format(irc, "vv:", "CAP", "REQ", "sasl");
-		else /* intended to fall through */
-#endif
-			buf = irc_format(irc, "v:", "PASS", pass);
+	/* IRCv3: CAP LS 302 goes first, so CAP-aware servers hold
+	 * registration until CAP END (after SASL, if that's enabled). Then
+	 * PASS, USER and NICK as always. See cap.c. */
+	irc_cap_start(irc);
+
+	/* With SASL (except EXTERNAL) the account password is the SASL
+	 * password, so it isn't also sent as a server password. */
+	if (pass && *pass && !irc_sasl_uses_password(irc)) {
+		buf = irc_format(irc, "v:", "PASS", pass);
 		if (irc_priority_send(irc, buf) < 0) {
 			g_free(buf);
 			return FALSE;
@@ -608,6 +616,9 @@ static void irc_close(PurpleConnection *gc)
 
 	g_free(irc->mode_chars);
 	g_free(irc->reqnick);
+
+	irc_cap_free(irc);
+	irc_sasl_free(irc);
 
 #ifdef HAVE_CYRUS_SASL
 	if (irc->sasl_conn) {
@@ -915,6 +926,7 @@ static gboolean irc_nick_equal(const char *nick1, const char *nick2)
 
 static void irc_buddy_free(struct irc_buddy *ib)
 {
+	g_free(ib->account);
 	g_free(ib->name);
 	g_free(ib);
 }
@@ -1128,6 +1140,8 @@ static void _init_plugin(PurplePlugin *plugin)
 {
 	PurpleAccountUserSplit *split;
 	PurpleAccountOption *option;
+	PurpleKeyValuePair *kvp;
+	GList *mechs;
 
 	split = purple_account_user_split_new(_("Server"), IRC_DEFAULT_SERVER, '@');
 	prpl_info.user_splits = g_list_append(prpl_info.user_splits, split);
@@ -1155,18 +1169,40 @@ static void _init_plugin(PurplePlugin *plugin)
 	option = purple_account_option_bool_new(_("Use SSL"), "ssl", FALSE);
 	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, option);
 
-#ifdef HAVE_CYRUS_SASL
-	option = purple_account_option_bool_new(_("Authenticate with SASL"), "sasl", FALSE);
+	/* SASL: built in (PLAIN, EXTERNAL), plus Cyrus SASL when available.
+	 * The "sasl", "saslname" and "auth_plain_in_clear" keys are the
+	 * ones the Cyrus-only code has always used. */
+	option = purple_account_option_bool_new(_("Use SASL authentication"),
+	                                        IRC_SASL_OPT_ENABLED, FALSE);
 	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, option);
 
-	option = purple_account_option_string_new(_("SASL login name"), "saslname", "");
+	mechs = NULL;
+	kvp = g_new0(PurpleKeyValuePair, 1);
+	kvp->key = g_strdup(_("PLAIN (account name and password)"));
+	kvp->value = g_strdup(IRC_SASL_MECH_PLAIN);
+	mechs = g_list_append(mechs, kvp);
+	kvp = g_new0(PurpleKeyValuePair, 1);
+	kvp->key = g_strdup(_("EXTERNAL (TLS client certificate)"));
+	kvp->value = g_strdup(IRC_SASL_MECH_EXTERNAL);
+	mechs = g_list_append(mechs, kvp);
+#ifdef HAVE_CYRUS_SASL
+	kvp = g_new0(PurpleKeyValuePair, 1);
+	kvp->key = g_strdup(_("Other (Cyrus SASL)"));
+	kvp->value = g_strdup(IRC_SASL_MECH_CYRUS);
+	mechs = g_list_append(mechs, kvp);
+#endif
+	option = purple_account_option_list_new(_("SASL mechanism"),
+	                                        IRC_SASL_OPT_MECHANISM, mechs);
+	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, option);
+
+	option = purple_account_option_string_new(_("SASL login name"),
+	                                          IRC_SASL_OPT_LOGIN, "");
 	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, option);
 
 	option = purple_account_option_bool_new(
 						_("Allow plaintext SASL auth over unencrypted connection"),
-						"auth_plain_in_clear", FALSE);
+						IRC_SASL_OPT_PLAIN_IN_CLEAR, FALSE);
 	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, option);
-#endif
 
 	option = purple_account_option_int_new(_("Seconds between sending messages"),
 	                                       "ratelimit-interval",
