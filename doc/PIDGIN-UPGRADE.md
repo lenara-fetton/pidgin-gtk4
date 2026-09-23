@@ -30,7 +30,7 @@ Any plugin changes must leave both `.so` files loadable and working in the **sto
 
 Environment facts, verified:
 
-- GLib 2.88, libspelling 0.4.10, GtkSourceView 5.20, wayland-protocols 1.49, libsoup 3.6, libgcrypt 1.12, sqlite 3.53, meson 1.12, GSound 1.0.3. `libomemo-c` is **not installed**.
+- GLib 2.88, libspelling 0.4.10, GtkSourceView 5.20, wayland-protocols 1.49, libsoup 3.6, libgcrypt 1.12, sqlite 3.53, meson 1.12, GSound 1.0.3, libomemo-c 0.5.1 (`net-libs/libomemo-c`).
 - GTK 4 is built with `USE=-gstreamer`, so it has no media backend and `GtkMediaFile` can't play sound.
 - The installed Pidgin is built without GStreamer, so voice/video isn't used today.
 - Pidgin UI plugins in use: cap, history, markerline, notify, timestamp_format.
@@ -41,7 +41,7 @@ Environment facts, verified:
 
 ## Architecture
 
-- **The tree stays autotools for libpurple.** It is configured with `--disable-consoleui --disable-dbus --disable-vv`, dynamic prpls `irc,jabber` only, and no Perl/Tcl/Mono. It installs into a **private prefix**, e.g. `~/.local/pidgin4`, so the system `net-im/pidgin` is never touched.
+- **The tree stays autotools for libpurple.** It is configured with `--disable-consoleui --disable-dbus --disable-vv` (D-Bus stays on until the ABI question in the M0 findings is decided), dynamic prpls `irc,jabber` only, and no Perl/Tcl/Mono. It installs into a **private prefix**, e.g. `~/.local/pidgin4`, so the system `net-im/pidgin` is never touched.
 - **The existing `pidgin/` (GTK 2) stays buildable** by autotools against the modified libpurple. That keeps a working daily driver during the port and lets the XMPP work be tested before the GTK 4 UI is ready. It is deleted at the end.
 - **New `pidgin4/` is a standalone Meson project.** It starts as a copy of `pidgin/` and is ported file by file. It finds libpurple through that prefix's `purple.pc` via `PKG_CONFIG_PATH`, links with an rpath into the prefix, and uses `export_dynamic: true`, which plugins need.
   - It provides its own `pidgin-internal.h`, replacing libpurple's uninstalled `internal.h` (72 includes): `_()`/`N_()`, `PURPLE_WEBSITE`, `BUF_LONG`, and the config.h include.
@@ -128,6 +128,19 @@ Kept as-is: plaintext passwords in `accounts.xml`, which was a deliberate choice
 - Script: configure/build/install libpurple (+ GTK 2 pidgin) into the private prefix; copy `~/.purple` → `~/.purple-gtk4` **verbatim**, with no pruning or rewriting, for development. Changes such as moving IRC accounts to TLS are made through the UI, using existing 2.14 setting keys (`ssl`, `port`).
 - Script: `check-profile-compat.sh`, which runs the cutover-gate round-trip on a scratch copy. It is re-run at the end of every milestone that touches prefs, accounts, blist or logs.
 - Record this plan in `doc/GTK4-MIGRATION.md`, replacing the generic survey sections with the chosen path.
+
+**Status: done** (branch `gtk4-port`). Scripts, all with `--help`:
+- `scripts/build-libpurple.sh [-j N] [--check] [--reconfigure] [--autoreconf] [--no-dbus]`: in-tree configure/build/install of libpurple (dynamic `irc,jabber`, NSS, no gnutls/vv/GStreamer/NM/meanwhile/avahi/Perl/Tcl/Mono/finch/gtkspell/XSS/SM) and the GTK 2 `pidgin/` into `${PIDGIN4_PREFIX:-~/.local/pidgin4}`. Re-runs `intltoolize` + `autoreconf -fi` when `configure.ac`, `acinclude.m4` or `m4macros/` are newer than `configure`. Logs to `build-logs/`. The pristine tree builds with GCC 16, GLib 2.88 and GTK 2.24.33 without patches.
+- `scripts/check-abi.sh`: the exported-symbol superset gate against `/usr/lib64/libpurple.so.0.14.14` (plus `abidiff` when installed), and the plugin gate: every undefined `purple_*`/`serv_*` symbol in `~/.purple/plugins/libdiscord.so` and `libsteam.so` must be defined by the new `libpurple.so.0`. Both pass; the symbol sets are identical.
+- `scripts/setup-dev-profile.sh [--no-logs] [--force]`: verbatim `rsync -a` of `~/.purple` to `~/.purple-gtk4`. Done once (2.7 GB).
+- `scripts/check-profile-compat.sh [--pidgin4 BIN] [--dry-run|--self-test]` with `scripts/profile-compat.py`: the cutover-gate round-trip on a scratch copy. Step (b), the system Pidgin 2.14.14 with `--nologin` in a private Xvfb and D-Bus session, passes on `~/.purple-gtk4`. The pidgin4 steps are hooks until M2.
+
+Findings for later milestones:
+- **D-Bus vs. the ABI gate.** The system libpurple is built with D-Bus and exports 153 D-Bus symbols (`purple_dbus_*`, `PURPLE_DBUS_TYPE_*`, `dbus_signals`). A `--disable-dbus` build drops them and fails the superset gate, so M0 builds with D-Bus **on** (`--no-dbus` exists but is not the default). M1's "D-Bus off" needs a decision first: keep D-Bus, export ABI-compatible stubs for those symbols when D-Bus is disabled, or explicitly exempt them from the gate (no consumer of the prefix libpurple uses them).
+- `make check` is a no-op: the `check` framework (`dev-libs/check`) is not installed, so libpurple's unit tests are compiled out. Install it before relying on `--check`.
+- Autotools here are autoconf 2.73, automake 1.18, libtool 2.5 (the tarball was generated with 2.72/1.16.5). `--autoreconf` works but rewrites the tracked `configure`, `Makefile.in`s, `aclocal.m4`, `ltmain.sh` etc.; commit those together with any `configure.ac` change.
+- GCC 16 warnings worth a look when touching the code: `abs()` on `long` in `libpurple/buddy.c:741-742` (truncation), `-Wunterminated-string-initialization` in `libpurple/prefs.c:1625`, `-Wstringop-truncation` in `libpurple/util.c:3313`, and many `-Wcast-function-type` casts in callback tables.
+- Pidgin 2 itself drops untyped account `<setting>`s on load (one Steam account has `<setting name='buddy_icon'/>`); the compat check allows that removal.
 
 ### M1: libpurple modernization (ABI-safe, testable with the GTK 2 UI)
 - libidn2, GNetworkMonitor, GProxyResolver, GResolver-backed dnsquery/SRV, D-Bus off.
@@ -276,7 +289,7 @@ Features in `libpurple/protocols/jabber/`:
   - **SASL2 (0388) + Bind2 (0386) + FAST (0484)**: one-round-trip login and reconnect with a FAST token. Falls back to legacy SASL + bind. The FAST token is stored in `<profile>/pidgin4/messages.db`, keeping `accounts.xml` unchanged.
 - **OMEMO**: a separate in-tree libpurple plugin, lurch-style. It hooks `jabber-receiving-xmlnode`/`jabber-sending-xmlnode`. State is kept in `<profile>/pidgin4/omemo.db`.
   - Scope: **legacy OMEMO 0.3** (`eu.siacs.conversations.axolotl`), which is the interop baseline with Conversations, Dino and Gajim. It covers 1:1 chats and **private (members-only, non-anonymous) MUCs**. OMEMO 2 is out of scope.
-  - It needs **libomemo-c** (the maintained fork of libsignal-protocol-c used by Dino). Install it; it may need an overlay ebuild. Crypto uses libgcrypt.
+  - It needs **libomemo-c** (the maintained fork of libsignal-protocol-c used by Dino); 0.5.1 is installed. Crypto uses libgcrypt.
   - It includes device list PEP, bundles, trust-on-first-use, and a fingerprint trust UI in pidgin4 (conversation info + a lock indicator).
   - Encrypted media (aesgcm) download is decrypted too.
 - **Low-cost extras:**
@@ -347,7 +360,6 @@ Constraint: every change must keep `libdiscord.so` and `libsteam.so` loadable an
 
 ## Open items
 - **D-Bus.** The plan builds libpurple with D-Bus disabled, which removes `purple-remote` and any scripts that rely on it. Re-enable it if that is needed.
-- **OMEMO dependency.** `libomemo-c` is not installed and may need an overlay ebuild.
 - **GNOME tray.** A tray icon under GNOME requires the AppIndicator/KStatusNotifierItem Shell extension, which is not installed.
 - **Log index backfill.** Indexing 2.6 GB of HTML logs runs once, in the background, and can be resumed. Expect it to take minutes, and the database to be several hundred MB.
 

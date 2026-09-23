@@ -1,14 +1,15 @@
 # Migrating Pidgin 2.14.14 from GTK+ 2 to GTK 4
 
-This document estimates the work needed to port the Pidgin GTK user interface
-(`pidgin/`) from GTK+ 2 to GTK 4. It covers the current state of the code, the
-API areas GTK 4 removed or redesigned, a suggested migration order, and the
-main risks.
+This document is the background survey for porting the Pidgin GTK user
+interface (`pidgin/`) from GTK+ 2 to GTK 4. It covers the current state of the
+code, the API areas GTK 4 removed or redesigned, and the main risks. The path
+actually chosen, with its milestones, is in
+[`doc/PIDGIN-UPGRADE.md`](PIDGIN-UPGRADE.md); section 4 summarizes it.
 
 Scope:
 
 * **`libpurple/`** is UI-agnostic and uses GLib/GObject but not GTK. It needs
-  no GTK port. It does need a newer GLib floor (see *Build system*), and some
+  no GTK port. It does need a newer GLib floor (the plan targets GLib 2.88), and some
   optional parts, such as `dbus-glib`, are deprecated in their own right.
 * **`finch/`** uses libgnt (ncurses) and is not affected.
 * **`pidgin/`** and **`pidgin/plugins/`** need the port. All numbers below
@@ -167,88 +168,37 @@ of the port, so that future GTK changes do not break plugins again.
 
 ---
 
-## 4. Suggested migration path
+## 4. Chosen path
 
-Porting straight from GTK 2 to GTK 4 in one step is not recommended. The code
-would not compile or run for a very long stretch. Use incremental,
-always-buildable stages instead:
+The generic staged path this survey originally suggested (deprecation-clean
+GTK 2.24, then GTK 3, then GTK 4) was not taken, and neither were the
+alternatives (stay on GTK 2, stop at GTK 3.24, rebase on upstream Pidgin 3).
+The approved plan is **[`doc/PIDGIN-UPGRADE.md`](PIDGIN-UPGRADE.md)**. In short:
 
-### Stage 0: Preparation
-* Put the tree under version control with CI builds (Linux, and Windows if
-  it is still supported).
-* Decide what to drop: GStreamer 0.10, farsight2, gtkspell 2, Perl Gtk
-  bindings, Unity, gevolution, X session management, the Tcl/Mono loaders.
-* Consider switching autotools to Meson. It is not required, but it makes
-  GTK 4 and GResource/Blueprint integration easier and matches how GTK
-  projects are built today.
+* **Straight to GTK 4.22, plain GTK, no libadwaita**, Wayland only (Sway
+  first, GNOME second). No GTK 3 stage.
+* **libpurple stays autotools and ABI-compatible** with the installed
+  `libpurple.so.0` (2.14.x): additive changes only, checked by
+  `scripts/check-abi.sh`, because the user's Discord and Steam prpls link
+  against it. It installs into a private prefix (`~/.local/pidgin4`) via
+  `scripts/build-libpurple.sh`.
+* **The GTK 2 `pidgin/` stays buildable** against that libpurple as the
+  fallback daily driver until the end.
+* **The new UI is a separate Meson project, `pidgin4/`**, copied from
+  `pidgin/` and ported file by file. Deprecated GTK 4 widgets are replaced,
+  not ported to (`GtkListView`/`GtkColumnView`, `GtkDropDown`, async
+  dialogs, `GMenuModel`).
+* **GtkIMHtml is replaced, not ported** (section 5, item 1): a markup parser,
+  a `GtkListView`-based message view, a GtkSourceView 5 compose entry with
+  libspelling, and a SQLite message index next to the unchanged HTML logs.
+* **The profile is shared with Pidgin 2.14.14** under the plan's *Profile
+  compatibility contract*, verified by `scripts/check-profile-compat.sh`.
+* The work also modernizes libraries (libidn2, GNetworkMonitor, GResolver,
+  GSound, SNI tray, Wayland idle) and adds modern XMPP (carbons, MAM, HTTP
+  upload, OMEMO, receipts, corrections, reactions) and core IRCv3.
 
-### Stage 1: Deprecation-clean GTK 2.24
-Build against GTK 2.24 with `-DGTK_DISABLE_DEPRECATED -DGDK_DISABLE_DEPRECATED
--DGTK_DISABLE_SINGLE_INCLUDES -DGSEAL_ENABLE`, and fix everything:
-
-* Replace `GtkItemFactory`, `GtkTooltips`, `GtkOptionMenu`, old combos,
-  `GtkFileSelection`, and `GtkObject`.
-* Replace all direct struct access with accessors (`GSEAL`), about 400 sites.
-* Replace `GTK_WIDGET_*` macros and `GDK_<key>` keysyms.
-* Move all drawing (`GdkGC`, `GdkPixmap`, `gdk_draw_*`) to cairo.
-* Use `GtkBuilder` for new or rewritten dialogs.
-
-This stage has the best effort-to-risk ratio. Pidgin stays shippable on
-GTK 2 the whole time.
-
-### Stage 2: Port to GTK 3 (last 3.24)
-* `expose-event` → `draw`, `size_request` → `get_preferred_width/height`.
-* `GtkStyle`/gtkrc → `GtkStyleContext` + CSS. Redesign `pidginrc` and the
-  blist/status-icon theme engines (`gtkblist-theme*.c`,
-  `gtkstatus-icon-theme.c`) on CSS.
-* `GdkColor` → `GdkRGBA`, `GtkHBox/VBox` → `GtkBox`, `GtkTable` →
-  `GtkGrid`, `GtkAlignment`/`GtkMisc` → align/margin properties.
-* gtkspell 2 → gtkspell3.
-* Drop the X11-only paths or put them behind `GDK_IS_X11_DISPLAY` checks.
-* Once that is done, compile with `GDK_DISABLE_DEPRECATED`/`GTK_DISABLE_DEPRECATED`
-  on GTK 3.24 to remove everything GTK 4 will reject: stock items,
-  `GtkUIManager`/`GtkAction`, `gtk_widget_show_all` reliance, `GtkMisc`, and
-  so on.
-
-GTK 3 is where the rendering and styling model changes, so this stage takes
-the most effort in the custom widgets (IMHtml, status box, tooltips, ticker).
-
-### Stage 3: Port to GTK 4
-Follow the upstream "Migrating from GTK 3.x to GTK 4" guide:
-
-1. **Application model**: `GtkApplication`, `GApplication` single-instance
-   handling, and `GAction` for all commands.
-2. **Menus**: convert the buddy list menubar, conversation menus, and every
-   right-click menu (`pidgin_append_menu_action`, `gtkutils.c` helpers, the
-   plugin action menus) to `GMenuModel`. Plugins that add menu items need a
-   new API. This is the largest design change visible to plugins.
-3. **Containers and packing**: mechanical conversion of `gtk_box_pack_*` (519
-   sites), `gtk_container_add` (294), border widths, and `show_all` (154).
-   Tedious but scriptable (e.g. with Coccinelle).
-4. **Events**: replace every `*-event` signal handler (86) and `GdkEvent`
-   field read (274) with event controllers and gestures.
-5. **Dialogs**: remove `gtk_dialog_run` and nested main loops. Rework the
-   `purple_request_*` UI ops in `gtkrequest.c` to be fully async (they
-   mostly are already, via callbacks). Use `GtkFileDialog`/`GtkAlertDialog`.
-6. **DnD and clipboard**: rewrite file drops onto conversations and buddies
-   (`gtkconv.c`, `gtkblist.c`, `gtkimhtml.c`), buddy drag reordering, and
-   image paste.
-7. **Custom widgets**: re-implement them as `GtkWidget` subclasses with
-   `measure`/`size_allocate`/`snapshot`, or replace them with stock widgets.
-   The status box can likely become a `GtkMenuButton` + popover.
-8. **Tray icon**: replace `GtkStatusIcon` with StatusNotifierItem on Linux
-   and native code on Windows, or remove the docklet feature.
-9. **Window positioning**: remove the features that depend on it: remembered
-   window positions, `extplacement` plugin behavior, and tooltip placement.
-   Accept compositor placement.
-
-### Stage 4: Modernize lists (can go after the first GTK 4 release)
-`GtkTreeView` still works in GTK 4 but is deprecated. The buddy list
-(`gtkblist.c`, custom expander renderer, theme drawing), the room list,
-privacy, accounts, certificate manager, plugin list, pounces, saved statuses,
-and file transfer windows should move to `GtkListView`/`GtkColumnView` with
-`GListModel`s. For the buddy list this means a `GtkTreeListModel` over
-`PurpleBlistNode`, which amounts to a rewrite of that window.
+The work is split into milestones M0–M9; see the plan for their scope and
+verification. Sections 1–3 and 5 of this document remain as background.
 
 ---
 
@@ -282,45 +232,7 @@ and file transfer windows should move to `GtkListView`/`GtkColumnView` with
 
 ---
 
-## 6. Effort estimate
-
-A rough estimate for one developer who is experienced with GTK. It assumes
-features are ported largely as they are, with no major UX redesign:
-
-| Stage | Estimate |
-|---|---|
-| 0: Preparation, dependency pruning, CI (and optionally Meson) | 2–4 weeks |
-| 1: Deprecation-clean GTK 2.24 | 2–3 months |
-| 2: GTK 3 port | 4–6 months |
-| 3: GTK 4 port | 5–8 months |
-| 4: `GtkListView` modernization | 2–4 months |
-| Plugins, Windows build, packaging, QA | 2–3 months |
-| **Total** | **~1.5–2 person-years** |
-
-For comparison, upstream Pidgin's own move from GTK 2 to GTK 3 and then
-GTK 4 (Pidgin 3) took many years of part-time volunteer work, and ended up
-redesigning large parts of the UI and libpurple rather than doing a
-straight port.
-
----
-
-## 7. Alternatives worth considering
-
-* **Stay on GTK 2 and do only Stage 1.** This makes the code sealed and
-  deprecation-clean, which is cheap and lowers the risk of a later port, but
-  GTK 2 is unmaintained and disappearing from distributions.
-* **Target GTK 3.24 only.** GTK 3 is in maintenance mode but still widely
-  shipped. Its X11/Win32 escape hatches let the tray icon, window
-  positioning, and XID video embedding survive with fewer redesigns. About
-  half the total effort.
-* **Build on upstream Pidgin 3.** If the goal is a modern-GTK Pidgin rather
-  than a port of this specific 2.14.14 codebase, contributing to or
-  rebasing on upstream Pidgin 3 (GTK 4, libadwaita) avoids repeating that
-  work. The trade-off is that libpurple 3 breaks the protocol-plugin API.
-
----
-
-## 8. References
+## 6. References
 
 * GTK docs: "Migrating from GTK 2.x to GTK 3" and "Migrating from GTK 3.x to
   GTK 4" (docs.gtk.org)
