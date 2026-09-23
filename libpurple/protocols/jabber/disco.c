@@ -387,6 +387,7 @@ jabber_disco_account_info_cb(JabberStream *js, const char *from,
 	                  js->mam_supported ? "yes" : "no");
 
 	jabber_mam_catchup(js);
+	jabber_mam_prefs_sync(js);  /* XEP-0313 default='always', once */
 	jabber_bookmarks_fetch(js);
 }
 

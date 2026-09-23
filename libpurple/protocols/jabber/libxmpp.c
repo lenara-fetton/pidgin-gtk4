@@ -312,6 +312,8 @@ init_plugin(PurplePlugin *plugin)
 						  option);
 
 	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, purple_account_option_bool_new(_("Send files by HTTP upload (XEP-0363)"), "http_upload", TRUE));
+	/* XEP-0313: set the archive's default to "always" once */
+	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, purple_account_option_bool_new(_("Ask the server to archive all messages (XEP-0313)"), "mam_prefs_always", TRUE));
 
 	option = purple_account_option_string_new(_("BOSH URL"),
 						  "bosh_url", NULL);

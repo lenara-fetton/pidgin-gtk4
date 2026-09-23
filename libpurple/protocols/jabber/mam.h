@@ -118,6 +118,19 @@ gboolean jabber_mam_handle_result(JabberStream *js, xmlnode *packet);
 /** Starts the account catch-up (js->mam_supported must be set). */
 void jabber_mam_catchup(JabberStream *js);
 
+/*
+ * XEP-0313 preferences.  Once per account (kv key "mam/prefs-set" = "1"),
+ * unless the account setting "mam_prefs_always" is FALSE: fetch <prefs/>
+ * and, if the default isn't "always", set it to "always" keeping the
+ * <always/>/<never/> lists.
+ */
+void jabber_mam_prefs_sync(JabberStream *js);
+/** The <prefs/> default attribute (NULL if none). */
+const char *jabber_mam_prefs_default(xmlnode *prefs);
+/** A <prefs xmlns='urn:xmpp:mam:2' default='always'/> carrying over the
+ *  <always/> and <never/> children of @a current (may be NULL). */
+xmlnode *jabber_mam_prefs_build_always(xmlnode *current);
+
 /** Starts the room catch-up after (re)joining @a chat. */
 void jabber_mam_muc_catchup(JabberChat *chat);
 
