@@ -343,6 +343,24 @@ move_right_cb(GSimpleAction *action, GVariant *param, gpointer data)
 	pidgin_conv_window_move_tab(win, cur, cur + 1);
 }
 
+/* Send To: the target is (protocol id, account username, buddy name). */
+static void
+send_to_change_cb(GSimpleAction *action, GVariant *value, gpointer data)
+{
+	PidginWindow *win = data;
+	PidginConversation *gtkconv = pidgin_conv_window_get_active_gtkconv(win);
+	const char *protocol, *username, *name;
+	PurpleAccount *account;
+
+	g_variant_get(value, "(&s&s&s)", &protocol, &username, &name);
+	account = purple_accounts_find(username, protocol);
+	if (gtkconv == NULL || account == NULL || *name == '\0')
+		return;
+	pidgin_conv_send_to(gtkconv, account, name);
+	/* the menu (and the state) follow the conversation's update */
+	pidgin_conv_window_update_menu(win);
+}
+
 static const GActionEntry window_actions[] = {
 	{ .name = "new-im", .activate = new_im_cb },
 	{ .name = "join-chat", .activate = join_chat_cb },
@@ -357,6 +375,8 @@ static const GActionEntry window_actions[] = {
 	{ .name = "tab", .activate = tab_n_cb, .parameter_type = "i" },
 	{ .name = "move-tab-left", .activate = move_left_cb },
 	{ .name = "move-tab-right", .activate = move_right_cb },
+	{ .name = "send-to", .parameter_type = "(sss)", .state = "('', '', '')",
+	  .change_state = send_to_change_cb },
 };
 
 static void
@@ -483,6 +503,27 @@ pidgin_conv_window_update_menu(PidginWindow *win)
 	set_state(win, "sounds", pidgin_conv_action_enabled(gtkconv, "sounds"));
 	set_state(win, "toolbar", purple_prefs_get_bool(CONV_PREFS "/show_formatting_toolbar"));
 	set_state(win, "timestamps", purple_prefs_get_bool(CONV_PREFS "/show_timestamps"));
+
+	/* Send To, after Options as in Pidgin 2, only with a choice */
+	{
+		GVariant *current = NULL;
+		GAction *a = g_action_map_lookup_action(G_ACTION_MAP(win->actions), "send-to");
+		guint n = pidgin_conv_fill_send_to_menu(gtkconv, win->send_to, &current);
+
+		if (current != NULL) {
+			g_simple_action_set_state(G_SIMPLE_ACTION(a), current);
+			g_variant_unref(current);
+		}
+		if (n > 0 && !win->send_to_shown) {
+			g_menu_append_submenu(win->menu.model, _("S_end To"),
+			                      G_MENU_MODEL(win->send_to));
+			win->send_to_shown = TRUE;
+		} else if (n == 0 && win->send_to_shown) {
+			g_menu_remove(win->menu.model,
+			              g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model)) - 1);
+			win->send_to_shown = FALSE;
+		}
+	}
 
 	/* Conversation → More: the prpl's extended menu. */
 	g_clear_object(&win->more_actions);
@@ -769,6 +810,7 @@ window_new(gboolean hidden)
 	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	model = build_menubar(win);
 	win->menu.model = model;
+	win->send_to = g_menu_new();
 	win->menu.menubar = gtk_popover_menu_bar_new_from_model(G_MENU_MODEL(model));
 	gtk_box_append(GTK_BOX(vbox), win->menu.menubar);
 
@@ -831,6 +873,7 @@ pidgin_conv_window_destroy(PidginWindow *win)
 	gtk_window_destroy(GTK_WINDOW(win->window));
 	g_clear_object(&win->menu.model);
 	g_clear_object(&win->menu.more);
+	g_clear_object(&win->send_to);
 	g_clear_object(&win->more_actions);
 	g_clear_object(&win->actions);
 	g_list_free(win->gtkconvs);

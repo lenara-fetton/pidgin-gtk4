@@ -68,6 +68,8 @@ st_close(PurpleConnection *gc)
 {
 }
 
+static void record(const char *command, const char *a, const char *b, const char *c);
+
 static void
 emit_sending_meta(PurpleConnection *gc, const char *who, const char *type)
 {
@@ -86,6 +88,7 @@ static int
 st_send_im(PurpleConnection *gc, const char *who, const char *message,
            PurpleMessageFlags flags)
 {
+	record("send-im", who, message, NULL);
 	emit_sending_meta(gc, who, "im");
 	return 1;
 }
@@ -170,6 +173,13 @@ ipc_mds_publish(PurpleAccount *account, const char *conv, const char *id)
 	return TRUE;
 }
 
+static gboolean
+st_send_attention(PurpleConnection *gc, const char *who, guint type)
+{
+	record("send-attention", who, NULL, NULL);
+	return TRUE;
+}
+
 static PurpleCmdId st_cmd_id;
 
 static gboolean
@@ -223,7 +233,7 @@ st_unload(PurplePlugin *plugin)
 }
 
 static PurplePluginProtocolInfo st_prpl_info = {
-	.options = OPT_PROTO_NO_PASSWORD | OPT_PROTO_CHAT_TOPIC,
+	.options = OPT_PROTO_NO_PASSWORD | OPT_PROTO_CHAT_TOPIC | OPT_PROTO_IM_IMAGE,
 	.list_icon = st_list_icon,
 	.status_types = st_status_types,
 	.login = st_login,
@@ -232,6 +242,7 @@ static PurplePluginProtocolInfo st_prpl_info = {
 	.chat_info = st_chat_info,
 	.join_chat = st_join_chat,
 	.chat_send = st_send_chat,
+	.send_attention = st_send_attention,
 	.struct_size = sizeof(PurplePluginProtocolInfo),
 };
 

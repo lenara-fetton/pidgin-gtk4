@@ -22,11 +22,16 @@
 #include "pidgin-internal.h"
 #include "pidgin.h"
 
+#include <glib/gstdio.h>
+
 #include "account.h"
+#include "blist.h"
+#include "buddyicon.h"
 #include "cmds.h"
 #include "connection.h"
 #include "conversation.h"
 #include "debug.h"
+#include "imgstore.h"
 #include "log.h"
 #include "plugin.h"
 #include "prefs.h"
@@ -40,6 +45,7 @@
 #include "gtkconv.h"
 #include "gtkconvwin.h"
 #include "pidgincomposeentry.h"
+#include "pidginformattoolbar.h"
 #include "pidginconvmeta.h"
 #include "pidginmessage.h"
 #include "pidginmessageindex.h"
@@ -201,6 +207,451 @@ static gboolean
 activate(PidginWindow *win, const char *action, GVariant *param)
 {
 	return gtk_widget_activate_action_variant(win->window, action, param);
+}
+
+/* A plain red PNG of the given size (g_free it) */
+static gpointer
+make_png(int width, int height, gsize *len)
+{
+	guchar *pixels = g_malloc(width * height * 4);
+	GBytes *bytes, *png;
+	GdkTexture *texture;
+	int i;
+
+	for (i = 0; i < width * height * 4; i += 4) {
+		pixels[i] = 0xcc;
+		pixels[i + 1] = 0x22;
+		pixels[i + 2] = 0x22;
+		pixels[i + 3] = 0xff;
+	}
+	bytes = g_bytes_new_take(pixels, width * height * 4);
+	texture = gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, bytes, width * 4);
+	png = gdk_texture_save_to_png_bytes(texture);
+	g_bytes_unref(bytes);
+	g_object_unref(texture);
+	return g_bytes_unref_to_data(png, len);
+}
+
+/* A small PNG in the imgstore (the caller unrefs it) */
+static int
+add_test_image(void)
+{
+	gsize len;
+	gpointer data = make_png(8, 8, &len);
+
+	return purple_imgstore_add_with_id(data, len, "selftest.png");
+}
+
+/* Steam's prpl: no HTML, no OPT_PROTO_IM_IMAGE, no file transfer */
+static void
+set_steam_like(PurpleConversation *conv, gboolean steam)
+{
+	PurpleConnection *gc = purple_account_get_connection(st_account);
+	PurplePluginProtocolInfo *prpl_info = PURPLE_PLUGIN_PROTOCOL_INFO(gc->prpl);
+
+	if (steam) {
+		gc->flags &= ~PURPLE_CONNECTION_HTML;
+		prpl_info->options &= ~OPT_PROTO_IM_IMAGE;
+	} else {
+		gc->flags |= PURPLE_CONNECTION_HTML;
+		prpl_info->options |= OPT_PROTO_IM_IMAGE;
+	}
+	purple_conversation_set_features(conv, gc->flags);
+	pidgin_conv_update_buttons_by_protocol(conv);
+}
+
+/* Drops a file on the conversation as a file manager would; returns the
+ * buttons of the dialog it opened (NULL if none), and closes that. */
+static char *
+drop_file(PurpleConversation *conv, const char *path)
+{
+	GtkWidget *tab = PIDGIN_CONVERSATION(conv)->tab_cont;
+	GListModel *controllers = gtk_widget_observe_controllers(tab);
+	GtkDropTarget *target = NULL;
+	GValue value = G_VALUE_INIT;
+	GSList *files;
+	gboolean ret = FALSE;
+	char *buttons = NULL;
+	guint i;
+
+	for (i = 0; i < g_list_model_get_n_items(controllers) && target == NULL; i++) {
+		GObject *c = g_list_model_get_item(controllers, i);
+
+		if (GTK_IS_DROP_TARGET(c))
+			target = GTK_DROP_TARGET(c);
+		g_object_unref(c);
+	}
+	g_object_unref(controllers);
+	if (target == NULL)
+		return NULL;
+
+	g_object_set_data(G_OBJECT(tab), "pidgin-image-drop-dialog", NULL);
+	files = g_slist_append(NULL, g_file_new_for_path(path));
+	g_value_init(&value, GDK_TYPE_FILE_LIST);
+	g_value_take_boxed(&value, gdk_file_list_new_from_list(files));
+	g_slist_free_full(files, g_object_unref);
+	g_signal_emit_by_name(target, "drop", &value, 1.0, 1.0, &ret);
+	g_value_unset(&value);
+	spin(100);
+
+	if (g_object_get_data(G_OBJECT(tab), "pidgin-image-drop-dialog") != NULL) {
+		char **list = NULL;
+
+		g_object_get(g_object_get_data(G_OBJECT(tab), "pidgin-image-drop-dialog"),
+		             "buttons", &list, NULL);
+		buttons = list ? g_strjoinv("|", list) : g_strdup("");
+		g_strfreev(list);
+		g_cancellable_cancel(g_object_get_data(G_OBJECT(tab), "pidgin-image-drop-cancel"));
+		spin(100);
+	}
+	return buttons;
+}
+
+/* Sending an inline image (Insert Image, or a dropped image put in the
+ * message) crashed right after the send: the compose entry's image
+ * anchor upset libspelling when the entry was cleared. Both with an HTML
+ * protocol (the image goes out as <img id=N>) and one like Steam's. */
+static void
+test_images(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
+	PurpleBuddy *buddy;
+	char *path, *buttons;
+	guint n;
+	int id;
+
+	CHECK(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE, "no image caps");
+
+	/* Text and an image */
+	id = add_test_image();
+	CHECK(id > 0, "imgstore add");
+	pidgin_compose_entry_set_markup(entry, "look: ");
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);    /* the entry holds its own */
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "image send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "image message not shown (%u, %u)", n_messages(conv), n);
+	CHECK(call("send-im") != NULL && strstr(call("send-im"), "look:") != NULL,
+	      "send-im: %s", call("send-im"));
+	g_print("PIDGIN4_CONV_SELFTEST: image message: %s\n",
+	        pidgin_message_get_html(last_message(conv)));
+
+	/* An image alone */
+	id = add_test_image();
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "image-only send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "image-only message not shown (%u, %u)",
+	      n_messages(conv), n);
+
+	/* History: Up brings the sent image back */
+	pidgin_compose_entry_history_up(entry);
+	spin(100);
+	pidgin_compose_entry_clear(entry);
+
+	/* Dropping an image: the prpl takes inline images, no file transfer,
+	 * the buddy isn't on the list */
+	id = add_test_image();
+	path = g_build_filename(purple_user_dir(), "selftest-drop.png", NULL);
+	CHECK(g_file_set_contents(path, purple_imgstore_get_data(purple_imgstore_find_by_id(id)),
+	                          purple_imgstore_get_size(purple_imgstore_find_by_id(id)), NULL),
+	      "writing %s", path);
+	purple_imgstore_unref_by_id(id);
+	buttons = drop_file(conv, path);
+	CHECK(purple_strequal(buttons, "Insert in Message|Cancel"), "drop offered %s", buttons);
+	g_free(buttons);
+
+	/* A protocol like Steam: no inline images (as Pidgin 2), and a drop
+	 * offers only the buddy icon */
+	set_steam_like(conv, TRUE);
+	CHECK(!(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE),
+	      "images offered to a prpl without OPT_PROTO_IM_IMAGE");
+	buttons = drop_file(conv, path);
+	CHECK(buttons == NULL, "drop offered %s without a buddy", buttons);
+	g_free(buttons);
+	buddy = purple_buddy_new(st_account, ST_BUDDY, NULL);
+	purple_blist_add_buddy(buddy, NULL, NULL, NULL);
+	buttons = drop_file(conv, path);
+	CHECK(purple_strequal(buttons, "Set as Buddy Icon|Cancel"), "drop offered %s", buttons);
+	g_free(buttons);
+	purple_blist_remove_buddy(buddy);
+	g_unlink(path);
+	g_free(path);
+
+	/* ... and an image that got into the entry anyway (a pasted draft)
+	 * goes out stripped, as it did in Pidgin 2 */
+	id = add_test_image();
+	pidgin_compose_entry_set_markup(entry, "plain ");
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	n = n_messages(conv);
+	pidgin_compose_entry_send(entry);
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "plain image message not shown (%u, %u)",
+	      n_messages(conv), n);
+	set_steam_like(conv, FALSE);
+	hold("images");
+}
+
+/* The infopane's buddy icon is 32 px, whatever the icon's size (it took
+ * a large part of the window with a Steam avatar). */
+static void
+test_buddy_icon(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	GtkWidget *icon = gtkconv->u.im->icon;
+	gboolean show = purple_prefs_get_bool(PIDGIN_PREFS_ROOT "/conversations/im/show_buddy_icons");
+	int min = 0, nat = 0;
+	gsize len;
+	gpointer data;
+
+	purple_prefs_set_bool(PIDGIN_PREFS_ROOT "/conversations/im/show_buddy_icons", TRUE);
+	data = make_png(256, 128, &len);
+	purple_buddy_icons_set_for_user(st_account, ST_BUDDY, data, len, NULL);
+	pidgin_conv_update_buddy_icon(conv);
+	spin(300);
+	CHECK(gtk_widget_get_visible(icon), "no buddy icon");
+	gtk_widget_measure(icon, GTK_ORIENTATION_HORIZONTAL, -1, &min, &nat, NULL, NULL);
+	CHECK(nat <= 32, "icon natural width %d", nat);
+	gtk_widget_measure(icon, GTK_ORIENTATION_VERTICAL, -1, &min, &nat, NULL, NULL);
+	CHECK(nat <= 32, "icon natural height %d", nat);
+	CHECK(gtk_widget_get_width(icon) <= 32 && gtk_widget_get_height(icon) <= 32,
+	      "icon allocated %dx%d", gtk_widget_get_width(icon), gtk_widget_get_height(icon));
+	hold("buddy icon");
+
+	purple_buddy_icons_set_for_user(st_account, ST_BUDDY, NULL, 0, NULL);
+	pidgin_conv_update_buddy_icon(conv);
+	purple_prefs_set_bool(PIDGIN_PREFS_ROOT "/conversations/im/show_buddy_icons", show);
+}
+
+/* The toolbar's "Attention!" button: shown for a prpl with
+ * send_attention, sends it; hidden without. */
+static void
+test_attention(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PurplePluginProtocolInfo *prpl_info =
+		PURPLE_PLUGIN_PROTOCOL_INFO(purple_account_get_connection(st_account)->prpl);
+	GtkWidget *button;
+	gboolean (*send_attention)(PurpleConnection *, const char *, guint);
+
+	CHECK(gtkconv->toolbar != NULL, "no toolbar");
+	if (gtkconv->toolbar == NULL)
+		return;
+	button = pidgin_format_toolbar_get_attention_button(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar));
+	/* the button acts on its window's active conversation, its own tab */
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(gtk_widget_get_visible(button), "no attention button with send_attention");
+	CHECK(gtk_widget_activate(button), "attention button not activatable");
+	spin(400);      /* a button emits clicked after its activate animation */
+	CHECK(purple_strequal(call("send-attention"), ST_BUDDY "||"), "send-attention: %s",
+	      call("send-attention"));
+
+	send_attention = prpl_info->send_attention;
+	prpl_info->send_attention = NULL;
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(!gtk_widget_get_visible(button), "attention button without send_attention");
+	prpl_info->send_attention = send_attention;
+	pidgin_conv_update_buttons_by_protocol(conv);
+
+	/* never in a chat */
+	{
+		GList *l;
+
+		for (l = purple_get_chats(); l != NULL; l = l->next) {
+			PidginConversation *gtkchat = PIDGIN_CONVERSATION((PurpleConversation *)l->data);
+
+			if (gtkchat != NULL && gtkchat->toolbar != NULL)
+				CHECK(!gtk_widget_get_visible(pidgin_format_toolbar_get_attention_button(
+				          PIDGIN_FORMAT_TOOLBAR(gtkchat->toolbar))), "attention in a chat");
+		}
+	}
+}
+
+static gboolean
+send_to(PidginWindow *win, PurpleAccount *account, const char *name)
+{
+	return activate(win, "conv.send-to", g_variant_new("(sss)",
+		purple_account_get_protocol_id(account), purple_account_get_username(account), name));
+}
+
+/* Send To (Pidgin 2's): an IM with a buddy whose contact has more buddies
+ * gets the menu, and picking one re-targets the same conversation. */
+static void
+test_send_to(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginWindow *win = gtkconv->win;
+	PurpleAccount *account2;
+	PurpleGroup *group;
+	PurpleBuddy *b1, *b2, *b3;
+	PurpleContact *contact;
+	guint n, bar_items;
+
+	pidgin_conv_window_switch_gtkconv(win, gtkconv);
+	pidgin_conv_window_update_menu(win);
+	bar_items = g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model));
+	CHECK(!win->send_to_shown, "Send To without a contact");
+
+	/* A contact: two buddies on this account, one on a second account */
+	account2 = pidgin_selftest_account_new("selftest2@example.invalid");
+	group = purple_group_new("pidgin4 selftest Send To");
+	purple_blist_add_group(group, NULL);
+	b1 = purple_buddy_new(st_account, ST_BUDDY, NULL);
+	purple_blist_add_buddy(b1, NULL, group, NULL);
+	contact = purple_buddy_get_contact(b1);
+	b2 = purple_buddy_new(st_account, "buddy2@example.invalid", NULL);
+	purple_blist_add_buddy(b2, contact, group, NULL);
+	b3 = purple_buddy_new(account2, "buddy3@example.invalid", NULL);
+	purple_blist_add_buddy(b3, contact, group, NULL);
+
+	pidgin_conv_window_update_menu(win);
+	CHECK(win->send_to_shown && g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model)) ==
+	      (int)bar_items + 1, "no Send To menu");
+	CHECK(g_menu_model_get_n_items(G_MENU_MODEL(win->send_to)) == 3, "%d Send To items",
+	      g_menu_model_get_n_items(G_MENU_MODEL(win->send_to)));
+
+	/* The other buddy on the same account */
+	n = n_messages(conv);
+	CHECK(send_to(win, st_account, "buddy2@example.invalid"), "conv.send-to");
+	CHECK(purple_strequal(purple_conversation_get_name(conv), "buddy2@example.invalid"),
+	      "name %s", purple_conversation_get_name(conv));
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, "buddy2@example.invalid",
+	                                            st_account) == conv, "not found by the new name");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, ST_BUDDY, st_account) == NULL,
+	      "still found by the old name");
+	CHECK(n_messages(conv) == n, "the scrollback changed (%u, %u)", n_messages(conv), n);
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "to the second");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(purple_strequal(call("send-im"), "buddy2@example.invalid|to the second|"),
+	      "send-im: %s", call("send-im"));
+	{
+		char *path = log_path(conv);
+
+		CHECK(path != NULL && strstr(path, "buddy2@example.invalid") != NULL &&
+		      file_contains(path, "to the second"), "logged to %s", path ? path : "(none)");
+		g_free(path);
+	}
+	{
+		GVariant *state = g_action_group_get_action_state(G_ACTION_GROUP(win->actions),
+		                                                  "send-to");
+		const char *name = NULL;
+
+		g_variant_get(state, "(&s&s&s)", NULL, NULL, &name);
+		CHECK(purple_strequal(name, "buddy2@example.invalid"), "Send To state %s", name);
+		g_variant_unref(state);
+	}
+
+	/* The buddy on the other account */
+	CHECK(send_to(win, account2, "buddy3@example.invalid"), "conv.send-to (account)");
+	CHECK(purple_conversation_get_account(conv) == account2, "account not changed");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, "buddy3@example.invalid",
+	                                            account2) == conv, "not found on account 2");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, "buddy2@example.invalid",
+	                                            st_account) == NULL, "found on account 1");
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "to the third");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(purple_strequal(call("send-im"), "buddy3@example.invalid|to the third|"),
+	      "send-im: %s", call("send-im"));
+	CHECK(n_messages(conv) == n + 2, "messages %u, %u", n_messages(conv), n);
+
+	/* and back */
+	CHECK(send_to(win, st_account, ST_BUDDY), "conv.send-to (back)");
+	CHECK(purple_conversation_get_account(conv) == st_account &&
+	      purple_strequal(purple_conversation_get_name(conv), ST_BUDDY), "not back");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, ST_BUDDY, st_account) ==
+	      conv, "not found back");
+	hold("send to");
+
+	/* The contact goes: so does the menu */
+	purple_blist_remove_buddy(b3);
+	purple_blist_remove_buddy(b2);
+	purple_blist_remove_buddy(b1);
+	purple_blist_remove_group(group);
+	pidgin_selftest_account_remove(account2);
+	pidgin_conv_window_update_menu(win);
+	CHECK(!win->send_to_shown && g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model)) ==
+	      (int)bar_items, "Send To left over");
+}
+
+static gboolean
+entry_has_anchor(PidginComposeEntry *entry)
+{
+	GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry));
+	GtkTextIter iter;
+
+	for (gtk_text_buffer_get_start_iter(buffer, &iter); !gtk_text_iter_is_end(&iter);
+	     gtk_text_iter_forward_char(&iter))
+		if (gtk_text_iter_get_child_anchor(&iter) != NULL)
+			return TRUE;
+	return FALSE;
+}
+
+/* Sending a smiley from the picker crashed the same way as an image (a
+ * child anchor in the entry); a typed shortcut is shown as a smiley in
+ * the view. */
+static void
+test_smileys(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
+	guint n;
+
+	/* From the picker, between text */
+	pidgin_compose_entry_set_markup(entry, "smile ");
+	pidgin_compose_entry_insert_smiley(entry, ":)");
+	CHECK(entry_has_anchor(entry), "the smiley isn't an image in the entry");
+	gtk_text_buffer_insert_at_cursor(gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry)), " more", -1);
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "smiley send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "smiley message not shown (%u, %u)", n_messages(conv), n);
+	CHECK(call("send-im") != NULL && strstr(call("send-im"), "smile :) more") != NULL,
+	      "send-im: %s", call("send-im"));
+
+	/* Two, alone, then Backspace over one */
+	pidgin_compose_entry_insert_smiley(entry, ":)");
+	pidgin_compose_entry_insert_smiley(entry, ";)");
+	{
+		GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry));
+		GtkTextIter end;
+
+		gtk_text_buffer_get_end_iter(buffer, &end);
+		gtk_text_buffer_backspace(buffer, &end, TRUE, TRUE);
+	}
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "smiley-only send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "smiley-only message not shown");
+
+	/* Loaded back from the history (set_markup makes anchors), sent again */
+	pidgin_compose_entry_history_up(entry);
+	CHECK(entry_has_anchor(entry), "history lost the smiley");
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "history smiley send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "history smiley message not shown");
+
+	/* Typed as text; the echo and a received one render the theme's smiley */
+	pidgin_compose_entry_set_markup(entry, "typed :) and :-(");
+	CHECK(pidgin_compose_entry_send(entry), "typed smiley send");
+	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_BUDDY, "back at you :) <b>:D</b>",
+	                     PURPLE_MESSAGE_RECV, time(NULL));
+	spin(300);
+	CHECK(strstr(pidgin_message_get_plain_text(last_message(conv)), "back at you") != NULL,
+	      "received smiley message: %s", pidgin_message_get_plain_text(last_message(conv)));
+	CHECK(pidgin_markup_result_has_object(pidgin_message_get_markup(last_message(conv)),
+	                                      PIDGIN_MARKUP_OBJECT_SMILEY),
+	      "no smiley in the received row");
+	CHECK(pidgin_markup_result_has_object(
+	          pidgin_message_get_markup(nth_message(conv, n_messages(conv) - 2)),
+	          PIDGIN_MARKUP_OBJECT_SMILEY), "no smiley in the sent row");
+	hold("smileys");
 }
 
 /**************************************************************************
@@ -453,6 +904,11 @@ test_im(PurpleConversation **im_out)
 		      pidgin_message_index_count(idx) - rows_before);
 	}
 
+	/* Last: its waits let the view's scroll-back run out of history. */
+	test_images(conv);
+	test_smileys(conv);
+	test_buddy_icon(conv);
+
 	g_free(akey);
 	g_free(ckey);
 }
@@ -574,6 +1030,8 @@ selftest_run(gpointer data)
 
 	test_im(&im);
 	test_chat(&chat);
+	test_attention(im);
+	test_send_to(im);
 	spin(200);
 
 	/* Tabs: both in one window (placement "last" unless the pref says

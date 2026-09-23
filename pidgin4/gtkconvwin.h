@@ -76,6 +76,8 @@ struct _PidginWindow
 	PidginConversation *tab_menu_conv;
 	gboolean closing;
 	guint destroy_idle;
+	GMenu *send_to;              /**< "Send To" (Pidgin 2's), when shown. */
+	gboolean send_to_shown;
 };
 
 /*@}*/

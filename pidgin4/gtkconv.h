@@ -88,7 +88,7 @@ struct _PidginImPane
 
 	/* Buddy icon (infopane) */
 	GtkWidget *icon_container;
-	GtkWidget *icon;             /**< GtkPicture. */
+	GtkWidget *icon;             /**< GtkImage (32 px). */
 	gboolean show_icon;
 	gboolean animate;
 };
@@ -249,6 +249,24 @@ void pidgin_conv_fill_more_menu(PidginConversation *gtkconv, GMenu *menu,
                                 GSimpleActionGroup *group);
 /** Whether @action ("send-file", "invite", ...) applies to @gtkconv now. */
 gboolean pidgin_conv_action_enabled(PidginConversation *gtkconv, const char *action);
+
+/**
+ * Fills the "Send To" menu (Pidgin 2's generate_send_to_items()): one
+ * "conv.send-to" radio item, with target (protocol id, account username,
+ * buddy name), per buddy of the IM's contact on a connected account (or
+ * the IM's own). Empties it and returns 0 unless there are two or more.
+ * @current is set to the target of the IM's buddy (or NULL).
+ */
+guint pidgin_conv_fill_send_to_menu(PidginConversation *gtkconv, GMenu *menu,
+                                    GVariant **current);
+/**
+ * Sends the IM's next messages to @name on @account instead: the same
+ * conversation (and its scrollback) is re-targeted, as Pidgin 2's Send To
+ * did. If @name already has a conversation of its own, that one is
+ * presented instead.
+ */
+void pidgin_conv_send_to(PidginConversation *gtkconv, PurpleAccount *account,
+                         const char *name);
 
 /*@}*/
 
