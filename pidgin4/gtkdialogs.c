@@ -164,8 +164,7 @@ pidgin_dialogs_im_with_user(PurpleAccount *account, const char *username)
 	if (conv == NULL)
 		conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, account, username);
 
-	/* TODO(M4): pidgin_conv_attach_to_conversation(); without conversation
-	 * UI ops this shows nothing yet. */
+	/* Opens (or attaches a hidden) conversation window: gtkconv.c. */
 	purple_conversation_present(conv);
 }
 

@@ -62,6 +62,7 @@
 
 #include "gtkaccount.h"
 #include "gtkblist.h"
+#include "gtkconv.h"
 #include "gtkdebug.h"
 #include "gtkdialogs.h"
 #include "gtkstatusbox.h"
@@ -493,6 +494,25 @@ idle_text_long(PurplePresence *presence)
 	return g_strdup_printf(_("Idle %dm"), imin);
 }
 
+/* M4b: a conversation with unread text makes the row bold with the count
+ * (Pidgin 2 made it bold). Takes @markup. */
+static char *
+unseen_markup(char *markup, PurpleConversationType type, const char *name,
+              PurpleAccount *account)
+{
+	PurpleConversation *conv = purple_find_conversation_with_account(type, name, account);
+	PidginConversation *gtkconv;
+	char *ret;
+
+	if (conv == NULL || !PIDGIN_IS_PIDGIN_CONVERSATION(conv) ||
+	    (gtkconv = PIDGIN_CONVERSATION(conv)) == NULL ||
+	    gtkconv->unseen_state < PIDGIN_UNSEEN_TEXT)
+		return markup;
+	ret = g_strdup_printf("<b>%s</b> (%u)", markup, MAX(gtkconv->unseen_count, 1u));
+	g_free(markup);
+	return ret;
+}
+
 static void
 refresh_buddy_row(PidginBlistNodeItem *item, PurpleBlistNode *node,
                   PurpleBuddy *buddy)
@@ -521,6 +541,8 @@ refresh_buddy_row(PidginBlistNodeItem *item, PurpleBlistNode *node,
 	if (nametext == NULL)
 		nametext = g_markup_escape_text(name ? name : "", -1);
 	nametext = safe_markup(nametext);
+	nametext = unseen_markup(nametext, PURPLE_CONV_TYPE_IM, purple_buddy_get_name(buddy),
+	                         account);
 
 	/* Status text and idle time */
 	if (gtkblist->biglist) {
@@ -673,7 +695,8 @@ blist_refresh_item(PidginBlistNodeItem *item)
 		GIcon *status = g_themed_icon_new("pidgin-status-chat");
 		GdkTexture *texture = gtkblist->biglist ? node_icon_texture(node) : NULL;
 
-		/* TODO(M4): bold/"nick said" for chats with unseen messages. */
+		mark = unseen_markup(mark, PURPLE_CONV_TYPE_CHAT, purple_chat_get_name(chat),
+		                     purple_chat_get_account(chat));
 		g_object_set(item,
 			"name", mark,
 			"secondary", NULL,
@@ -1859,7 +1882,7 @@ gtk_blist_join_chat(PurpleChat *chat)
 	conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT,
 		chat_name ? chat_name : purple_chat_get_name(chat), account);
 
-	/* TODO(M4): pidgin_conv_attach_to_conversation(conv). */
+	/* Presenting attaches a hidden conversation (gtkconv.c). */
 	if (conv != NULL)
 		purple_conversation_present(conv);
 
@@ -4369,6 +4392,54 @@ account_removed_cb(PurpleAccount *account, gpointer data)
 	rebuild_accounts_menu();
 }
 
+/* M4b: refresh the rows of a conversation's buddies or chat. */
+static void
+update_conversation_rows(PurpleConversation *conv)
+{
+	PurpleAccount *account = purple_conversation_get_account(conv);
+	const char *name = purple_conversation_get_name(conv);
+
+	if (gtkblist == NULL || account == NULL)
+		return;
+	if (purple_conversation_get_type(conv) == PURPLE_CONV_TYPE_IM) {
+		GSList *buddies = purple_find_buddies(account, name), *l;
+
+		for (l = buddies; l != NULL; l = l->next) {
+			PurpleBlistNode *node = l->data;
+
+			pidgin_blist_model_update(gtkblist->model, node);
+			if (node->parent != NULL)
+				pidgin_blist_model_update(gtkblist->model, node->parent);
+		}
+		g_slist_free(buddies);
+	} else if (purple_conversation_get_type(conv) == PURPLE_CONV_TYPE_CHAT) {
+		PurpleChat *chat = purple_blist_find_chat(account, name);
+
+		if (chat != NULL)
+			pidgin_blist_model_update(gtkblist->model, (PurpleBlistNode *)chat);
+	}
+}
+
+static void
+conversation_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type, gpointer data)
+{
+	if (type == PURPLE_CONV_UPDATE_UNSEEN)
+		update_conversation_rows(conv);
+}
+
+static void
+conversation_deleting_cb(PurpleConversation *conv, gpointer data)
+{
+	/* Its unseen state goes with it (the rows ask while it still exists,
+	 * so clear it first). */
+	if (PIDGIN_IS_PIDGIN_CONVERSATION(conv) && PIDGIN_CONVERSATION(conv) != NULL &&
+	    PIDGIN_CONVERSATION(conv)->unseen_state != PIDGIN_UNSEEN_NONE) {
+		PIDGIN_CONVERSATION(conv)->unseen_state = PIDGIN_UNSEEN_NONE;
+		PIDGIN_CONVERSATION(conv)->unseen_count = 0;
+		update_conversation_rows(conv);
+	}
+}
+
 static void
 sign_on_off_cb(PurpleConnection *gc, gpointer data)
 {
@@ -4684,8 +4755,12 @@ pidgin_blist_show(PurpleBuddyList *list)
 	purple_signal_connect(handle, "plugin-load", gtkblist, PURPLE_CALLBACK(plugin_changed_cb), NULL);
 	purple_signal_connect(handle, "plugin-unload", gtkblist, PURPLE_CALLBACK(plugin_changed_cb), NULL);
 
-	/* TODO(M4): conversation-updated/-created/-deleting and chat-joined
-	 * (unseen message markers on rows). */
+	/* M4b: unread markers on rows */
+	handle = purple_conversations_get_handle();
+	purple_signal_connect(handle, "conversation-updated", gtkblist,
+	                      PURPLE_CALLBACK(conversation_updated_cb), NULL);
+	purple_signal_connect(handle, "deleting-conversation", gtkblist,
+	                      PURPLE_CALLBACK(conversation_deleting_cb), NULL);
 
 	show_initial_account_errors();
 

@@ -41,7 +41,7 @@ void pidgin_dialogs_about(void);
 /* Buddy list dialogs (M3). They are purple_request_*() dialogs, so they
  * close with their node (purple_request_close_with_handle()). */
 void pidgin_dialogs_im(void);
-/** TODO(M4): opens the conversation; until then it only creates it. */
+/** Opens (and presents) an IM with @username on @account. */
 void pidgin_dialogs_im_with_user(PurpleAccount *account, const char *username);
 void pidgin_dialogs_info(void);
 /** TODO(M5): the log viewer. Asks for the user, then logs a TODO. */
