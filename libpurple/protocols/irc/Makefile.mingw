@@ -37,11 +37,13 @@ LIB_PATHS +=		-L$(GTK_TOP)/lib \
 ##
 ##  SOURCES, OBJECTS
 ##
-C_SRC =			cmds.c \
+C_SRC =			cap.c \
+			cmds.c \
 			dcc_send.c \
 			irc.c \
 			msgs.c \
-			parse.c
+			parse.c \
+			sasl.c
 
 OBJECTS = $(C_SRC:%.c=%.o)
 

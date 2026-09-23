@@ -178,7 +178,8 @@ int irc_cmd_ctcp_action(struct irc_conn *irc, const char *cmd, const char *targe
 
 	g_free(msg);
 
-	if (convo) {
+	/* With echo-message the server echo is shown instead (msgs.c). */
+	if (convo && !irc_cap_enabled(irc, "echo-message")) {
 		escaped = g_markup_escape_text(args[0], -1);
 		action = g_strdup_printf("/me %s", escaped);
 		g_free(escaped);
@@ -519,7 +520,8 @@ int irc_cmd_query(struct irc_conn *irc, const char *cmd, const char *target, con
 	if (args[1]) {
 		gc = purple_account_get_connection(irc->account);
 		irc_cmd_privmsg(irc, cmd, target, args);
-		purple_conv_im_write(PURPLE_CONV_IM(convo), purple_connection_get_display_name(gc),
+		if (!irc_cap_enabled(irc, "echo-message"))
+			purple_conv_im_write(PURPLE_CONV_IM(convo), purple_connection_get_display_name(gc),
 			      args[1], PURPLE_MESSAGE_SEND, time(NULL));
 	}
 

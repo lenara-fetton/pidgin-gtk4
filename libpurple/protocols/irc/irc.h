@@ -29,13 +29,18 @@
 #include <sasl/sasl.h>
 #endif
 
+#include "conversation.h"
 #include "ft.h"
 #include "roomlist.h"
 #include "sslconn.h"
 
 #define IRC_DEFAULT_SERVER "irc.libera.chat"
 #define IRC_DEFAULT_PORT 6667
-#define IRC_DEFAULT_SSL_PORT 994
+#define IRC_DEFAULT_SSL_PORT 6697
+
+/* Seconds to wait for a reply to CAP LS before giving up on IRCv3
+ * capability negotiation and carrying on with plain registration. */
+#define IRC_CAP_TIMEOUT 5
 
 #define IRC_DEFAULT_CHARSET "UTF-8"
 #define IRC_DEFAULT_AUTODETECT FALSE
@@ -59,6 +64,14 @@
 
 enum { IRC_USEROPT_SERVER, IRC_USEROPT_PORT, IRC_USEROPT_CHARSET };
 enum irc_state { IRC_STATE_NEW, IRC_STATE_ESTABLISHED };
+
+enum irc_sasl_state {
+	IRC_SASL_NONE,		/* not started */
+	IRC_SASL_STARTED,	/* AUTHENTICATE <mech> sent */
+	IRC_SASL_RESPONDED,	/* response sent, waiting for 903/904 */
+	IRC_SASL_DONE,		/* 903 or 907 received */
+	IRC_SASL_FAILED
+};
 
 struct irc_conn {
 	PurpleAccount *account;
@@ -108,6 +121,26 @@ struct irc_conn {
 	char *mode_chars;
 	char *reqnick;
 	gboolean nickused;
+
+	/* IRCv3 message tags of the message currently being dispatched
+	 * (key -> unescaped value), or NULL. See irc_msg_tag(). */
+	GHashTable *tags;
+
+	/* IRCv3 capability negotiation (cap.c) */
+	GHashTable *caps_ls;		/* advertised: name -> value ("" if none) */
+	GHashTable *caps;		/* enabled: name -> name */
+	gboolean caps_ls_more;		/* inside a multi-line CAP LS reply */
+	gboolean cap_negotiating;	/* CAP LS sent and CAP END not yet sent */
+	gboolean cap_replied;		/* got at least one CAP reply */
+	int caps_pending;		/* CAP REQs not yet ACKed/NAKed */
+	guint cap_timer;
+	gboolean registered;		/* got 001 */
+
+	/* Built-in SASL (sasl.c) */
+	enum irc_sasl_state sasl_state;
+	char *sasl_mech;		/* mechanism in use */
+	char *sasl_server_mechs;	/* from 908 or the sasl= CAP value */
+	GString *sasl_inbuf;		/* 400-byte AUTHENTICATE continuation */
 #ifdef HAVE_CYRUS_SASL
 	sasl_conn_t *sasl_conn;
 	const char *current_mech;
@@ -123,6 +156,8 @@ struct irc_buddy {
 	gboolean flag;
  	gboolean new_online_status;
 	int ref;
+	char *account;		/* services account (account-notify/extended-join) */
+	gboolean away;		/* from away-notify */
 };
 
 typedef int (*IRCCmdCallback) (struct irc_conn *irc, const char *cmd, const char *target, const char **args);
@@ -148,6 +183,27 @@ void irc_msg_table_build(struct irc_conn *irc);
 void irc_parse_msg(struct irc_conn *irc, char *input);
 char *irc_parse_ctcp(struct irc_conn *irc, const char *from, const char *to, const char *msg, int notice);
 char *irc_format(struct irc_conn *irc, const char *format, ...);
+
+/* IRCv3 message tags and server-time (parse.c) */
+GHashTable *irc_parse_tags(const char *tags);
+char *irc_unescape_tag_value(const char *value);
+const char *irc_msg_tag(struct irc_conn *irc, const char *key);
+time_t irc_parse_server_time(const char *value);
+time_t irc_msg_timestamp(struct irc_conn *irc);
+PurpleConvChatBuddyFlags irc_prefix_char_flag(char c);
+PurpleConvChatBuddyFlags irc_nick_prefix_flags(const char *mode_chars, const char *nick, const char **rest);
+
+/* IRCv3 capability negotiation (cap.c) */
+void irc_cap_start(struct irc_conn *irc);
+void irc_cap_end(struct irc_conn *irc);
+void irc_cap_unsupported(struct irc_conn *irc);
+void irc_cap_free(struct irc_conn *irc);
+gboolean irc_cap_enabled(struct irc_conn *irc, const char *cap);
+gchar **irc_cap_parse_list(const char *params, gboolean *more);
+void irc_cap_ls_add(GHashTable *ls, gchar **tokens);
+gboolean irc_cap_wanted(struct irc_conn *irc, const char *cap);
+void irc_msg_cap(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_msg_welcome(struct irc_conn *irc, const char *name, const char *from, char **args);
 
 void irc_msg_default(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_away(struct irc_conn *irc, const char *name, const char *from, char **args);
@@ -192,10 +248,12 @@ void irc_msg_unknown(struct irc_conn *irc, const char *name, const char *from, c
 void irc_msg_wallops(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_whois(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_who(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_msg_awaynotify(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_msg_account(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_msg_chghost(struct irc_conn *irc, const char *name, const char *from, char **args);
 #ifdef HAVE_CYRUS_SASL
-void irc_msg_cap(struct irc_conn *irc, const char *name, const char *from, char **args);
+void irc_sasl_cyrus_start(struct irc_conn *irc);
 void irc_msg_auth(struct irc_conn *irc, char *arg);
-void irc_msg_authenticate(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_authok(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_authtryagain(struct irc_conn *irc, const char *name, const char *from, char **args);
 void irc_msg_authfail(struct irc_conn *irc, const char *name, const char *from, char **args);
