@@ -63,6 +63,8 @@ JABBERSOURCES = \
 			  jingle/transport.h \
 			  jutil.c \
 			  jutil.h \
+			  kvstore.c \
+			  kvstore.h \
 			  message.c \
 			  message.h \
 			  namespaces.h \

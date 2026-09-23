@@ -58,6 +58,7 @@
 #include "ibb.h"
 #include "iq.h"
 #include "jutil.h"
+#include "kvstore.h"
 #include "message.h"
 #include "parser.h"
 #include "presence.h"
@@ -4048,6 +4049,8 @@ void jabber_plugin_init(PurplePlugin *plugin)
 			purple_value_new(PURPLE_TYPE_STRING), /* from */
 			purple_value_new(PURPLE_TYPE_STRING), /* to */
 			purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_XMLNODE));
+
+	jabber_kv_init(plugin);
 
 	purple_signal_register(plugin, "jabber-receiving-iq",
 			purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
