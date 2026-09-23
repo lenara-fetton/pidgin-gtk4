@@ -99,3 +99,6 @@ TAGS
 GPATH
 GRTAGS
 GTAGS
+
+# pidgin4 Meson build directories
+/build-pidgin4*/

@@ -1,0 +1,11 @@
+/* pidgin4 application stylesheet, loaded at startup from the GResource.
+ * A user stylesheet in <profile>/pidgin4/gtk4.css comes later (M5). */
+
+.pidgin-dialog-primary {
+	font-weight: bold;
+	font-size: larger;
+}
+
+.pidgin-debug-view {
+	font-family: monospace;
+}

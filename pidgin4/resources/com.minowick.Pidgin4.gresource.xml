@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <!-- GtkApplication adds <resource base path>/icons to the default
+       GtkIconTheme, so everything under icons/ is found by icon name
+       (gtk_image_new_from_icon_name() and friends). -->
+  <gresource prefix="/com/minowick/Pidgin4">
+    <file>icons/16x16/apps/com.minowick.Pidgin4.png</file>
+    <file>icons/16x16/apps/pidgin4-protocol-facebook.png</file>
+    <file>icons/16x16/apps/pidgin4-protocol-google-talk.png</file>
+    <file>icons/16x16/apps/pidgin4-protocol-irc.png</file>
+    <file>icons/16x16/apps/pidgin4-protocol-jabber.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4.png</file>
+    <file>icons/22x22/apps/pidgin4-protocol-facebook.png</file>
+    <file>icons/22x22/apps/pidgin4-protocol-google-talk.png</file>
+    <file>icons/22x22/apps/pidgin4-protocol-irc.png</file>
+    <file>icons/22x22/apps/pidgin4-protocol-jabber.png</file>
+    <file>icons/24x24/apps/com.minowick.Pidgin4.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4.png</file>
+    <file>icons/48x48/apps/pidgin4-protocol-facebook.png</file>
+    <file>icons/48x48/apps/pidgin4-protocol-irc.png</file>
+    <file>icons/48x48/apps/pidgin4-protocol-jabber.png</file>
+    <file>icons/scalable/apps/com.minowick.Pidgin4.svg</file>
+    <file>icons/scalable/apps/pidgin4-protocol-google-talk.svg</file>
+    <file>icons/scalable/apps/pidgin4-protocol-irc.svg</file>
+    <file>icons/scalable/apps/pidgin4-protocol-jabber.svg</file>
+    <file>style.css</file>
+  </gresource>
+</gresources>

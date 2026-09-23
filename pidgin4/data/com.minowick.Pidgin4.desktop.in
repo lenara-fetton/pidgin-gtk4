@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Pidgin 4
+GenericName=Internet Messenger
+Comment=Chat over IRC, XMPP and plugin protocols
+Exec=@BINDIR@/pidgin4
+TryExec=@BINDIR@/pidgin4
+Icon=com.minowick.Pidgin4
+StartupNotify=true
+Terminal=false
+Categories=Network;InstantMessaging;GTK;
+Keywords=chat;im;messaging;irc;xmpp;jabber;
