@@ -183,7 +183,7 @@ am__DIST_COMMON = $(srcdir)/Doxyfile.in $(srcdir)/Makefile.in \
 	$(top_srcdir)/pidgin/data/pidgin.pc.in \
 	$(top_srcdir)/pidgin/plugins/perl/common/Makefile.PL.in \
 	AUTHORS COPYING ChangeLog INSTALL NEWS README compile \
-	config.guess config.sub install-sh ltmain.sh missing
+	config.guess config.sub depcomp install-sh ltmain.sh missing
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 distdir = $(PACKAGE)-$(VERSION)
 top_distdir = $(distdir)

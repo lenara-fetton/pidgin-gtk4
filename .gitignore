@@ -99,3 +99,6 @@ TAGS
 GPATH
 GRTAGS
 GTAGS
+
+# Agent worktrees
+/.claude/worktrees/

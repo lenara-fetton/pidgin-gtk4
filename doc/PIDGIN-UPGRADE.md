@@ -143,19 +143,24 @@ Findings for later milestones:
 - Pidgin 2 itself drops untyped account `<setting>`s on load (one Steam account has `<setting name='buddy_icon'/>`); the compat check allows that removal.
 
 ### M1: libpurple modernization (ABI-safe, testable with the GTK 2 UI)
-- libidn2, GNetworkMonitor, GProxyResolver, GResolver-backed dnsquery/SRV, D-Bus off.
+- libidn2, GNetworkMonitor, GProxyResolver, GResolver-backed dnsquery/SRV.
 - `purple_ssl_get_channel_binding()` (additive) + the ssl-nss implementation.
 - ABI gate: `nm -D --defined-only` symbol list must be a superset of `/usr/lib64/libpurple.so.0.14.14`. Use `abidiff` if libabigail is installed.
+- **D-Bus stays enabled in libpurple.** Disabling it drops 153 exported `purple_dbus_*` symbols, which the ABI superset rule forbids. pidgin4 doesn't use it; `scripts/build-libpurple.sh --no-dbus` exists for experiments only. (Decided 2026-09-22.)
 
-DNS / SRV / TXT (landed):
+**Status: done 2026-09-22** (merged from three parallel branches; ABI gate passes on the merged build).
+
+DNS / SRV / TXT:
 - `dnsquery.c` uses `g_resolver_lookup_by_name_async`; `dnssrv.c` uses `g_resolver_lookup_records_async` (SRV/TXT). The fork()ed resolver children, their pipe protocol and the Win32 threads are gone. Public API, UI-ops hooks, callback contract (async only, `addrlen`/`sockaddr` pairs with IPv6, RFC 2782 SRV order) and structs are unchanged; cancel is a `GCancellable` plus detach.
 - Behaviour changes: error text comes from GResolver; multi-string TXT records are concatenated; the UI-ops failure path calls TXT callbacks with the TXT signature.
 - libpurple links `$(GIO_UNIX_LIBS)` (existing optional configure check; `libpurple/Makefile.in` hand-edited to match). Making GIO a hard `configure.ac` requirement is left to whoever next edits `configure.ac`. `-lresolv` stays: `network.c` still calls `res_init()`.
-Landed (IDN, network state, proxy; ABI gate passes, symbol sets unchanged):
+
+IDN, network state, proxy:
 - **libidn2**: `configure.ac` checks `libidn2` (`IDN2_*`, `USE_IDN` kept) and now requires GLib/GIO ≥ 2.66; `--enable-nm` is gone. `purple_network_convert_idn_to_ascii()` is IDNA2008/UTS #46 non-transitional, with STD3 checked by hand (libidn2's STD3 flag silently deletes characters). Jabber node/resource/SASLprep are GLib reimplementations of stringprep (no bidi check, current Unicode; domains lowercased, not case folded, and validated via the libpurple IDN function); see the comment in `jutil.c`.
 - **GNetworkMonitor** backs `purple_network_is_available()` and `network-configuration-changed` (which fires on every routing change now); UI `network_connected`/`disconnected` run only on availability transitions. NM and the Win32 NLA code are removed.
 - **GProxyResolver** (synchronous lookup, results interned) replaces the gconftool-2 exec for "Use GNOME Proxy Settings", and serves "Use Environmental Settings" when no `http_proxy` is set, followed by `all_proxy` (libproxy ignores it). Non-GNOME "use global" still means `/purple/proxy` prefs.
-Landed:
+
+Channel binding:
 - **Channel binding:** `purple_ssl_get_channel_binding(gsc, type, &len)`. The only new export; ABI gate passes. The backend hook uses the `_purple_reserved2` slot of `PurpleSslOps` (now `get_channel_binding`), so the struct layout is unchanged. ssl-nss supports `tls-exporter` (TLS 1.3 only; checked against OpenSSL's server-side exporter) and `tls-server-end-point`. `tls-unique` returns NULL because NSS has no public API for it. M8's SCRAM-PLUS therefore needs TLS 1.3 for `tls-exporter`, or falls back to `tls-server-end-point`. NSS 3.129 already enables TLS 1.2–1.3 by default.
 
 ### M2: `pidgin4/` skeleton: sign in and stay connected
