@@ -69,6 +69,7 @@ typedef struct
 	PRFileDesc *in;
 	guint handshake_handler;
 	guint handshake_timer;
+	gboolean handshake_done;
 } PurpleSslNssData;
 
 #define PURPLE_SSL_NSS_DATA(gsc) ((PurpleSslNssData *)gsc->private_data)
@@ -196,6 +197,23 @@ ssl_nss_init_nss(void)
 				"0x%04hx through 0x%04hx\n", supported.min, supported.max);
 		purple_debug_info("nss", "TLS versions allowed by default: "
 				"0x%04hx through 0x%04hx\n", enabled.min, enabled.max);
+
+#ifdef SSL_LIBRARY_VERSION_TLS_1_3
+		/* Make sure TLS 1.3 is allowed. Current NSS enables it by
+		 * default, but a distribution policy or an older default could
+		 * cap the range at 1.2, and "tls-exporter" is the only channel
+		 * binding defined for 1.3 while "tls-unique" is not defined
+		 * there at all. The minimum is left alone. */
+		if (supported.max >= SSL_LIBRARY_VERSION_TLS_1_3 &&
+				enabled.max < SSL_LIBRARY_VERSION_TLS_1_3) {
+			enabled.max = SSL_LIBRARY_VERSION_TLS_1_3;
+			if (SSL_VersionRangeSetDefault(ssl_variant_stream, &enabled) == SECSuccess)
+				purple_debug_info("nss", "Raised the maximum TLS version to "
+						"0x%04hx\n", enabled.max);
+			else
+				purple_debug_warning("nss", "Unable to enable TLS 1.3\n");
+		}
+#endif /* SSL_LIBRARY_VERSION_TLS_1_3 */
 	}
 #endif /* NSS >= 3.14 */
 
@@ -380,6 +398,7 @@ ssl_nss_handshake_cb(gpointer data, int fd, PurpleInputCondition cond)
 	}
 
 	print_security_info(nss_data->in);
+	nss_data->handshake_done = TRUE;
 
 	purple_input_remove(nss_data->handshake_handler);
 	nss_data->handshake_handler = 0;
@@ -571,6 +590,140 @@ ssl_nss_peer_certs(PurpleSslConnection *gsc)
 
 
 
+	return NULL;
+}
+
+/************************************************************************/
+/* Channel binding (RFC 5929, RFC 9266)                                 */
+/************************************************************************/
+#define CB_EXPORTER_LABEL "EXPORTER-Channel-Binding"
+#define CB_EXPORTER_LEN   32
+
+#ifndef SSL_LIBRARY_VERSION_TLS_1_3
+#define SSL_LIBRARY_VERSION_TLS_1_3 0x0304 /* NSS < 3.29 */
+#endif
+
+static guchar *
+ssl_nss_cb_tls_exporter(PurpleSslNssData *nss_data,
+		const SSLChannelInfo *info, gsize *len)
+{
+	guchar *out;
+
+	/* RFC 9266 defines the exporter with a zero-length context value. In
+	 * TLS 1.3 an empty context and no context are the same thing (RFC 8446
+	 * section 7.5), but in TLS 1.2 (RFC 5705) they differ, and NSS rejects
+	 * hasContext with contextLen == 0. So NSS can only produce the RFC 9266
+	 * value for TLS 1.3. That is enough: TLS 1.2 additionally needs the
+	 * extended master secret and no renegotiation for tls-exporter to be
+	 * defined at all, and RFC 9266 section 3 keeps tls-unique as the
+	 * SCRAM default there. */
+	if (info->protocolVersion < SSL_LIBRARY_VERSION_TLS_1_3) {
+		purple_debug_info("nss", "tls-exporter: not available for "
+				"protocol 0x%04x\n", info->protocolVersion);
+		return NULL;
+	}
+
+	out = g_malloc(CB_EXPORTER_LEN);
+	if (SSL_ExportKeyingMaterial(nss_data->in,
+			CB_EXPORTER_LABEL, strlen(CB_EXPORTER_LABEL),
+			PR_FALSE, NULL, 0,
+			out, CB_EXPORTER_LEN) != SECSuccess) {
+		gchar *error_txt = get_error_text();
+		purple_debug_error("nss", "SSL_ExportKeyingMaterial failed: %s (%d)\n",
+				error_txt ? error_txt : "", PR_GetError());
+		g_free(error_txt);
+		g_free(out);
+		return NULL;
+	}
+
+	*len = CB_EXPORTER_LEN;
+	return out;
+}
+
+static guchar *
+ssl_nss_cb_tls_server_end_point(PurpleSslNssData *nss_data, gsize *len)
+{
+	CERTCertificate *cert;
+	GChecksumType hash;
+	GChecksum *checksum;
+	gssize digest_len;
+	guchar *out = NULL;
+
+	cert = SSL_PeerCertificate(nss_data->in);
+	if (cert == NULL)
+		return NULL;
+
+	/* RFC 5929 section 4.1: hash the DER certificate with the hash from
+	 * its signatureAlgorithm; MD5 and SHA-1 are replaced by SHA-256.
+	 * Algorithms without a single hash (RSA-PSS with parameters, EdDSA,
+	 * ML-DSA) and SHA-224 are not handled. */
+	switch (SECOID_GetAlgorithmTag(&cert->signature)) {
+	case SEC_OID_PKCS1_MD5_WITH_RSA_ENCRYPTION:
+	case SEC_OID_PKCS1_SHA1_WITH_RSA_ENCRYPTION:
+	case SEC_OID_ISO_SHA_WITH_RSA_SIGNATURE:
+	case SEC_OID_ISO_SHA1_WITH_RSA_SIGNATURE:
+	case SEC_OID_ANSIX9_DSA_SIGNATURE_WITH_SHA1_DIGEST:
+	case SEC_OID_ANSIX962_ECDSA_SHA1_SIGNATURE:
+	case SEC_OID_PKCS1_SHA256_WITH_RSA_ENCRYPTION:
+	case SEC_OID_ANSIX962_ECDSA_SHA256_SIGNATURE:
+	case SEC_OID_NIST_DSA_SIGNATURE_WITH_SHA256_DIGEST:
+		hash = G_CHECKSUM_SHA256;
+		break;
+	case SEC_OID_PKCS1_SHA384_WITH_RSA_ENCRYPTION:
+	case SEC_OID_ANSIX962_ECDSA_SHA384_SIGNATURE:
+		hash = G_CHECKSUM_SHA384;
+		break;
+	case SEC_OID_PKCS1_SHA512_WITH_RSA_ENCRYPTION:
+	case SEC_OID_ANSIX962_ECDSA_SHA512_SIGNATURE:
+		hash = G_CHECKSUM_SHA512;
+		break;
+	default:
+		purple_debug_info("nss", "tls-server-end-point: unsupported "
+				"certificate signature algorithm\n");
+		CERT_DestroyCertificate(cert);
+		return NULL;
+	}
+
+	digest_len = g_checksum_type_get_length(hash);
+	checksum = g_checksum_new(hash);
+	if (checksum != NULL && digest_len > 0) {
+		gsize out_len = digest_len;
+
+		g_checksum_update(checksum, cert->derCert.data, cert->derCert.len);
+		out = g_malloc(out_len);
+		g_checksum_get_digest(checksum, out, &out_len);
+		*len = out_len;
+	}
+	if (checksum != NULL)
+		g_checksum_free(checksum);
+
+	CERT_DestroyCertificate(cert);
+	return out;
+}
+
+static guchar *
+ssl_nss_get_channel_binding(PurpleSslConnection *gsc, const char *type,
+		gsize *len)
+{
+	PurpleSslNssData *nss_data = PURPLE_SSL_NSS_DATA(gsc);
+	SSLChannelInfo info;
+
+	if (nss_data == NULL || nss_data->in == NULL || !nss_data->handshake_done)
+		return NULL;
+
+	if (SSL_GetChannelInfo(nss_data->in, &info, sizeof(info)) != SECSuccess
+			|| info.length < sizeof(info))
+		return NULL;
+
+	if (purple_strequal(type, "tls-exporter"))
+		return ssl_nss_cb_tls_exporter(nss_data, &info, len);
+
+	if (purple_strequal(type, "tls-server-end-point"))
+		return ssl_nss_cb_tls_server_end_point(nss_data, len);
+
+	/* "tls-unique" (RFC 5929) needs the first Finished message, which
+	 * NSS does not expose through its public API; it is undefined for
+	 * TLS 1.3 anyway. */
 	return NULL;
 }
 
@@ -1169,9 +1322,9 @@ static PurpleSslOps ssl_ops =
 	ssl_nss_read,
 	ssl_nss_write,
 	ssl_nss_peer_certs,
+	ssl_nss_get_channel_binding,
 
 	/* padding */
-	NULL,
 	NULL,
 	NULL
 };

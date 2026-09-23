@@ -296,6 +296,29 @@ purple_ssl_get_peer_certificates(PurpleSslConnection *gsc)
 	return (ops->get_peer_certificates)(gsc);
 }
 
+guchar *
+purple_ssl_get_channel_binding(PurpleSslConnection *gsc, const char *type,
+                               gsize *len)
+{
+	PurpleSslOps *ops;
+
+	g_return_val_if_fail(gsc != NULL, NULL);
+	g_return_val_if_fail(type != NULL, NULL);
+	g_return_val_if_fail(len != NULL, NULL);
+
+	*len = 0;
+
+	/* The backend hook lives in the former _purple_reserved2 slot of
+	 * PurpleSslOps (see sslconn.h), which keeps the struct layout
+	 * ABI-compatible with 2.14.x. Backends that predate it leave the slot
+	 * NULL. */
+	ops = purple_ssl_get_ops();
+	if (ops == NULL || ops->get_channel_binding == NULL)
+		return NULL;
+
+	return ops->get_channel_binding(gsc, type, len);
+}
+
 void
 purple_ssl_set_ops(PurpleSslOps *ops)
 {
