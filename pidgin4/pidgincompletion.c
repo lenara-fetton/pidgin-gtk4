@@ -58,7 +58,8 @@ typedef struct {
 	GtkWidget *entry;
 	GtkWidget *popover;
 	GtkWidget *listview;
-	GListStore *store;              /* PidginItems: id = name, data = account */
+	GtkWidget *scrolled;
+	GListStore *store;             /* PidginItems: id = name, data = account */
 	GtkSingleSelection *selection;
 	GtkWidget *account_dropdown;    /* weak */
 	PurpleRequestField *account_field;
@@ -214,8 +215,12 @@ update_matches(Completion *comp)
 	}
 
 	gtk_single_selection_set_selected(comp->selection, GTK_INVALID_LIST_POSITION);
-	if (!gtk_widget_get_visible(comp->popover))
+	if (!gtk_widget_get_visible(comp->popover)) {
+		/* At least as wide as the entry. */
+		gtk_widget_set_size_request(comp->scrolled,
+			MAX(gtk_widget_get_width(comp->entry), 200), -1);
 		gtk_popover_popup(GTK_POPOVER(comp->popover));
+	}
 }
 
 static void
@@ -418,6 +423,8 @@ completion_new(GtkWidget *entry, gboolean all_accounts)
 	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw), GTK_POLICY_NEVER,
 	                               GTK_POLICY_AUTOMATIC);
 	gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(sw), TRUE);
+	gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(sw), TRUE);
+	comp->scrolled = sw;
 	gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(sw), 320);
 
 	comp->popover = gtk_popover_new();
