@@ -73,8 +73,21 @@ G_DEFINE_TYPE(PidginImageLoader, pidgin_image_loader, G_TYPE_OBJECT)
 G_DEFINE_QUARK(pidgin-image-loader-error-quark, pidgin_image_loader_error)
 
 static const char *const builtin_hosts[] = {
+	/* Discord: custom emoji, attachments */
 	"cdn.discordapp.com",
 	"media.discordapp.net",
+	/* Steam: images shared in chat */
+	"images.steamusercontent.com",
+	"steamusercontent-a.akamaihd.net",
+	/* Steam: emoticons (community.cloudflare redirects to community) */
+	"steamcommunity-a.akamaihd.net",
+	"community.cloudflare.steamstatic.com",
+	"community.steamstatic.com",
+	/* Steam: game images and icons, avatars */
+	"cdn.cloudflare.steamstatic.com",
+	"shared.akamai.steamstatic.com",
+	"avatars.steamstatic.com",
+	"media.steampowered.com",
 };
 
 static PidginImageLoader *default_loader = NULL;

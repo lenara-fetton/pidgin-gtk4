@@ -23,10 +23,12 @@
 /*
  * PidginImageLoader: asynchronous loader for remote images shown inline in
  * messages (<img src="https://..."> from Discord custom emoji and
- * attachments, XEP-0363 HTTP upload links).
+ * attachments, Steam emoticons and shared images, XEP-0363 HTTP upload
+ * links).
  *
- * - Only allowlisted hosts are fetched: cdn.discordapp.com and
- *   media.discordapp.net are built in, others are added at runtime with
+ * - Only allowlisted hosts are fetched: Discord's (cdn.discordapp.com,
+ *   media.discordapp.net) and Steam's CDN hosts for chat images, emoticons,
+ *   game images and avatars are built in, others are added at runtime with
  *   pidgin_image_loader_allow_host() (e.g. an account's XEP-0363 upload
  *   host). Hosts match exactly and case-insensitively; only the https and
  *   aesgcm schemes are accepted, URIs with userinfo are refused, and
