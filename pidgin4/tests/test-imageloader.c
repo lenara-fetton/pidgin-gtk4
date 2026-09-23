@@ -252,6 +252,12 @@ test_allowlist(void)
 		"https://media.discordapp.net/attachments/1/2/a.gif",
 		"https://cdn.discordapp.com:443/x.png",
 		"aesgcm://cdn.discordapp.com/x.png#00112233",
+		"https://media.discordapp.net/stickers/749054660769218631.png?size=160",
+		"https://images-ext-1.discordapp.net/external/abc/https/example.com/a.png",
+		"https://media.tenor.com/x5BgTNkA0CUAAAAC/cat.gif",
+		"https://c.tenor.com/x5BgTNkA0CUAAAAC/cat.gif",
+		"https://media.giphy.com/media/abc/giphy.gif",
+		"https://i.giphy.com/abc.gif",
 	};
 	static const char *const refused[] = {
 		"http://cdn.discordapp.com/emojis/1234.png",
@@ -264,6 +270,9 @@ test_allowlist(void)
 		"https://evil.com#@cdn.discordapp.com/x.png",
 		"https://xcdn.discordapp.com/x.png",
 		"https://discordapp.com/x.png",
+		"https://tenor.com/view/cat-123",
+		"https://giphy.com/gifs/abc",
+		"https://media.tenor.com.evil.com/x.gif",
 		"https://cdn.discordapp.com./x.png",
 		"ftp://cdn.discordapp.com/x.png",
 		"file:///etc/passwd",

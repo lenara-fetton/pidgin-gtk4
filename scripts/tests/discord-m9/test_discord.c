@@ -5,9 +5,35 @@
  * signals itself (as pidgin4's libpurple does), and drives the plugin's
  * message processing with Discord gateway payloads. No network: the fake
  * connection isn't in purple_connections_get_all(), so every REST call
- * fails immediately (its callback gets NULL).
+ * fails immediately (its callback gets NULL). With capture_requests set,
+ * REST calls are recorded instead (requests), and their callbacks wait in
+ * pending_requests for the test to answer them (respond()).
  */
+#include <purple.h>
+#include "purple2compat/http.h"
+
+static gboolean capture_requests;
+static GString *requests;               /* "METHOD URL [body]\n" */
+static GQueue pending_requests = G_QUEUE_INIT;  /* DiscordProxyConnection */
+
+#undef PURPLE_CONNECTION_IS_VALID
+#define PURPLE_CONNECTION_IS_VALID(gc) \
+	(capture_requests || g_list_find(purple_connections_get_all(), (gc)) != NULL)
+
+static PurpleHttpConnection *
+test_http_request(PurpleConnection *gc, PurpleHttpRequest *request, PurpleHttpCallback callback, gpointer user_data)
+{
+	const gchar *body = purple_http_request_get_contents(request);
+
+	g_string_append_printf(requests, "%s %s%s%s\n", purple_http_request_get_method(request),
+	                       purple_http_request_get_url(request), body ? " " : "", body ? body : "");
+	g_queue_push_tail(&pending_requests, user_data);
+	return NULL;
+}
+
+#define purple_http_request test_http_request
 #include "libdiscord.c"
+#undef purple_http_request
 
 /* purple_compat.h maps these onto libpurple's event loop, which is us */
 #undef g_timeout_add_seconds
@@ -114,6 +140,11 @@ register_meta_signals(void)
 		purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT),
 		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
 		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING));
+	purple_signal_register(h, "message-receipt", purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 5,
+		purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING));
 }
 
 /* ---- recording handlers ---- */
@@ -173,6 +204,68 @@ retracted_cb(PurpleAccount *a, const char *conv, const char *target, const char 
 
 static GString *written;
 
+static void
+query_done_cb(PurpleAccount *a, const char *conv, const char *first, const char *last,
+              guint complete, gpointer data)
+{
+	g_string_append_printf(events, "done(%s,%s,%s,%u);", conv, first ? first : "(null)",
+	                       last ? last : "(null)", complete);
+}
+
+static gboolean
+receipt_cb(PurpleAccount *a, const char *conv, const char *id, const char *state,
+           const char *sender, gpointer data)
+{
+	g_string_append_printf(events, "receipt(%s,%s,%s,%s);", conv, id, state, sender);
+	return handle_events;
+}
+
+/* Runs the event loop for @ms (delayed requests go out after 30 ms) */
+static void
+spin(guint ms)
+{
+	gint64 end = g_get_monotonic_time() + ms * 1000;
+
+	while (g_get_monotonic_time() < end) {
+		g_main_context_iteration(NULL, FALSE);
+		g_usleep(1000);
+	}
+}
+
+#ifndef STOCK_DUMP     /* the base plugin has none of this */
+/* Lets the queued reactor fetches go out (and fail) before capturing */
+static void
+drain_reactions(DiscordAccount *da)
+{
+	int i;
+
+	for (i = 0; i < 100 && (da->reaction_busy || da->reaction_timer != 0 ||
+	                        (da->reaction_msgs && !g_queue_is_empty(da->reaction_msgs))); i++)
+		spin(50);
+	spin(60);
+}
+#endif
+
+/* Answers the oldest captured request with @json (NULL: a failure) */
+static void
+respond(const char *json)
+{
+	DiscordProxyConnection *conn = g_queue_pop_head(&pending_requests);
+	JsonParser *parser = json_parser_new();
+	JsonNode *root = NULL;
+
+	if (conn == NULL) {
+		fprintf(stderr, "respond(): no pending request\n");
+		exit(2);
+	}
+	if (json != NULL && json_parser_load_from_data(parser, json, -1, NULL))
+		root = json_parser_get_root(parser);
+	if (conn->callback)
+		conn->callback(conn->ya, root, conn->user_data);
+	g_object_unref(parser);
+	discord_proxy_connection_free(conn);
+}
+
 static gboolean
 writing_cb(PurpleAccount *account, const char *who, char **message, PurpleConversation *conv,
            PurpleMessageFlags flags, gpointer data)
@@ -187,6 +280,8 @@ reset(void)
 {
 	g_string_truncate(events, 0);
 	g_string_truncate(written, 0);
+	if (requests != NULL)
+		g_string_truncate(requests, 0);
 	g_hash_table_remove_all(last_meta);
 	g_clear_pointer(&last_meta_conv, g_free);
 	meta_count = 0;
@@ -293,6 +388,128 @@ static const char *dm_own_other_client =
 	" \"timestamp\":\"2017-07-11T18:02:00+00:00\","
 	" \"author\":{\"username\":\"me\",\"discriminator\":\"0\",\"id\":\"" SELF_ID "\"}}";
 
+/* Stickers (sticker item objects: PNG, Lottie, GIF) */
+static const char *msg_stickers =
+	"{\"type\":0,\"id\":\"900000000000000001\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"\",\"timestamp\":\"2017-07-11T17:40:00+00:00\",\"edited_timestamp\":null,\"embeds\":[],"
+	" \"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"},"
+	" \"sticker_items\":[{\"id\":\"749054660769218631\",\"name\":\"Wave\",\"format_type\":1},"
+	"                   {\"id\":\"816087792291282944\",\"name\":\"Hi <3\",\"format_type\":3},"
+	"                   {\"id\":\"1045000000000000000\",\"name\":\"Dance\",\"format_type\":4}]}";
+
+/* A Tenor GIF: the bare URL, with a gifv embed (thumbnail + MP4 video) */
+#define TENOR_URL "https://tenor.com/view/cat-typing-gif-12002898"
+static const char *msg_tenor =
+	"{\"type\":0,\"id\":\"900000000000000002\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"" TENOR_URL "\",\"timestamp\":\"2017-07-11T17:41:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	" \"embeds\":[{\"type\":\"gifv\",\"url\":\"" TENOR_URL "\","
+	"   \"provider\":{\"name\":\"Tenor\",\"url\":\"https://tenor.co\"},"
+	"   \"thumbnail\":{\"url\":\"https://media.tenor.com/x5BgTNkA0CUAAAAe/cat-typing.png\","
+	"     \"proxy_url\":\"https://images-ext-1.discordapp.net/external/abc/https/media.tenor.com/x5BgTNkA0CUAAAAe/cat-typing.png\","
+	"     \"width\":498,\"height\":280},"
+	"   \"video\":{\"url\":\"https://media.tenor.com/x5BgTNkA0CUAAAPo/cat-typing.mp4\",\"width\":640,\"height\":360}}]}";
+
+static const char *embed_giphy =
+	"{\"type\":\"gifv\",\"url\":\"https://giphy.com/gifs/cat-abc\",\"provider\":{\"name\":\"GIPHY\"},"
+	" \"thumbnail\":{\"url\":\"https://media.giphy.com/media/abc/giphy_s.gif\",\"width\":480,\"height\":270},"
+	" \"video\":{\"url\":\"https://media.giphy.com/media/abc/giphy.mp4\"}}";
+
+/* A link embed (OpenGraph article) with a long description */
+#define LONG_DESC "This **is** a long description that goes on and on. " \
+	"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore " \
+	"et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris END"
+#define LINK_EMBED \
+	"{\"type\":\"article\",\"url\":\"https://example.com/post?a=1&b=2\",\"title\":\"A <title>\"," \
+	" \"description\":\"" LONG_DESC "\"," \
+	" \"provider\":{\"name\":\"Example\"}," \
+	" \"thumbnail\":{\"url\":\"https://example.com/t.png\"," \
+	"   \"proxy_url\":\"https://images-ext-2.discordapp.net/external/x/https/example.com/t.png\",\"width\":400,\"height\":300}}"
+static const char *msg_link =
+	"{\"type\":0,\"id\":\"900000000000000003\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"look https://example.com/post?a=1&b=2\",\"timestamp\":\"2017-07-11T17:42:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	" \"embeds\":[" LINK_EMBED "]}";
+
+/* The same message before its embed arrived, and the embed-only MESSAGE_UPDATE */
+static const char *msg_link_bare =
+	"{\"type\":0,\"id\":\"900000000000000004\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"see https://example.com/post?a=1&b=2\",\"timestamp\":\"2017-07-11T17:43:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},\"embeds\":[]}";
+static const char *msg_link_update =
+	"{\"type\":0,\"id\":\"900000000000000004\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"see https://example.com/post?a=1&b=2\",\"timestamp\":\"2017-07-11T17:43:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	" \"embeds\":[" LINK_EMBED "]}";
+
+/* MESSAGE_ACK (user gateway): read up to a message on another client */
+static const char *message_ack =
+	"{\"version\":1234,\"message_id\":\"334385199974967099\",\"channel_id\":\"" CHANNEL_ID "\","
+	" \"last_viewed\":3500,\"flags\":0}";
+static const char *message_ack_dm =
+	"{\"version\":1235,\"message_id\":\"555\",\"channel_id\":\"" DM_ID "\",\"flags\":0}";
+
+/* A scroll-back page (GET /channels/{id}/messages?before=...), newest first */
+static const char *older_page =
+	"[{\"type\":0,\"id\":\"334385199974960003\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"third\","
+	"  \"timestamp\":\"2017-07-11T17:00:03+00:00\",\"edited_timestamp\":null,"
+	"  \"author\":{\"username\":\"me\",\"discriminator\":\"0\",\"id\":\"" SELF_ID "\"}},"
+	" {\"type\":0,\"id\":\"334385199974960002\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"second\","
+	"  \"timestamp\":\"2017-07-11T17:00:02+00:00\",\"edited_timestamp\":null,"
+	"  \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	"  \"reactions\":[{\"count\":2,\"me\":true,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x91\x8d\"}},"
+	"                {\"count\":1,\"me\":false,\"emoji\":{\"id\":\"41771983429993937\",\"name\":\"LUL\"}}]},"
+	" {\"type\":0,\"id\":\"334385199974960001\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"first\","
+	"  \"timestamp\":\"2017-07-11T17:00:01+00:00\",\"edited_timestamp\":null,"
+	"  \"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"}}]";
+
+/* History messages with reactions (counts only), newest first */
+static const char *reacted_page =
+	"[{\"type\":0,\"id\":\"334385199974970003\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"party\","
+	"  \"timestamp\":\"2017-07-11T19:00:03+00:00\",\"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"},"
+	"  \"reactions\":[{\"count\":1,\"me\":false,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x8e\x89\"}}]},"
+	" {\"type\":0,\"id\":\"334385199974970002\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"hot\","
+	"  \"timestamp\":\"2017-07-11T19:00:02+00:00\",\"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"},"
+	"  \"reactions\":[{\"count\":2,\"me\":true,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x94\xa5\"}},"
+	"                {\"count\":1,\"me\":false,\"emoji\":{\"id\":\"41771983429993937\",\"name\":\"LUL\"}}]},"
+	" {\"type\":0,\"id\":\"334385199974970001\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"old\","
+	"  \"timestamp\":\"2017-07-11T19:00:01+00:00\",\"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	"  \"reactions\":[{\"count\":1,\"me\":false,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x91\x8d\"}}]}]";
+
+/* GET /channels/{id}/messages/{id}/reactions/{emoji}: user objects */
+static const char *reactors_fire =
+	"[{\"id\":\"" ALICE_ID "\",\"username\":\"alice\",\"discriminator\":\"0\",\"avatar\":null},"
+	" {\"id\":\"" SELF_ID "\",\"username\":\"me\",\"discriminator\":\"0\",\"avatar\":null}]";
+static const char *reactors_new_user =
+	"[{\"id\":\"90000000000000001\",\"username\":\"bob\",\"global_name\":\"Bob\",\"discriminator\":\"0\",\"avatar\":null}]";
+
+/* PRESENCE_UPDATE of a friend (no guild_id): a custom status and a game */
+static const char *presence_game =
+	"{\"user\":{\"id\":\"" ALICE_ID "\",\"username\":\"alice\",\"discriminator\":\"0\"},"
+	" \"status\":\"online\",\"client_status\":{\"desktop\":\"online\"},"
+	" \"activities\":[{\"name\":\"Custom Status\",\"type\":4,\"state\":\"brb\",\"id\":\"custom\",\"created_at\":1507221436000},"
+	"                {\"name\":\"Rocket League\",\"type\":0,\"application_id\":\"379286085710381999\","
+	"                 \"created_at\":1507221436000,\"state\":\"In a Match\",\"details\":\"Ranked Duels: 2-1\","
+	"                 \"timestamps\":{\"start\":1507665886}}]}";
+static const char *presence_listening =
+	"{\"user\":{\"id\":\"" ALICE_ID "\"},\"status\":\"idle\",\"client_status\":{\"desktop\":\"idle\"},"
+	" \"activities\":[{\"name\":\"Spotify\",\"type\":2,\"id\":\"spotify:1\",\"details\":\"Song\",\"state\":\"Artist\"}]}";
+static const char *presence_custom_only =
+	"{\"user\":{\"id\":\"" ALICE_ID "\"},\"status\":\"dnd\",\"client_status\":{\"desktop\":\"dnd\"},"
+	" \"activities\":[{\"name\":\"Custom Status\",\"type\":4,\"state\":\"busy\",\"id\":\"custom\"}]}";
+static const char *presence_offline =
+	"{\"user\":{\"id\":\"" ALICE_ID "\"},\"status\":\"offline\",\"client_status\":{},\"activities\":[]}";
+/* READY's friend presences (discord_got_presences) */
+static const char *ready_presences =
+	"[{\"user_id\":\"" ALICE_ID "\",\"status\":\"dnd\",\"client_status\":{\"desktop\":\"dnd\"},"
+	"  \"activities\":[{\"name\":\"Arena\",\"type\":5,\"application_id\":\"123456789012345678\"}]}]";
+
+/* A bot's rich embed with fields */
+static const char *embed_rich =
+	"{\"type\":\"rich\",\"title\":\"Build #42\",\"color\":65280,"
+	" \"fields\":[{\"name\":\"Status\",\"value\":\"**passed**\",\"inline\":true}]}";
+
+#ifndef STOCK_DUMP	/* stock_dump.c has its own */
 int
 main(int argc, char **argv)
 {
@@ -309,6 +526,8 @@ main(int argc, char **argv)
 	purple_eventloop_set_ui_ops(&loop_ops);
 	ui_info = g_hash_table_new(g_str_hash, g_str_equal);
 	g_hash_table_insert(ui_info, "name", "discord-test");
+	/* A message-meta UI from the start: the plugin registers its signal on load */
+	g_hash_table_insert(ui_info, "message-meta", "1");
 	purple_core_set_ui_ops(&core_ops);
 	if (!purple_core_init("discord-test")) {
 		fprintf(stderr, "core init failed\n");
@@ -329,7 +548,7 @@ main(int argc, char **argv)
 		CHECK(purple_plugin_ipc_get_params(prpl, "send-reaction", NULL, NULL, NULL));
 		CHECK(purple_plugin_ipc_get_params(prpl, "send-retraction", NULL, NULL, NULL));
 		CHECK(purple_plugin_ipc_get_params(prpl, "send-reply", NULL, NULL, NULL));
-		CHECK(!purple_plugin_ipc_get_params(prpl, "send-marker", NULL, NULL, NULL));
+		CHECK(purple_plugin_ipc_get_params(prpl, "send-marker", NULL, NULL, NULL));
 		{
 			int n = -1;
 			PurpleValue **params = NULL, *ret = NULL;
@@ -345,10 +564,12 @@ main(int argc, char **argv)
 	seen_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	events = g_string_new(NULL);
 	written = g_string_new(NULL);
+	requests = g_string_new(NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "receiving-message-meta", &failures, PURPLE_CALLBACK(meta_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-corrected", &failures, PURPLE_CALLBACK(corrected_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-reaction", &failures, PURPLE_CALLBACK(reaction_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-retracted", &failures, PURPLE_CALLBACK(retracted_cb), NULL);
+	purple_signal_connect(purple_conversations_get_handle(), "message-receipt", &failures, PURPLE_CALLBACK(receipt_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "writing-chat-msg", &failures, PURPLE_CALLBACK(writing_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "writing-im-msg", &failures, PURPLE_CALLBACK(writing_cb), NULL);
 
@@ -410,6 +631,7 @@ main(int argc, char **argv)
 	purple_account_set_connection(account, gc);
 
 	/* Stock UI first: no native metadata */
+	g_hash_table_remove(ui_info, "message-meta");
 	da = g_new0(DiscordAccount, 1);
 	da->account = account;
 	da->pc = gc;
@@ -430,6 +652,7 @@ main(int argc, char **argv)
 	da->new_guilds = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_guild);
 	da->group_dms = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_channel);
 	da->last_message_id_dm = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	da->cookie_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	g_hash_table_replace(da->one_to_ones, g_strdup(DM_ID), g_strdup("alice"));
 	g_hash_table_replace(da->one_to_ones_rev, g_strdup("alice"), g_strdup(DM_ID));
 
@@ -466,9 +689,11 @@ main(int argc, char **argv)
 	CHECK_STR(M("server-id"), "334385199974967042");
 	CHECK_STR(M("sender"), "Mason");
 	CHECK_STR(M("conv-type"), "chat");
+	CHECK_STR(M("markable"), "1");
 	CHECK(strstr(written->str, "[" CHANNEL_ID "|Mason|Supa Hot <img src=\"https://cdn.discordapp.com/emojis/41771983429993937.png?size=48\" alt=\":LUL:\" width=\"22\" height=\"22\"/>|0x2]") != NULL);
-	/* The history's reaction lines are still written (unknown reactors) */
-	CHECK(strstr(written->str, "reacted with") != NULL);
+	/* No reaction lines: who reacted is fetched (below) */
+	CHECK(strstr(written->str, "reacted with") == NULL);
+	CHECK(g_queue_get_length(da->reaction_msgs) == 1);
 	/* Our own reaction is remembered, the custom emoji's id learnt */
 	CHECK(g_hash_table_contains(discord_own_reactions_get(da, "334385199974967042", FALSE), "\xf0\x9f\x94\xa5"));
 	CHECK(!g_hash_table_contains(discord_own_reactions_get(da, "334385199974967042", FALSE), "LUL:41771983429993937"));
@@ -530,6 +755,102 @@ main(int argc, char **argv)
 	discord_process_message(da, o, DISCORD_MESSAGE_EDITED);
 	json_object_unref(o);
 	CHECK_STR(events->str, "");
+	CHECK_STR(written->str, "");
+
+	/* ---- stickers, GIFs and link embeds ---- */
+	reset();
+	o = parse(msg_stickers);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(meta_count == 1);
+	CHECK(strstr(written->str, "|Mason|<img src=\"https://media.discordapp.net/stickers/749054660769218631.png?size=160\" alt=\"Wave\"/>"
+	                           "<br/>[Hi &lt;3]"
+	                           "<br/><img src=\"https://media.discordapp.net/stickers/1045000000000000000.gif?size=160\" alt=\"Dance\"/>|") != NULL);
+	CHECK(strstr(written->str, ".json") == NULL);
+	fprintf(stderr, "written: %s\n", written->str);
+
+	reset();
+	o = parse(msg_tenor);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(strstr(written->str, "|alice|" TENOR_URL "<br/><img src=\"https://media.tenor.com/x5BgTNkA0CUAAAAC/cat-typing.gif\" alt=\"GIF\"/>|") != NULL);
+	CHECK_STR(M("embed-type"), "gifv");
+	CHECK_STR(M("embed-url"), TENOR_URL);
+	CHECK_STR(M("embed-image"), "https://media.tenor.com/x5BgTNkA0CUAAAAC/cat-typing.gif");
+	CHECK(M("embed-title") == NULL);
+	fprintf(stderr, "written: %s\n", written->str);
+
+	{
+		char *gif;
+
+		o = parse(embed_giphy);
+		gif = discord_embed_gif_url(o);
+		CHECK_STR(gif, "https://media.giphy.com/media/abc/giphy.gif");
+		g_free(gif);
+		json_object_unref(o);
+		/* No video, no GIF anywhere: nothing better than the thumbnail */
+		o = parse("{\"type\":\"gifv\",\"url\":\"https://tenor.com/view/x\",\"thumbnail\":{\"url\":\"https://media.tenor.com/abcAAAAe/x.png\"}}");
+		CHECK(discord_embed_gif_url(o) == NULL);
+		gif = discord_native_embed_html(o);
+		CHECK_STR(gif, "<img src=\"https://media.tenor.com/abcAAAAe/x.png\" alt=\"GIF\"/>");
+		g_free(gif);
+		json_object_unref(o);
+		o = parse(embed_rich);
+		gif = discord_native_embed_html(o);
+		CHECK_STR(gif, "<b>Build #42</b><br/><b>Status</b> <b>passed</b>");
+		g_free(gif);
+		json_object_unref(o);
+		o = parse("{\"type\":\"link\",\"url\":\"https://example.com\"}");
+		CHECK(discord_native_embed_html(o) == NULL);    /* nothing to show */
+		json_object_unref(o);
+	}
+
+	reset();
+	o = parse(msg_link);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(strstr(written->str, "<br/><b><a href=\"https://example.com/post?a=1&amp;b=2\">A &lt;title&gt;</a></b><br/>This <b>is</b> a long description") != NULL);
+	CHECK(strstr(written->str, "END") == NULL);                            /* cut at ~200 characters */
+	CHECK(strstr(written->str, "\xe2\x80\xa6<br/><img src=\"https://images-ext-2.discordapp.net/external/x/https/example.com/t.png\" alt=\"Image\"/>|") != NULL);
+	CHECK(strstr(written->str, "<font back=") == NULL);                    /* not the old block */
+	CHECK_STR(M("embed-type"), "article");
+	CHECK_STR(M("embed-title"), "A <title>");
+	CHECK_STR(M("embed-description"), LONG_DESC);
+	CHECK_STR(M("embed-url"), "https://example.com/post?a=1&b=2");
+	CHECK_STR(M("embed-image"), "https://images-ext-2.discordapp.net/external/x/https/example.com/t.png");
+	fprintf(stderr, "written: %s\n", written->str);
+
+	/* An embed-only MESSAGE_UPDATE: a correction with the embed block,
+	 * described by embed-only-update */
+	reset();
+	o = parse(msg_link_bare);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(M("embed-type") == NULL);
+	reset();
+	o = parse(msg_link_update);
+	discord_process_dispatch(da, "MESSAGE_UPDATE", o);
+	json_object_unref(o);
+	CHECK(meta_count == 1);
+	CHECK_STR(M("embed-only-update"), "1");
+	CHECK_STR(M("correction-of"), "900000000000000004");
+	CHECK(M("stanza-id") == NULL && M("server-id") == NULL);
+	CHECK_STR(M("sender"), "alice");
+	CHECK_STR(M("embed-title"), "A <title>");
+	CHECK(g_str_has_prefix(events->str, "corrected(" CHANNEL_ID ",900000000000000004,900000000000000004,see "));
+	CHECK(strstr(events->str, "<b><a href=\"https://example.com/post?a=1&amp;b=2\">A &lt;title&gt;</a></b>") != NULL);
+	CHECK(strstr(events->str, "EDIT") == NULL);
+	CHECK_STR(written->str, "");
+	fprintf(stderr, "events: %s\n", events->str);
+
+	/* ... for a message the UI doesn't show: nothing (no EDIT: line) */
+	reset();
+	handle_events = FALSE;
+	o = parse(msg_link_update);
+	discord_process_message(da, o, DISCORD_MESSAGE_EDITED);
+	json_object_unref(o);
+	handle_events = TRUE;
+	CHECK(strstr(events->str, "corrected(") != NULL);
 	CHECK_STR(written->str, "");
 
 	/* ---- reactions ---- */
@@ -610,6 +931,7 @@ main(int argc, char **argv)
 	CHECK(!g_hash_table_contains(da->sent_message_ids, "424242"));
 	CHECK_STR(M("stanza-id"), "556");
 	CHECK(M("outgoing") == NULL);
+	CHECK(M("markable") == NULL);        /* our own */
 	CHECK_STR(M("sender"), "me@example.com");
 	CHECK(strstr(written->str, "|my reply|0x1]") != NULL);
 	fprintf(stderr, "written: %s\n", written->str);
@@ -678,6 +1000,7 @@ main(int argc, char **argv)
 	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
 	json_object_unref(o);
 	CHECK_STR(M("outgoing"), "1");
+	CHECK(M("markable") == NULL);
 	CHECK_STR(M("sender"), "me@example.com");
 	CHECK(strstr(written->str, "|from my phone|0x") != NULL);
 
@@ -777,6 +1100,254 @@ main(int argc, char **argv)
 		g_free(html);
 	}
 
+	/* ---- read state ---- */
+	CHECK(purple_plugin_ipc_get_params(purple_find_prpl(DISCORD_PLUGIN_ID), "send-marker", NULL, NULL, NULL));
+	/* MESSAGE_ACK from another client: read elsewhere, from our account */
+	reset();
+	o = parse(message_ack);
+	discord_process_dispatch(da, "MESSAGE_ACK", o);
+	json_object_unref(o);
+	CHECK_STR(events->str, "receipt(" CHANNEL_ID ",334385199974967099,displayed,me@example.com);");
+	CHECK(discord_native_read_get(da, channel->id) == 334385199974967099ULL);
+	/* ... again (the echo of an ack): nothing */
+	reset();
+	o = parse(message_ack);
+	discord_process_dispatch(da, "MESSAGE_ACK", o);
+	json_object_unref(o);
+	CHECK_STR(events->str, "");
+	reset();
+	o = parse(message_ack_dm);
+	discord_process_dispatch(da, "MESSAGE_ACK", o);
+	json_object_unref(o);
+	CHECK_STR(events->str, "receipt(alice,555,displayed,me@example.com);");
+
+	/* send-marker: one ack per newly read message */
+	drain_reactions(da);    /* the earlier requests go out (and fail) first */
+	capture_requests = TRUE;
+	reset();
+	CHECK(discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967100", NULL));
+	spin(60);
+	CHECK(strstr(requests->str, "POST https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974967100/ack {\"token\":null}") != NULL);
+	CHECK(discord_native_read_get(da, channel->id) == 334385199974967100ULL);
+	fprintf(stderr, "requests: %s", requests->str);
+	respond("{\"token\":\"ack-token-1\"}");
+	CHECK_STR(da->ack_token, "ack-token-1");
+	reset();
+	CHECK(discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967100", "displayed"));     /* again */
+	CHECK(discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967099", "displayed"));     /* older */
+	CHECK(!discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967101", "received"));    /* no such thing */
+	CHECK(!discord_ipc_send_marker(account, "nobody", "334385199974967101", NULL));
+	spin(60);
+	CHECK_STR(requests->str, "");
+	reset();
+	CHECK(discord_ipc_send_marker(account, "alice", "556", "acknowledged"));
+	spin(60);
+	CHECK(strstr(requests->str, "POST https://discord.com/api/v10/channels/" DM_ID "/messages/556/ack {\"token\":\"ack-token-1\"}") != NULL);
+	respond(NULL);
+	/* The conversation's unseen update no longer acks (send-marker does) */
+	reset();
+	discord_mark_conv_seen(purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, CHANNEL_ID, account),
+	                       PURPLE_CONV_UPDATE_UNSEEN);
+	spin(60);
+	CHECK_STR(requests->str, "");
+	capture_requests = FALSE;
+	g_free(da->ack_token);
+	da->ack_token = NULL;
+
+	/* ---- scroll-back: mam-fetch-older and mam-query-done ---- */
+	{
+		PurplePlugin *prpl = purple_find_prpl(DISCORD_PLUGIN_ID);
+		int n = -1;
+
+		CHECK(purple_plugin_ipc_get_params(prpl, "mam-fetch-older", NULL, &n, NULL) && n == 4);
+		CHECK(purple_signal_connect(prpl, "mam-query-done", &failures, PURPLE_CALLBACK(query_done_cb), NULL) != 0);
+	}
+	spin(60);
+	capture_requests = TRUE;
+	purple_account_set_bool(account, "show-reactions", FALSE);     /* reactions: below */
+	reset();
+	CHECK(GPOINTER_TO_INT(purple_plugin_ipc_call(purple_find_prpl(DISCORD_PLUGIN_ID), "mam-fetch-older", NULL,
+	                                             account, CHANNEL_ID, "334385199974967042", 3)));
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages?limit=3&before=334385199974967042\n");
+	respond(older_page);
+	/* Oldest first, DELAYED; ours SEND */
+	CHECK_STR(written->str,
+		"[" CHANNEL_ID "|Mason|first|0x402]"
+		"[" CHANNEL_ID "|alice|second|0x402]"
+		"[" CHANNEL_ID "|me|third|0x10401]");
+	CHECK(meta_count == 3);
+	CHECK_STR(M("mam"), "1");
+	CHECK_STR(M("mam-query"), "older");
+	CHECK_STR(M("stanza-id"), "334385199974960003");
+	CHECK_STR(M("outgoing"), "1");
+	CHECK(g_str_has_suffix(events->str, "done(" CHANNEL_ID ",334385199974960001,334385199974960003,0);"));
+	fprintf(stderr, "older page: %s\n  events: %s\n", written->str, events->str);
+	CHECK(!da->history_older);
+	/* The last page: fewer than asked for */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, "334385199974960001", 100));
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages?limit=100&before=334385199974960001\n");
+	respond("[{\"type\":0,\"id\":\"334385199974950000\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"zeroth\","
+	        "  \"timestamp\":\"2017-07-11T16:00:00+00:00\",\"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"}}]");
+	CHECK(g_str_has_suffix(events->str, "done(" CHANNEL_ID ",334385199974950000,334385199974950000,1);"));
+	/* ... nothing older */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, "334385199974950000", 0));      /* count 0 -> 1 */
+	spin(60);
+	CHECK(strstr(requests->str, "?limit=1&before=334385199974950000") != NULL);
+	respond("[]");
+	CHECK_STR(events->str, "done(" CHANNEL_ID ",(null),(null),1);");
+	CHECK_STR(written->str, "");
+	/* ... a failed request */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, NULL, 500));                    /* 500 -> 100, newest */
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages?limit=100\n");
+	respond(NULL);
+	CHECK_STR(events->str, "done(" CHANNEL_ID ",(null),(null),0);");
+	/* A DM */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, "alice", "", 50));
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" DM_ID "/messages?limit=50\n");
+	respond("[]");
+	CHECK_STR(events->str, "done(alice,(null),(null),1);");
+	CHECK(!discord_ipc_mam_fetch_older(account, CHANNEL_ID, "abc", 50));
+	CHECK(!discord_ipc_mam_fetch_older(account, "nobody", NULL, 50));
+	/* A live message afterwards is no archive result */
+	reset();
+	o = parse(msg_link_bare);
+	json_object_set_string_member(o, "id", "900000000000000099");
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(M("mam") == NULL && M("mam-query") == NULL);
+	CHECK(strstr(written->str, "|0x2]") != NULL);
+	capture_requests = FALSE;
+	purple_account_set_bool(account, "show-reactions", TRUE);
+
+	/* ---- reactions on history messages ---- */
+	{
+		GList *l;
+		gboolean found = FALSE;
+
+		for (l = PURPLE_PLUGIN_PROTOCOL_INFO(purple_find_prpl(DISCORD_PLUGIN_ID))->protocol_options; l; l = l->next)
+			found = found || purple_strequal(purple_account_option_get_setting(l->data), "reaction_history_limit");
+		CHECK(found);
+	}
+	drain_reactions(da);
+	capture_requests = TRUE;
+	purple_account_set_int(account, "reaction_history_limit", 2);
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, "334385199974970004", 3));
+	spin(60);
+	respond(reacted_page);
+	CHECK(strstr(written->str, "reacted") == NULL);         /* no text lines */
+	CHECK(strstr(written->str, "|Mason|hot|0x402]") != NULL);
+	CHECK(g_queue_get_length(da->reaction_msgs) == 2);      /* the newest 2 of 3 */
+	CHECK(!g_hash_table_contains(discord_own_reactions_get(da, "334385199974970002", TRUE), "LUL:41771983429993937"));
+	CHECK(g_hash_table_contains(discord_own_reactions_get(da, "334385199974970002", TRUE), "\xf0\x9f\x94\xa5"));
+	reset();
+	spin(200);
+	CHECK_STR(requests->str, "");                           /* not at once */
+	spin(250);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974970002/reactions/%F0%9F%94%A5?limit=100\n");
+	spin(400);
+	CHECK(g_strstr_len(requests->str, -1, "\n") == requests->str + requests->len - 1);  /* one at a time */
+	respond(reactors_fire);
+	CHECK_STR(events->str,
+		"reaction(" CHANNEL_ID ",334385199974970002,\xf0\x9f\x94\xa5,alice,1);"
+		"reaction(" CHANNEL_ID ",334385199974970002,\xf0\x9f\x94\xa5,me,1);");
+	reset();
+	spin(450);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974970002/reactions/LUL%3A41771983429993937?limit=100\n");
+	/* That response said the bucket is empty: wait for its reset */
+	discord_native_note_rate_limit(da, "0", "1.2");
+	respond(reactors_new_user);
+	CHECK_STR(events->str, "reaction(" CHANNEL_ID ",334385199974970002,:LUL:,bob,1);");
+	reset();
+	spin(900);
+	CHECK_STR(requests->str, "");
+	spin(600);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974970003/reactions/%F0%9F%8E%89?limit=100\n");
+	discord_native_note_rate_limit(da, "4", "0.5");
+	respond(NULL);                                          /* failed: next one */
+	CHECK_STR(events->str, "");
+	reset();
+	spin(450);
+	CHECK_STR(requests->str, "");                           /* the queue is empty */
+	CHECK(g_queue_is_empty(da->reaction_msgs) && !da->reaction_busy && da->reaction_timer == 0);
+	/* Disabled */
+	purple_account_set_int(account, "reaction_history_limit", 0);
+	reset();
+	o = parse(msg_create);
+	json_object_set_string_member(o, "id", "334385199974970010");
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(g_queue_is_empty(da->reaction_msgs));
+	CHECK(strstr(written->str, "reacted") == NULL);
+	purple_account_set_int(account, "reaction_history_limit", 25);
+	capture_requests = FALSE;
+
+	/* ---- friends' games as status attributes ---- */
+	{
+		PurpleBuddy *buddy;
+		PurpleStatus *st;
+		JsonParser *parser;
+
+		CHECK(purple_status_type_get_attr(purple_account_get_status_type(account, "online"), "game") != NULL);
+		CHECK(purple_status_type_get_attr(purple_account_get_status_type(account, "mobile"), "game_app_id") != NULL);
+		buddy = purple_buddy_new(account, "alice", NULL);
+		purple_blist_add_buddy(buddy, NULL, NULL, NULL);
+
+		o = parse(presence_game);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "online");
+		CHECK_STR(purple_status_get_attr_string(st, "game"), "Rocket League");
+		CHECK_STR(purple_status_get_attr_string(st, "game_app_id"), "379286085710381999");
+
+		o = parse(presence_listening);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "idle");
+		CHECK_STR(purple_status_get_attr_string(st, "game"), "Spotify");
+		CHECK(purple_status_get_attr_string(st, "game_app_id") == NULL);
+
+		o = parse(presence_custom_only);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "dnd");
+		CHECK(purple_status_get_attr_string(st, "game") == NULL);       /* a custom status is no game */
+
+		parser = json_parser_new();
+		json_parser_load_from_data(parser, ready_presences, -1, NULL);
+		discord_got_presences(da, json_parser_get_root(parser), NULL);
+		g_object_unref(parser);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_attr_string(st, "game"), "Arena");
+		CHECK_STR(purple_status_get_attr_string(st, "game_app_id"), "123456789012345678");
+
+		o = parse(presence_offline);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "offline");
+		CHECK(purple_status_get_attr_string(st, "game") == NULL);
+
+		/* The legacy "game" object */
+		o = parse("{\"game\":{\"name\":\"Old Game\",\"type\":0}}");
+		CHECK(discord_presence_game_activity(o) != NULL);
+		json_object_unref(o);
+		o = parse("{\"game\":{\"name\":\"x\",\"id\":\"custom\",\"type\":4}}");
+		CHECK(discord_presence_game_activity(o) == NULL);
+		json_object_unref(o);
+	}
+
 	/* ---- stock UI: the same payloads give the old output ---- */
 	{
 		DiscordAccount *stock = g_new0(DiscordAccount, 1);
@@ -814,6 +1385,71 @@ main(int argc, char **argv)
 		json_object_unref(o);
 		CHECK(meta_count == 0);
 		CHECK(strstr(written->str, "|Mason|Supa Hot :LUL:|") != NULL);   /* custom smiley path */
+		/* Presence: the message only, no game attributes */
+		{
+			PurpleStatus *st;
+
+			o = parse(presence_game);
+			discord_process_dispatch(stock, "PRESENCE_UPDATE", o);
+			json_object_unref(o);
+			st = purple_presence_get_active_status(purple_buddy_get_presence(purple_find_buddy(account, "alice")));
+			CHECK_STR(purple_status_get_id(st), "online");
+			CHECK(purple_status_get_attr_string(st, "game") == NULL);
+		}
+
+		/* The unseen update acks the channel, MESSAGE_ACK is ignored */
+		capture_requests = TRUE;
+		reset();
+		discord_mark_conv_seen(purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, CHANNEL_ID, account),
+		                       PURPLE_CONV_UPDATE_UNSEEN);
+		spin(60);
+		CHECK(strstr(requests->str, "POST https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/") != NULL &&
+		      strstr(requests->str, "/ack ") != NULL);
+		respond(NULL);
+		reset();
+		o = parse(message_ack);
+		discord_process_dispatch(stock, "MESSAGE_ACK", o);
+		json_object_unref(o);
+		CHECK_STR(events->str, "");
+		capture_requests = FALSE;
+
+		/* Stickers, GIF and link embeds: the old lines and block */
+		reset();
+		o = parse(msg_stickers);
+		discord_process_message(stock, o, DISCORD_MESSAGE_NORMAL);
+		json_object_unref(o);
+		CHECK(strstr(written->str, "|Mason|\nhttps://cdn.discordapp.com/stickers/749054660769218631.png"
+		                           "\nhttps://cdn.discordapp.com/stickers/816087792291282944.json"
+		                           "\nhttps://cdn.discordapp.com/stickers/1045000000000000000.png|") != NULL);
+		CHECK(strstr(written->str, "<img") == NULL);
+		fprintf(stderr, "stock written: %s\n", written->str);
+
+		reset();
+		o = parse(msg_tenor);
+		discord_process_message(stock, o, DISCORD_MESSAGE_NORMAL);
+		json_object_unref(o);
+		CHECK(meta_count == 0);
+		CHECK(strstr(written->str, "<font back=\"#cccccc\" color=\"#cccccc\"> </font> " TENOR_URL "<br/>") != NULL);
+		CHECK(strstr(written->str, "<img") == NULL);
+
+		reset();
+		o = parse(msg_link);
+		discord_process_message(stock, o, DISCORD_MESSAGE_NORMAL);
+		json_object_unref(o);
+		CHECK(strstr(written->str, "<a href=\"https://example.com/post?a=1&amp;b=2\">A &lt;title&gt;</a><br/>") != NULL);
+		CHECK(strstr(written->str, "END") != NULL);                /* the whole description */
+		CHECK(strstr(written->str, "<img") == NULL);
+		fprintf(stderr, "stock written: %s\n", written->str);
+
+		/* ... and an embed-only update is an EDIT: line, as before */
+		reset();
+		o = parse(msg_link_update);
+		discord_process_dispatch(stock, "MESSAGE_UPDATE", o);
+		json_object_unref(o);
+		CHECK_STR(events->str, "");
+		CHECK(meta_count == 0);
+		CHECK(strstr(written->str, "|alice|EDIT: see ") != NULL);
+
 		gc->proto_data = da;
 		g_free(stock);
 	}
@@ -821,3 +1457,4 @@ main(int argc, char **argv)
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }
+#endif /* STOCK_DUMP */
