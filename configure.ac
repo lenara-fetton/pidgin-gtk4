@@ -926,6 +926,31 @@ Use --disable-idn if you do not need it.
 fi
 
 dnl #######################################################################
+dnl # Check for the OMEMO plugin's libraries (libpurple/plugins/omemo)
+dnl #######################################################################
+
+AC_ARG_ENABLE(omemo,
+	[AC_HELP_STRING([--disable-omemo], [do not build the OMEMO plugin (needs libomemo-c, libgcrypt and sqlite3)])],
+	[enable_omemo="$enableval"], [enable_omemo="yes"])
+if test "x$enable_omemo" != "xno"; then
+	PKG_CHECK_MODULES([OMEMO], [libomemo-c >= 0.5 libgcrypt sqlite3], [
+		AC_SUBST(OMEMO_CFLAGS)
+		AC_SUBST(OMEMO_LIBS)
+		enable_omemo="yes"
+	], [
+		AC_MSG_RESULT(no)
+		enable_omemo="no"
+		if test "x$force_deps" = "xyes" ; then
+			AC_MSG_ERROR([
+libomemo-c, libgcrypt or sqlite3 development headers not found.
+Use --disable-omemo if you do not need the OMEMO plugin.
+])
+		fi
+	])
+fi
+AM_CONDITIONAL(ENABLE_OMEMO, test "x$enable_omemo" = "xyes")
+
+dnl #######################################################################
 dnl # Check for Meanwhile headers (for Sametime)
 dnl #######################################################################
 AC_ARG_ENABLE(meanwhile,
@@ -2565,6 +2590,7 @@ AC_CONFIG_FILES([Makefile
 		   libpurple/plugins/mono/loader/Makefile
 		   libpurple/plugins/perl/Makefile
 		   libpurple/plugins/perl/common/Makefile.PL
+		   libpurple/plugins/omemo/Makefile
 		   libpurple/plugins/ssl/Makefile
 		   libpurple/plugins/tcl/Makefile
 		   libpurple/Makefile
@@ -2613,6 +2639,7 @@ if test "x$enable_dbus" = "xyes" ; then
 	eval eval echo D-Bus services directory...... : $DBUS_SERVICES_DIR
 fi
 echo Build with GNU Libidn2........ : $enable_idn
+echo Build the OMEMO plugin........ : $enable_omemo
 echo SSL Library/Libraries......... : $msg_ssl
 if test "x$SSL_CERTIFICATES_DIR" != "x" ; then
 	eval eval echo SSL CA certificates directory. : $SSL_CERTIFICATES_DIR
