@@ -9,12 +9,23 @@
 # registers the M8 conversation signals as pidgin4's libpurple does, loads
 # the plugin as a prpl and feeds it gateway payloads in the shapes of the
 # Discord API documentation: MESSAGE_CREATE (plain, reply, reply to a
-# deleted message, image attachment, custom emoji), MESSAGE_UPDATE (edit,
-# embed-only), MESSAGE_REACTION_ADD/REMOVE (custom, Unicode, own, DM) and
-# MESSAGE_DELETE (known and unknown author), own sends echoed by the gateway
-# or the REST reply, a failed send, and the IPC commands. No network: the
-# fake connection isn't in purple_connections_get_all(), so REST requests
-# fail at once. The same payloads without message-meta give the old output.
+# deleted message, image attachment, custom emoji, stickers, a Tenor GIF, a
+# link embed), MESSAGE_UPDATE (edit, embed-only), MESSAGE_REACTION_ADD/
+# REMOVE (custom, Unicode, own, DM), MESSAGE_DELETE (known and unknown
+# author), MESSAGE_ACK, PRESENCE_UPDATE and READY presences (activities),
+# own sends echoed by the gateway or the REST reply, a failed send, and the
+# IPC commands, including send-marker, mam-fetch-older (history pages ->
+# mam-query-done) and the reactors fetches of history reactions (queue,
+# limit, rate limit). No network: the fake connection isn't in
+# purple_connections_get_all(), so REST requests fail at once, or, where a
+# test sets capture_requests, are recorded and answered by the test.
+#
+# Then the stock-output gate: stock_dump.c feeds every sample payload to
+# the plugin on a UI without message-meta and prints what it writes, emits
+# and requests, the buddy statuses, status types, account options and
+# signals. It is built against this branch and against STOCK_BASE (default
+# c5f7c41, the last commit before these features), and the outputs must be
+# identical.
 #
 # Usage: scripts/tests/discord-m9/run.sh [--asan]
 set -e
