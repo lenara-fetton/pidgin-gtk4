@@ -22,11 +22,10 @@ cc = meson.get_compiler('c')
 gnome = import('gnome')
 fs = import('fs')
 
+# Development builds go into a private prefix (scripts/build-pidgin4.sh
+# refuses /usr); packages (packaging/gentoo) install into /usr together
+# with this tree's libpurple.
 prefix = get_option('prefix')
-if prefix == '/usr' or prefix.startswith('/usr/')
-	error('pidgin4 must not be installed into /usr; use a private prefix ' +
-	      'such as $HOME/.local/pidgin4 (see scripts/build-pidgin4.sh)')
-endif
 
 bindir = prefix / get_option('bindir')
 libdir = prefix / get_option('libdir')
@@ -60,6 +59,11 @@ purple_prefix = purple_dep.get_variable(pkgconfig : 'prefix')
 purple_libdir = purple_dep.get_variable(pkgconfig : 'libdir')
 purple_plugindir = purple_dep.get_variable(pkgconfig : 'plugindir')
 purple_datadir = purple_dep.get_variable(pkgconfig : 'datadir')
+
+if prefix == '/usr' and purple_prefix != '/usr'
+	error('a /usr install needs this tree\'s libpurple in /usr too ' +
+	      '(net-im/pidgin from packaging/gentoo), not one in ' + purple_prefix)
+endif
 
 # A private prefix (the development build) needs a runpath to its
 # libpurple; a packaged build against the system libpurple in /usr does not.
