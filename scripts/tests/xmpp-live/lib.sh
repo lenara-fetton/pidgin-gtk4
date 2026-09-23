@@ -33,6 +33,28 @@ log_of() { echo "$work/pidgin4-$1.log"; }
 # since USER MARK: log lines after a byte offset (from mark USER)
 mark() { stat -c %s "$(log_of "$1")"; }
 since() { tail -c +"$(( $2 + 1 ))" "$(log_of "$1")"; }
+# wait_log_file FILE REGEX [TIMEOUT]: wait for REGEX anywhere in FILE
+wait_log_file() {
+	local i
+	for i in $(seq $(( ${3:-10} * 4 ))); do
+		grep -qE "$2" "$1" 2>/dev/null && return 0
+		sleep 0.25
+	done
+	return 1
+}
+# ctl USER COMMAND...: one command line for the instance's ctl plugin
+# (ctl-plugin.c); waits (5 s) until the plugin has taken it
+ctl() {
+	local u=$1 i; shift
+	printf '%s\n' "$*" > "$work/ctl-$u.new"
+	mv "$work/ctl-$u.new" "$work/ctl-$u"
+	for i in $(seq 20); do
+		[ -e "$work/ctl-$u" ] || return 0
+		sleep 0.25
+	done
+	echo "ctl: $u did not take '$*'" >&2
+	return 1
+}
 # wait_log USER MARK REGEX [TIMEOUT]: wait for REGEX in the log after MARK
 wait_log() {
 	local i
