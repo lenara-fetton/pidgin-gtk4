@@ -123,6 +123,18 @@ Kept as-is: plaintext passwords in `accounts.xml`, which was a deliberate choice
 
 ## Milestones
 
+### Overall status (2026-09-23)
+
+All nine milestones are implemented and merged on branch `gtk4-port` (138 commits on top of `main`). Every libpurple change passed `scripts/check-abi.sh`; the jabber M8 suite (`scripts/tests/jabber-m8/run.sh`, 405 checks), the Discord M9 suite (`scripts/tests/discord-m9/run.sh`, 145 checks), the pidgin4 Meson tests, the four pidgin4 selftests (`PIDGIN4_{BLIST,CONV,WINDOWS,PLUGINS}_SELFTEST`) and `scripts/check-profile-compat.sh --pidgin4` all pass on the merged tree. **No account was ever signed in during development**: every check that needs a live connection is in `pidgin4/TESTING.md`, per milestone, and is the user's next step.
+
+What is deliberately not done yet:
+
+- **`pidgin/` (GTK 2) is still in the tree and still builds.** The plan removes it "at the end", which means after the cutover gate has passed and the user has approved running pidgin4 on `~/.purple`. Until then it stays as the fallback daily driver.
+- **The Discord and Steam patches are on branches in their own repositories** (`pidgin4-message-meta` in `~/purple-discord`, `pidgin4-rich-presence` in `~/pidgin-opensteamworks`, checked out in `~/purple-discord-pidgin4` and `~/pidgin-opensteamworks-pidgin4`). The `.so` files that `~/.purple/plugins` links to were not rebuilt; installing the new builds is the user's call (see the M9 status).
+- **Live interop** (Conversations/Dino/Gajim, Libera, Discord, Steam) and the GNOME checks.
+
+Suggested order for the user: build (`scripts/build-libpurple.sh && scripts/build-pidgin4.sh --desktop-integration`), run `pidgin4 -c ~/.purple-gtk4` under Sway, work through `pidgin4/TESTING.md` from M2 onwards, then the *Cutover gate* above.
+
 ### M0: Repository baseline
 - `.gitignore` for autotools output, baseline commit of the pristine tree, work branch.
 - Script: configure/build/install libpurple (+ GTK 2 pidgin) into the private prefix; copy `~/.purple` → `~/.purple-gtk4` **verbatim**, with no pruning or rewriting, for development. Changes such as moving IRC accounts to TLS are made through the UI, using existing 2.14 setting keys (`ssl`, `port`).
