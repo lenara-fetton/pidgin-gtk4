@@ -740,6 +740,11 @@ in a DM and in a small server channel.
 - [ ] A friend who is playing shows the game emblem on the buddy row and
       "In game <name>" as the secondary line (large list), and the game in
       the tooltip. When they stop, the emblem and the line go.
+- [ ] With the plugin's `game_icon_url` (branch pidgin4-rich-presence):
+      the game's capsule picture sits before that line (about 18 px tall,
+      its aspect kept) once it has loaded, and larger (46 px tall) in the
+      tooltip; it goes with the game. A second friend in the same game
+      shows it at once (cached).
 - [ ] A non-Steam game shows its name too ("In non-Steam game …").
 - [ ] Steam Guard and login are unchanged; Pidgin 2 shows friends' games
       as before.
@@ -804,7 +809,78 @@ never loads anything from `/pidgin/plugins/loaded`.
 - [ ] Unload every plugin in the dialog with conversations open: no
       criticals, and the markers, time rows' styling and send button go.
 
-## Developer aids
+## M8: XMPP server features round 2 (with an XMPP account signed in)
+
+What the server supports decides what is offered (doc/PIDGIN-UPGRADE.md,
+M8 "Landed (server features round 2)"). The local Prosody of
+`scripts/tests/xmpp-live/` has XEP-0191 and (its test module) XEP-0377,
+but no XEP-0186.
+
+### Blocking and spam reports
+- [ ] Tools → Privacy, pick the XMPP account: only "Allow all users to
+      contact me" and "Block only the users below" can be chosen; the
+      other three are greyed, with the tooltip "Not supported by this
+      server", and a note under the list says so. Choosing one with the
+      keyboard snaps back. An IRC account shows all five as before.
+- [ ] A buddy's menu: Block / Unblock as before (the server's list
+      follows, see another client). With XEP-0377 on the server, "Report
+      Spam and Block..." sits next to Block (not for a blocked buddy);
+      it asks for an optional reason and an "abuse" choice, and the
+      server gets the report (Prosody's log) and blocks the JID (it
+      shows in the Privacy window's block list). Without XEP-0377 the
+      item is missing.
+- [ ] The same item in an IM window's Conversation menu (not in rooms).
+
+### Invisible (XEP-0186)
+- [ ] On a server without XEP-0186 (the local Prosody), the status box's
+      Invisible row has an info icon and the tooltip "The server of
+      <account> doesn't support invisibility; you will appear available
+      there."; it can still be chosen, and another client then sees you
+      available. The saved-status editor shows the same note under Status
+      when Invisible is picked, the per-account list ("Use a different
+      status for some accounts") has it as the Invisible cell's tooltip,
+      and the per-account editor shows "The server doesn't support
+      invisibility; you will appear available." With the account offline
+      nothing is known and no note is shown.
+
+### Shared files (XEP-0447 stateless file sharing)
+- [ ] Send an image from Conversations/Dino (or from the other pidgin4
+      of the xmpp-live setup): the row shows the link and, under it, a
+      card at once: the thumbnail if the sender gave one (else the space
+      the image will take), the name, size and type; then the image
+      replaces the thumbnail and "✓ verified" appears (tooltip: the
+      SHA-256 matches). No second inline copy of the URL appears.
+- [ ] A caption the other client adds shows under the card.
+- [ ] A video or voice message: the media card with the real file name
+      and size (not the upload's random URL name). A PDF: a file card
+      with an icon, name, size and type, and Open.
+- [ ] With Preferences → Conversations → "Show images shared over XMPP
+      inline (any server)" off, the card shows
+      the thumbnail only; no download happens (no "verified").
+- [ ] A text message with a file (Conversations' caption as the body):
+      the text, then the card.
+
+### Encryption we can't read (XEP-0380)
+- [ ] From Gajim or Dino, send a message encrypted with OpenPGP (XEP-0373)
+      or OTR: the sender's fallback text stays, and under it an italic,
+      dimmed line with a crossed-out lock: "Encrypted with OpenPGP for
+      XMPP, which this client doesn't support" (the namespace as its
+      tooltip).
+- [ ] With the OMEMO plugin loaded, an OMEMO message it decrypts shows no
+      such line. From a client that only speaks OMEMO 2
+      (`urn:xmpp:omemo:2`, e.g. a recent Kaidan/Dino): the line says
+      "Encrypted with OMEMO…", and Tools → OMEMO Fingerprints, for that
+      contact, shows a warning that they use OMEMO 2, which isn't
+      supported.
+
+### Archive preferences and idle
+- [ ] Accounts → Modify the XMPP account → Advanced: "Ask the server to
+      archive all messages (XEP-0313)" is on by default; turned off (and
+      reconnected), no MAM prefs IQ is sent (`-d` log); Pidgin 2 shows the
+      same option.
+- [ ] A contact idle in Conversations/Dino (XEP-0319): the buddy list
+      shows "Idle Nm" on their row (with buddy details on) or the idle
+      time column, and "Idle" in the tooltip; it goes when they're back.
 
 For headless test runs only:
 - `PIDGIN4_REQUEST_SELFTEST=1` opens one request of every kind at startup.
@@ -889,6 +965,33 @@ For headless test runs only:
   `/pidgin/plugins/loaded` did not change. It restores the prefs it set
   and quits with status 0 ("PASS (N checks)"). Scratch profile only: it
   writes logs, index rows and `cap.db`.
+
+- `PIDGIN4_R2_SELFTEST=1` (M8 server features round 2, UI) registers
+  the four round-2 IPC commands (privacy-modes,
+  status-invisible-supported, report-spam-supported, report-spam) on the
+  selftest protocol with results it toggles, gives that protocol
+  blocking and an invisible status for the run, and checks: the Privacy
+  window's greyed modes, tooltip and note (and that an unsupported mode
+  isn't applied); the Report Spam items in the buddy menu and the
+  Conversation menu (only when supported, not for blocked contacts) and
+  the dialog's IPC arguments; the invisible notes in the status box, the
+  saved-status editor and its per-account editor (and none while
+  supported); file-sharing metadata (sfs-* keys) turned into an
+  attachment with the thumbnail before any download, the fields, the
+  caption, no inline copy of the body URL, then the image from a local
+  SoupServer with its SHA-256 verified, a wrong hash shown as "hash
+  mismatch", an unknown algorithm "not verified", a video's media card
+  and a PDF's file card; the XEP-0380 line (text, italics, icon,
+  tooltip) and the OMEMO window's OMEMO 2 warning (a stand-in OMEMO
+  plugin listing devices for an unconnected XMPP account that got an
+  `urn:xmpp:omemo:2` message); the XMPP account editor's
+  `mam_prefs_always` check box (label, on by default); and a buddy's
+  idle time on its row and in its tooltip after
+  `purple_prpl_got_user_idle()`; and (M9) a buddy in a game with a
+  `game_icon_url` served by the local server: the picture on the row
+  item, on the row (18 px tall) and in the tooltip (46 px), gone with
+  the game. It removes its account and quits with
+  status 0 ("PASS (N checks)"). Scratch profile only.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
 for the Xvfb setup (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`,

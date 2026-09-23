@@ -72,7 +72,9 @@ G_DECLARE_FINAL_TYPE(PidginBlistNodeItem, pidgin_blist_node_item,
  *   "emblem"         GIcon or NULL
  *   "protocol-icon"  GIcon or NULL (NULL hides it)
  *   "buddy-icon"     GdkPaintable or NULL
- *   "style"          string: CSS class of the row (pidgin-blist-online, ...)
+ *   "game-icon"      GdkPaintable or NULL: the game's picture (M9, a
+ *                    "game_icon_url" status attribute, e.g. Steam's)
+ *   "style"         string: CSS class of the row (pidgin-blist-online, ...)
  */
 
 /** The node. Never NULL; the item does not own it. */

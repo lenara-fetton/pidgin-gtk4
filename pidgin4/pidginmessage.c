@@ -60,6 +60,8 @@ struct _PidginMessage
 
 	GPtrArray *css_classes;         /* M7: extra row classes (plugins) */
 	PidginAttachment *attachment;   /* shown under the text */
+	char *encryption_ns;            /* XEP-0380: not decrypted */
+	char *encryption;               /* its name */
 };
 
 enum {
@@ -84,6 +86,7 @@ enum {
 	PROP_INDEX_ID,
 	PROP_CSS_CLASSES,
 	PROP_ATTACHMENT,
+	PROP_ENCRYPTION,
 	N_PROPS
 };
 
@@ -121,6 +124,7 @@ pidgin_message_get_property(GObject *obj, guint prop_id, GValue *value,
 		case PROP_TIME: g_value_set_int64(value, msg->when); break;
 		case PROP_HTML: g_value_set_string(value, msg->html); break;
 		case PROP_ATTACHMENT: g_value_set_object(value, msg->attachment); break;
+		case PROP_ENCRYPTION: g_value_set_string(value, msg->encryption); break;
 		case PROP_STANZA_ID: g_value_set_string(value, msg->stanza_id); break;
 		case PROP_ORIGIN_ID: g_value_set_string(value, msg->origin_id); break;
 		case PROP_SERVER_ID: g_value_set_string(value, msg->server_id); break;
@@ -194,6 +198,8 @@ pidgin_message_finalize(GObject *obj)
 	g_clear_pointer(&msg->reactions, g_hash_table_destroy);
 	g_clear_pointer(&msg->css_classes, g_ptr_array_unref);
 	g_clear_object(&msg->attachment);
+	g_free(msg->encryption_ns);
+	g_free(msg->encryption);
 
 	G_OBJECT_CLASS(pidgin_message_parent_class)->finalize(obj);
 }
@@ -217,6 +223,7 @@ pidgin_message_class_init(PidginMessageClass *klass)
 	props[PROP_HTML] = g_param_spec_string("html", NULL, NULL, NULL, rw);
 	props[PROP_ATTACHMENT] = g_param_spec_object("attachment", NULL, NULL,
 		PIDGIN_TYPE_ATTACHMENT, rw);
+	props[PROP_ENCRYPTION] = g_param_spec_string("encryption", NULL, NULL, NULL, ro);
 	props[PROP_STANZA_ID] = g_param_spec_string("stanza-id", NULL, NULL, NULL, rw);
 	props[PROP_ORIGIN_ID] = g_param_spec_string("origin-id", NULL, NULL, NULL, rw);
 	props[PROP_SERVER_ID] = g_param_spec_string("server-id", NULL, NULL, NULL, rw);
@@ -296,6 +303,19 @@ pidgin_message_apply_meta(PidginMessage *msg, GHashTable *meta)
 	if ((v = g_hash_table_lookup(meta, "reply-to")) != NULL)
 		pidgin_message_set_reply(msg, v, g_hash_table_lookup(meta, "reply-to-sender"),
 		                         msg->reply_preview);
+	/* XEP-0380: encrypted with something that wasn't decrypted here */
+	if ((v = g_hash_table_lookup(meta, "eme-namespace")) != NULL && *v != '\0')
+		pidgin_message_set_encryption(msg, v, g_hash_table_lookup(meta, "eme-name"));
+	/* A described file share (XEP-0447/0385): its card, at once, in place
+	 * of what the body URL would have given. The text stays. */
+	{
+		PidginAttachment *share = pidgin_attachment_new_for_share(meta);
+
+		if (share != NULL) {
+			pidgin_message_set_attachment(msg, share);
+			g_object_unref(share);
+		}
+	}
 	g_object_thaw_notify(G_OBJECT(msg));
 }
 
@@ -681,6 +701,33 @@ pidgin_message_set_index_id(PidginMessage *msg, gint64 id)
 		return;
 	msg->index_id = id;
 	g_object_notify_by_pspec(G_OBJECT(msg), props[PROP_INDEX_ID]);
+}
+
+/* ---- XEP-0380 explicit message encryption ---- */
+
+void
+pidgin_message_set_encryption(PidginMessage *msg, const char *ns, const char *name)
+{
+	g_return_if_fail(PIDGIN_IS_MESSAGE(msg));
+	g_free(msg->encryption_ns);
+	msg->encryption_ns = g_strdup(ns);
+	if (ns != NULL && (name == NULL || *name == '\0'))
+		name = ns;
+	set_string(msg, &msg->encryption, ns ? name : NULL, PROP_ENCRYPTION);
+}
+
+const char *
+pidgin_message_get_encryption(PidginMessage *msg)
+{
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE(msg), NULL);
+	return msg->encryption;
+}
+
+const char *
+pidgin_message_get_encryption_namespace(PidginMessage *msg)
+{
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE(msg), NULL);
+	return msg->encryption_ns;
 }
 
 /* ---- M7: extra CSS classes for the row (plugins) ---- */

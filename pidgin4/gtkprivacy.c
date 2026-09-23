@@ -43,6 +43,7 @@
 #include "gtkprivacy.h"
 #include "gtkutils.h"
 #include "pidginselftest.h"
+#include "pidginserverfeatures.h"
 
 typedef struct
 {
@@ -59,6 +60,8 @@ typedef struct
 	GtkSingleSelection *allow_selection;
 	GtkSingleSelection *block_selection;
 	GtkWidget *empty_label;
+	GtkWidget *modes_note;
+	guint modes;                    /* supported by the server (mask) */
 	gboolean in_allow_list;
 	PurpleAccount *account;
 } PidginPrivacyDialog;
@@ -212,12 +215,72 @@ build_list(PidginPrivacyDialog *dialog, GtkStringList *store,
 	return sw;
 }
 
+/*
+ * The modes the server can enforce (privacy-modes IPC, XMPP): the others
+ * stay in the list, greyed, with a tooltip, and can't be chosen.
+ */
+#define MODE_UNSUPPORTED_TIP N_("Not supported by this server")
+
+static gboolean
+mode_supported(PidginPrivacyDialog *dialog, guint position)
+{
+	return position < G_N_ELEMENTS(menu_entries) &&
+	       PIDGIN_PRIVACY_MODE_SUPPORTED(dialog->modes, menu_entries[position].type);
+}
+
+static void
+mode_setup_cb(GtkSignalListItemFactory *factory, GtkListItem *li, gpointer data)
+{
+	GtkWidget *label = gtk_label_new(NULL);
+
+	gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+	gtk_list_item_set_child(li, label);
+}
+
+static void
+mode_bind_cb(GtkSignalListItemFactory *factory, GtkListItem *li, PidginPrivacyDialog *dialog)
+{
+	GtkWidget *label = gtk_list_item_get_child(li);
+	gboolean ok = mode_supported(dialog, gtk_list_item_get_position(li));
+
+	gtk_label_set_text(GTK_LABEL(label),
+		gtk_string_object_get_string(gtk_list_item_get_item(li)));
+	gtk_list_item_set_activatable(li, ok);
+	gtk_list_item_set_selectable(li, ok);
+	gtk_widget_set_tooltip_text(label, ok ? NULL : _(MODE_UNSUPPORTED_TIP));
+	if (ok)
+		gtk_widget_remove_css_class(label, "dim-label");
+	else
+		gtk_widget_add_css_class(label, "dim-label");
+}
+
+static void
+update_modes(PidginPrivacyDialog *dialog)
+{
+	guint old = dialog->modes;
+
+	dialog->modes = pidgin_account_privacy_modes(
+		account_exists(dialog->account) ? dialog->account : NULL);
+	gtk_widget_set_visible(dialog->modes_note,
+		account_exists(dialog->account) && pidgin_privacy_modes_restricted(dialog->modes));
+	if (old != dialog->modes) {
+		/* rebind the popup's rows */
+		GtkListItemFactory *f = gtk_drop_down_get_list_factory(GTK_DROP_DOWN(dialog->type_menu));
+
+		g_object_ref(f);
+		gtk_drop_down_set_list_factory(GTK_DROP_DOWN(dialog->type_menu), NULL);
+		gtk_drop_down_set_list_factory(GTK_DROP_DOWN(dialog->type_menu), f);
+		g_object_unref(f);
+	}
+}
+
 static void
 select_account(PidginPrivacyDialog *dialog, PurpleAccount *account)
 {
 	gsize i;
 
 	dialog->account = account;
+	update_modes(dialog);
 
 	g_signal_handlers_block_by_func(dialog->type_menu, type_changed_cb, dialog);
 	if (account != NULL) {
@@ -255,6 +318,21 @@ type_changed_cb(GObject *dropdown, GParamSpec *pspec, PidginPrivacyDialog *dialo
 	if (selected >= G_N_ELEMENTS(menu_entries))
 		return;
 	new_type = menu_entries[selected].type;
+
+	/* A mode the server can't enforce isn't applied: back to the
+	 * account's (the popup doesn't offer it; this catches the keyboard). */
+	if (account_exists(dialog->account) && !mode_supported(dialog, selected) &&
+	    dialog->account->perm_deny != new_type) {
+		gsize i;
+
+		for (i = 0; i < G_N_ELEMENTS(menu_entries); i++) {
+			if (menu_entries[i].type == dialog->account->perm_deny) {
+				gtk_drop_down_set_selected(GTK_DROP_DOWN(dropdown), i);
+				break;
+			}
+		}
+		return;
+	}
 
 	/* Only a change by the user is applied (take effect immediately). */
 	if (account_exists(dialog->account) && dialog->account->perm_deny != new_type) {
@@ -364,10 +442,12 @@ refresh_accounts(PidginPrivacyDialog *dialog)
 	g_object_unref(tmp);
 
 	account = pidgin_account_dropdown_get_selected(dialog->account_menu);
-	if (account != dialog->account)
+	if (account != dialog->account) {
 		select_account(dialog, account);
-	else
+	} else {
+		update_modes(dialog);   /* known once signed on */
 		update_buttons(dialog);
+	}
 }
 
 static void
@@ -435,7 +515,24 @@ privacy_dialog_new(void)
 	dialog->type_menu = gtk_drop_down_new(G_LIST_MODEL(types), NULL);
 	gtk_accessible_update_property(GTK_ACCESSIBLE(dialog->type_menu),
 		GTK_ACCESSIBLE_PROPERTY_LABEL, _("Privacy"), -1);
+	{
+		GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
+
+		g_signal_connect(factory, "setup", G_CALLBACK(mode_setup_cb), NULL);
+		g_signal_connect(factory, "bind", G_CALLBACK(mode_bind_cb), dialog);
+		gtk_drop_down_set_list_factory(GTK_DROP_DOWN(dialog->type_menu), factory);
+		g_object_unref(factory);
+	}
+	dialog->modes = pidgin_account_privacy_modes(NULL);
 	gtk_box_append(GTK_BOX(vbox), dialog->type_menu);
+
+	dialog->modes_note = gtk_label_new(_("The greyed-out settings are not supported by "
+		"this account's server."));
+	gtk_label_set_wrap(GTK_LABEL(dialog->modes_note), TRUE);
+	gtk_label_set_xalign(GTK_LABEL(dialog->modes_note), 0.0);
+	gtk_widget_add_css_class(dialog->modes_note, "dim-label");
+	gtk_widget_set_visible(dialog->modes_note, FALSE);
+	gtk_box_append(GTK_BOX(vbox), dialog->modes_note);
 
 	/* The allow and block lists. */
 	dialog->allow_store = gtk_string_list_new(NULL);
@@ -652,6 +749,20 @@ pidgin_privacy_init(void)
 /**************************************************************************
  * Selftest
  **************************************************************************/
+
+GtkWidget *
+pidgin_privacy_dialog_get_widget_for_tests(const char *name)
+{
+	if (privacy_dialog == NULL)
+		return NULL;
+	if (purple_strequal(name, "account-menu"))
+		return privacy_dialog->account_menu;
+	if (purple_strequal(name, "type-menu"))
+		return privacy_dialog->type_menu;
+	if (purple_strequal(name, "modes-note"))
+		return privacy_dialog->modes_note;
+	return NULL;
+}
 
 void
 pidgin_privacy_selftest(void)

@@ -211,6 +211,16 @@ char *pidgin_conv_meta_text_retracted(const char *who, gboolean moderated,
 /** @jid without its resource ("a@b/c" -> "a@b"). */
 char *pidgin_conv_meta_bare_jid(const char *jid);
 
+/**
+ * XEP-0380: remembers (for this session) that @jid (bare or full) sent a
+ * message encrypted with @ns that wasn't decrypted (the eme-namespace
+ * meta key; done for every received message), and asks for it (the OMEMO
+ * window's OMEMO 2 note).
+ */
+void pidgin_conv_meta_note_encryption(PurpleAccount *account, const char *jid, const char *ns);
+gboolean pidgin_conv_meta_saw_encryption(PurpleAccount *account, const char *jid,
+                                         const char *ns);
+
 /** TRUE if @url is a lone http(s)/aesgcm URL whose path looks like an image. */
 gboolean pidgin_conv_meta_is_image_url(const char *url);
 

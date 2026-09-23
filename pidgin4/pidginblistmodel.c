@@ -63,6 +63,7 @@ struct _PidginBlistNodeItem
 	GIcon *emblem;
 	GIcon *protocol_icon;
 	GdkPaintable *buddy_icon;
+	GdkPaintable *game_icon;
 };
 
 enum {
@@ -75,6 +76,7 @@ enum {
 	ITEM_PROP_EMBLEM,
 	ITEM_PROP_PROTOCOL_ICON,
 	ITEM_PROP_BUDDY_ICON,
+	ITEM_PROP_GAME_ICON,
 	ITEM_N_PROPS
 };
 
@@ -135,6 +137,9 @@ pidgin_blist_node_item_get_property(GObject *obj, guint prop_id,
 	case ITEM_PROP_BUDDY_ICON:
 		g_value_set_object(value, item->buddy_icon);
 		break;
+	case ITEM_PROP_GAME_ICON:
+		g_value_set_object(value, item->game_icon);
+		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
 	}
@@ -175,6 +180,12 @@ pidgin_blist_node_item_set_property(GObject *obj, guint prop_id,
 			g_object_notify_by_pspec(obj, pspec);
 		}
 		break;
+	case ITEM_PROP_GAME_ICON:
+		if (item->game_icon != g_value_get_object(value)) {
+			g_set_object(&item->game_icon, g_value_get_object(value));
+			g_object_notify_by_pspec(obj, pspec);
+		}
+		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
 	}
@@ -195,6 +206,7 @@ pidgin_blist_node_item_dispose(GObject *obj)
 	g_clear_object(&item->emblem);
 	g_clear_object(&item->protocol_icon);
 	g_clear_object(&item->buddy_icon);
+	g_clear_object(&item->game_icon);
 
 	G_OBJECT_CLASS(pidgin_blist_node_item_parent_class)->dispose(obj);
 }
@@ -235,6 +247,8 @@ pidgin_blist_node_item_class_init(PidginBlistNodeItemClass *klass)
 	item_props[ITEM_PROP_PROTOCOL_ICON] = g_param_spec_object("protocol-icon", NULL, NULL,
 		G_TYPE_ICON, flags);
 	item_props[ITEM_PROP_BUDDY_ICON] = g_param_spec_object("buddy-icon", NULL, NULL,
+		GDK_TYPE_PAINTABLE, flags);
+	item_props[ITEM_PROP_GAME_ICON] = g_param_spec_object("game-icon", NULL, NULL,
 		GDK_TYPE_PAINTABLE, flags);
 
 	g_object_class_install_properties(obj_class, ITEM_N_PROPS, item_props);

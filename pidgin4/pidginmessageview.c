@@ -269,6 +269,8 @@ struct _PidginMessageRow
 	GtkWidget *reactions_box;
 	GtkWidget *attachment_box;
 	PidginAttachment *shown_attachment;
+	GtkWidget *encryption_box;      /* XEP-0380 hint */
+	GtkWidget *encryption_label;
 	GtkWidget *marker;
 
 	GSimpleActionGroup *actions;
@@ -1268,6 +1270,30 @@ update_attachment(PidginMessageRow *row)
 	gtk_widget_set_visible(row->attachment_box, att != NULL);
 }
 
+/* XEP-0380: an italic system-style line under a message encrypted with a
+ * scheme that wasn't decrypted here (OMEMO-decrypted messages have none). */
+static void
+update_encryption(PidginMessageRow *row)
+{
+	const char *name = pidgin_message_get_encryption(row->msg);
+	char *esc, *text, *markup;
+
+	if (name == NULL || pidgin_message_get_retracted(row->msg)) {
+		gtk_widget_set_visible(row->encryption_box, FALSE);
+		return;
+	}
+	esc = g_markup_escape_text(name, -1);
+	text = g_strdup_printf(_("Encrypted with %s, which this client doesn't support"), esc);
+	markup = g_strdup_printf("<i>%s</i>", text);
+	gtk_label_set_markup(GTK_LABEL(row->encryption_label), markup);
+	gtk_widget_set_tooltip_text(row->encryption_box,
+		pidgin_message_get_encryption_namespace(row->msg));
+	gtk_widget_set_visible(row->encryption_box, TRUE);
+	g_free(markup);
+	g_free(text);
+	g_free(esc);
+}
+
 static void
 row_update(PidginMessageRow *row)
 {
@@ -1284,6 +1310,7 @@ row_update(PidginMessageRow *row)
 		gtk_widget_set_visible(row->reply_box, FALSE);
 		gtk_widget_set_visible(row->reactions_box, FALSE);
 		gtk_widget_set_visible(row->attachment_box, FALSE);
+		gtk_widget_set_visible(row->encryption_box, FALSE);
 		return;
 	}
 
@@ -1294,6 +1321,7 @@ row_update(PidginMessageRow *row)
 	update_receipt(row);
 	update_reply(row);
 	update_reactions(row);
+	update_encryption(row);
 	update_attachment(row);
 	update_menu(row);
 }
@@ -1525,6 +1553,20 @@ pidgin_message_row_init(PidginMessageRow *row)
 	gtk_widget_set_valign(row->receipt_label, GTK_ALIGN_START);
 	gtk_box_append(GTK_BOX(row->main_box), row->receipt_label);
 	gtk_widget_set_parent(row->main_box, GTK_WIDGET(row));
+
+	/* XEP-0380: encrypted with something this client can't decrypt */
+	row->encryption_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+	gtk_widget_add_css_class(row->encryption_box, "pidgin-eme-hint");
+	gtk_widget_add_css_class(row->encryption_box, "dim-label");
+	gtk_box_append(GTK_BOX(row->encryption_box),
+	               gtk_image_new_from_icon_name("channel-insecure-symbolic"));
+	row->encryption_label = gtk_label_new(NULL);
+	gtk_label_set_xalign(GTK_LABEL(row->encryption_label), 0.0);
+	gtk_label_set_wrap(GTK_LABEL(row->encryption_label), TRUE);
+	gtk_widget_set_hexpand(row->encryption_label, TRUE);
+	gtk_box_append(GTK_BOX(row->encryption_box), row->encryption_label);
+	gtk_widget_set_visible(row->encryption_box, FALSE);
+	gtk_widget_set_parent(row->encryption_box, GTK_WIDGET(row));
 
 	/* an attachment (a received image, ...) */
 	row->attachment_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);

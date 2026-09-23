@@ -49,4 +49,8 @@ void pidgin_omemo_uninit(void);
 /** PIDGIN4_WINDOWS_SELFTEST: opens the window (plugin loaded or not). */
 void pidgin_omemo_selftest(void);
 
+/** TEST ONLY: use @plugin (loaded, with the IPC commands) as the OMEMO
+ * plugin; NULL: the real one again. */
+void pidgin_omemo_set_plugin_for_tests(PurplePlugin *plugin);
+
 #endif /* _PIDGINOMEMO_H_ */

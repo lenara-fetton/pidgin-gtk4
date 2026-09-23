@@ -92,6 +92,10 @@ char *pidgin_blist_get_tooltip_text(PurpleBlistNode *node, gboolean full);
 void pidgin_blist_build_node_menu(PurpleBlistNode *node, GMenu *menu,
                                   GSimpleActionGroup *group);
 
+/** The tooltip widget of @node (floating), as a row shows it. For the
+ * selftests. */
+GtkWidget *pidgin_blist_tooltip_widget_new(PurpleBlistNode *node);
+
 /**************************************************************************
  * Sort methods (Pidgin 2's API with a comparator instead of a
  * GtkTreeIter inserter)

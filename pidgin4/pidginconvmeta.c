@@ -76,6 +76,48 @@ static const char *const mam_prpl_ids[] = {
 	"prpl-jabber", "prpl-eionrobb-discord", "prpl-steam-mobile", NULL
 };
 static GSList *mam_plugins;          /* PurplePlugin* with mam-query-done connected */
+/* The sfs-url of the message being written (from take()): its card
+ * (pidgin_message_apply_meta()) replaces the inline image or media card
+ * the body URL would get. */
+static char *writing_share_url = NULL;
+static void share_meta_taken(PurpleConversation *conv, GHashTable *meta);
+/* "<account key> <bare jid> <eme namespace>" seen this session */
+static GHashTable *seen_encryption = NULL;
+
+static char *
+encryption_key(PurpleAccount *account, const char *jid, const char *ns)
+{
+	char *akey = pidgin_message_index_account_key(account);
+	char *bare = pidgin_conv_meta_bare_jid(jid);
+	char *key = g_strdup_printf("%s %s %s", akey, purple_normalize(account, bare), ns);
+
+	g_free(akey);
+	g_free(bare);
+	return key;
+}
+
+void
+pidgin_conv_meta_note_encryption(PurpleAccount *account, const char *jid, const char *ns)
+{
+	g_return_if_fail(account != NULL && jid != NULL && ns != NULL);
+	if (seen_encryption == NULL)
+		seen_encryption = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_hash_table_add(seen_encryption, encryption_key(account, jid, ns));
+}
+
+gboolean
+pidgin_conv_meta_saw_encryption(PurpleAccount *account, const char *jid, const char *ns)
+{
+	char *key;
+	gboolean ret;
+
+	if (seen_encryption == NULL || account == NULL || jid == NULL || ns == NULL)
+		return FALSE;
+	key = encryption_key(account, jid, ns);
+	ret = g_hash_table_contains(seen_encryption, key);
+	g_free(key);
+	return ret;
+}
 
 /* Where the last line libpurple is about to log was going to be written
  * (from "writing-*-msg", before the log write). */
@@ -369,6 +411,7 @@ pidgin_conv_meta_take(PurpleConversation *conv, PurpleMessageFlags flags)
 	Pending *p;
 	char *key;
 
+	g_clear_pointer(&writing_share_url, g_free);
 	if (!initialized || conv == NULL || !(flags & (PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_RECV)))
 		return NULL;
 
@@ -384,6 +427,8 @@ pidgin_conv_meta_take(PurpleConversation *conv, PurpleMessageFlags flags)
 		g_hash_table_remove(pending_send, key);
 	}
 	g_free(key);
+	if (ret != NULL)
+		share_meta_taken(conv, ret);
 	return ret;
 }
 
@@ -658,6 +703,16 @@ receiving_meta_cb(PurpleAccount *account, const char *conv_name, GHashTable *met
 
 	if (account == NULL || conv_name == NULL || meta == NULL)
 		return;
+
+	/* XEP-0380: who sends with which scheme we couldn't decrypt */
+	if (g_hash_table_lookup(meta, "eme-namespace") != NULL) {
+		const char *ns = g_hash_table_lookup(meta, "eme-namespace");
+		const char *sender = g_hash_table_lookup(meta, "sender");
+
+		pidgin_conv_meta_note_encryption(account, conv_name, ns);
+		if (sender != NULL)
+			pidgin_conv_meta_note_encryption(account, sender, ns);
+	}
 
 	idx = pidgin_message_index_get_default();
 	if (idx != NULL) {
@@ -1022,6 +1077,42 @@ pidgin_conv_meta_share_url(PurpleConversation *conv, const char *html)
 	return pidgin_conv_meta_lone_url(html);
 }
 
+/*
+ * XEP-0447 stateless file sharing (sfs-* meta keys): the message gets a
+ * card from the metadata (pidgin_attachment_new_for_share(), applied by
+ * pidgin_message_apply_meta()), so the body URL, normally the share's own
+ * URL, is left a link: no inline copy, no HEAD probe, no second card. An
+ * image share is allowed for the loader by its exact URI, as a lone URL
+ * share is, with /pidgin4/images/inline_xmpp_shares.
+ */
+static void
+share_meta_taken(PurpleConversation *conv, GHashTable *meta)
+{
+	const char *url = g_hash_table_lookup(meta, "sfs-url");
+	PidginImageLoader *loader;
+
+	if (url == NULL || *url == '\0')
+		return;
+	writing_share_url = g_strdup(url);
+	if (account_has_shares(purple_conversation_get_account(conv)) &&
+	    pidgin_conv_meta_inline_xmpp_shares() &&
+	    pidgin_attachment_classify(g_hash_table_lookup(meta, "sfs-name") ?
+	                               g_hash_table_lookup(meta, "sfs-name") : url,
+	                               g_hash_table_lookup(meta, "sfs-media-type")) ==
+	        PIDGIN_ATTACHMENT_IMAGE &&
+	    (loader = pidgin_image_loader_get_default()) != NULL &&
+	    !pidgin_image_loader_is_allowed(loader, url))
+		pidgin_image_loader_allow_uri(loader, url);
+}
+
+/* The body is the URL of the share being written (see above). */
+static gboolean
+is_writing_share(const char *plain)
+{
+	return writing_share_url != NULL && plain != NULL &&
+	       purple_strequal(plain, writing_share_url);
+}
+
 char *
 pidgin_conv_meta_lone_url(const char *html)
 {
@@ -1032,6 +1123,10 @@ pidgin_conv_meta_lone_url(const char *html)
 	if (html == NULL || !markup_is_text_or_links(html))
 		return NULL;
 	plain = g_strstrip(pidgin_markup_plain_from_html(html));
+	if (is_writing_share(plain)) {
+		g_free(plain);
+		return NULL;
+	}
 	if (*plain != '\0' && strpbrk(plain, " \t\r\n") == NULL &&
 	    (g_str_has_prefix(plain, "https://") || g_str_has_prefix(plain, "http://") ||
 	     g_str_has_prefix(plain, "aesgcm://")) &&
@@ -1071,7 +1166,7 @@ pidgin_conv_meta_inline_image_html(PurpleConversation *conv, const char *html)
 	if (conv == NULL || html == NULL || !markup_is_text_or_links(html))
 		return NULL;
 	plain = g_strstrip(pidgin_markup_plain_from_html(html));
-	if (!pidgin_conv_meta_is_image_url(plain) ||
+	if (is_writing_share(plain) || !pidgin_conv_meta_is_image_url(plain) ||
 	    (loader = pidgin_image_loader_get_default()) == NULL) {
 		g_free(plain);
 		return NULL;
@@ -1106,6 +1201,7 @@ pidgin_conv_meta_message_displayed(PurpleConversation *conv, PidginMessage *msg,
 
 	g_return_if_fail(conv != NULL && PIDGIN_IS_MESSAGE(msg));
 	flags = pidgin_message_get_flags(msg);
+	g_clear_pointer(&writing_share_url, g_free);    /* this write is done */
 
 	if (meta != NULL) {
 		const char *reply_to = g_hash_table_lookup(meta, "reply-to");
@@ -1790,4 +1886,6 @@ pidgin_conv_meta_uninit(void)
 	g_clear_pointer(&ipc_cache, g_hash_table_destroy);
 	g_clear_pointer(&last_write.path, g_free);
 	last_write.conv = NULL;
+	g_clear_pointer(&writing_share_url, g_free);
+	g_clear_pointer(&seen_encryption, g_hash_table_destroy);
 }

@@ -58,6 +58,10 @@ void pidgin_selftest_fail(const char *module, const char *format, ...)
  */
 void pidgin_selftest_screenshot(GtkWidget *widget, const char *name);
 
+/** PIDGIN4_R2_SELFTEST: the server features round 2 UI (pidginr2selftest.c);
+ * a no-op without the variable. */
+void pidgin_r2_selftest(void);
+
 /** TRUE while the windows selftest runs (modules can skip slow work). */
 gboolean pidgin_selftest_is_running(void);
 

@@ -22,6 +22,7 @@
 
 #include "gtkutils.h"
 #include "pidginattachment.h"
+#include "pidginimageloader.h"
 
 struct _PidginAttachment
 {
@@ -32,7 +33,27 @@ struct _PidginAttachment
 	char *uri;
 	char *name;
 	goffset size;
+
+	/* file shares from metadata (pidgin_attachment_new_for_share()) */
+	gboolean share;
+	char *media_type;
+	int width, height;
+	char *description;
+	GdkTexture *thumbnail;
+	GdkTexture *texture;            /* the full image, once loaded */
+	char *hash;                     /* "algo:base64" */
+	PidginAttachmentHashState hash_state;
+	gboolean fetching;
 };
+
+enum {
+	PROP_0,
+	PROP_TEXTURE,
+	PROP_HASH_STATE,
+	N_PROPS
+};
+
+static GParamSpec *props[N_PROPS];
 
 G_DEFINE_FINAL_TYPE(PidginAttachment, pidgin_attachment, G_TYPE_OBJECT)
 
@@ -46,13 +67,40 @@ pidgin_attachment_finalize(GObject *obj)
 	g_free(att->path);
 	g_free(att->uri);
 	g_free(att->name);
+	g_free(att->media_type);
+	g_free(att->description);
+	g_clear_object(&att->thumbnail);
+	g_clear_object(&att->texture);
+	g_free(att->hash);
 	G_OBJECT_CLASS(pidgin_attachment_parent_class)->finalize(obj);
+}
+
+static void
+pidgin_attachment_get_property(GObject *obj, guint prop_id, GValue *value, GParamSpec *pspec)
+{
+	PidginAttachment *att = PIDGIN_ATTACHMENT(obj);
+
+	switch (prop_id) {
+		case PROP_TEXTURE: g_value_set_object(value, att->texture); break;
+		case PROP_HASH_STATE: g_value_set_int(value, att->hash_state); break;
+		default:
+			G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
+	}
 }
 
 static void
 pidgin_attachment_class_init(PidginAttachmentClass *klass)
 {
-	G_OBJECT_CLASS(klass)->finalize = pidgin_attachment_finalize;
+	GObjectClass *obj_class = G_OBJECT_CLASS(klass);
+
+	obj_class->finalize = pidgin_attachment_finalize;
+	obj_class->get_property = pidgin_attachment_get_property;
+	props[PROP_TEXTURE] = g_param_spec_object("texture", NULL, NULL, GDK_TYPE_TEXTURE,
+		G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+	props[PROP_HASH_STATE] = g_param_spec_int("hash-state", NULL, NULL,
+		PIDGIN_ATTACHMENT_HASH_NONE, PIDGIN_ATTACHMENT_HASH_UNCHECKED,
+		PIDGIN_ATTACHMENT_HASH_NONE, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+	g_object_class_install_properties(obj_class, N_PROPS, props);
 }
 
 static void
@@ -236,6 +284,319 @@ void
 pidgin_attachment_set_launch_hook(PidginAttachmentLaunchHook hook)
 {
 	launch_hook = hook;
+}
+
+/**************************************************************************
+ * File shares from metadata (XEP-0447)
+ **************************************************************************/
+
+/* A data: URI's image (the thumbnail), or NULL. */
+static GdkTexture *
+texture_from_data_uri(const char *uri)
+{
+	const char *comma;
+	GdkTexture *texture;
+	GBytes *bytes;
+	GError *error = NULL;
+	char *header;
+
+	if (uri == NULL || g_ascii_strncasecmp(uri, "data:", 5) != 0 ||
+	    (comma = strchr(uri, ',')) == NULL)
+		return NULL;
+	header = g_ascii_strdown(uri + 5, comma - uri - 5);
+	if (strstr(header, ";base64") != NULL) {
+		gsize len = 0;
+		guchar *data = g_base64_decode(comma + 1, &len);
+
+		bytes = g_bytes_new_take(data, len);
+	} else {
+		bytes = g_uri_unescape_bytes(comma + 1, -1, NULL, NULL);
+	}
+	g_free(header);
+	if (bytes == NULL || g_bytes_get_size(bytes) == 0) {
+		g_clear_pointer(&bytes, g_bytes_unref);
+		return NULL;
+	}
+	texture = gdk_texture_new_from_bytes(bytes, &error);
+	if (texture == NULL) {
+		purple_debug_info("attachment", "the share's thumbnail: %s\n", error->message);
+		g_clear_error(&error);
+	}
+	g_bytes_unref(bytes);
+	return texture;
+}
+
+PidginAttachment *
+pidgin_attachment_new_for_share(GHashTable *meta)
+{
+	const char *url, *name, *v;
+	PidginAttachment *att;
+
+	if (meta == NULL)
+		return NULL;
+	url = g_hash_table_lookup(meta, "sfs-url");
+	name = g_hash_table_lookup(meta, "sfs-name");
+	if ((url == NULL || *url == '\0') && (name == NULL || *name == '\0'))
+		return NULL;
+
+	att = g_object_new(PIDGIN_TYPE_ATTACHMENT, NULL);
+	att->share = TRUE;
+	att->uri = g_strdup(url && *url ? url : NULL);
+	att->media_type = g_strdup(g_hash_table_lookup(meta, "sfs-media-type"));
+	att->kind = pidgin_attachment_classify(name && *name ? name : url, att->media_type);
+	if (name != NULL && *name != '\0') {
+		att->name = g_strdup(name);
+	} else {
+		/* the URL's last path segment */
+		PidginAttachment *tmp = pidgin_attachment_new_for_uri(url, att->kind, -1);
+
+		att->name = g_strdup(pidgin_attachment_get_name(tmp));
+		g_object_unref(tmp);
+	}
+	if ((v = g_hash_table_lookup(meta, "sfs-size")) != NULL)
+		att->size = g_ascii_strtoll(v, NULL, 10);
+	if (att->size < 0)
+		att->size = -1;
+	if ((v = g_hash_table_lookup(meta, "sfs-width")) != NULL)
+		att->width = CLAMP(atoi(v), 0, 65535);
+	if ((v = g_hash_table_lookup(meta, "sfs-height")) != NULL)
+		att->height = CLAMP(atoi(v), 0, 65535);
+	if ((v = g_hash_table_lookup(meta, "sfs-desc")) != NULL && *v != '\0')
+		att->description = g_strdup(v);
+	if ((v = g_hash_table_lookup(meta, "sfs-hash")) != NULL && strchr(v, ':') != NULL)
+		att->hash = g_strdup(v);
+	att->thumbnail = texture_from_data_uri(g_hash_table_lookup(meta, "sfs-thumbnail"));
+	return att;
+}
+
+gboolean
+pidgin_attachment_is_share(PidginAttachment *att)
+{
+	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), FALSE);
+	return att->share;
+}
+
+const char *
+pidgin_attachment_get_media_type(PidginAttachment *att)
+{
+	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), NULL);
+	return att->media_type;
+}
+
+void
+pidgin_attachment_get_dimensions(PidginAttachment *att, int *width, int *height)
+{
+	g_return_if_fail(PIDGIN_IS_ATTACHMENT(att));
+	if (width != NULL)
+		*width = att->width;
+	if (height != NULL)
+		*height = att->height;
+}
+
+const char *
+pidgin_attachment_get_description(PidginAttachment *att)
+{
+	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), NULL);
+	return att->description;
+}
+
+GdkTexture *
+pidgin_attachment_get_thumbnail(PidginAttachment *att)
+{
+	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), NULL);
+	return att->thumbnail;
+}
+
+GdkTexture *
+pidgin_attachment_get_texture(PidginAttachment *att)
+{
+	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), NULL);
+	return att->texture;
+}
+
+const char *
+pidgin_attachment_get_hash(PidginAttachment *att)
+{
+	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), NULL);
+	return att->hash;
+}
+
+PidginAttachmentHashState
+pidgin_attachment_get_hash_state(PidginAttachment *att)
+{
+	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), PIDGIN_ATTACHMENT_HASH_NONE);
+	return att->hash_state;
+}
+
+static void
+set_hash_state(PidginAttachment *att, PidginAttachmentHashState state)
+{
+	if (att->hash_state == state)
+		return;
+	att->hash_state = state;
+	g_object_notify_by_pspec(G_OBJECT(att), props[PROP_HASH_STATE]);
+}
+
+/* The hash's algorithm (the part before ':'), lowercase. */
+static char *
+hash_algo(const char *hash)
+{
+	const char *colon = hash ? strchr(hash, ':') : NULL;
+
+	return colon ? g_ascii_strdown(hash, colon - hash) : NULL;
+}
+
+static gboolean
+checksum_type(const char *algo, GChecksumType *type)
+{
+	if (purple_strequal(algo, "sha-256"))
+		*type = G_CHECKSUM_SHA256;
+	else if (purple_strequal(algo, "sha-512"))
+		*type = G_CHECKSUM_SHA512;
+	else if (purple_strequal(algo, "sha-384"))
+		*type = G_CHECKSUM_SHA384;
+	else if (purple_strequal(algo, "sha-1"))
+		*type = G_CHECKSUM_SHA1;
+	else
+		return FALSE;
+	return TRUE;
+}
+
+typedef struct {
+	char *hash;
+	GBytes *data;       /* or */
+	char *path;         /* the image cache's copy */
+} VerifyJob;
+
+static void
+verify_job_free(VerifyJob *job)
+{
+	g_free(job->hash);
+	g_clear_pointer(&job->data, g_bytes_unref);
+	g_free(job->path);
+	g_free(job);
+}
+
+static void
+verify_thread(GTask *task, gpointer source, gpointer task_data, GCancellable *cancellable)
+{
+	VerifyJob *job = task_data;
+	char *algo = hash_algo(job->hash);
+	GChecksumType type;
+	PidginAttachmentHashState state = PIDGIN_ATTACHMENT_HASH_UNCHECKED;
+	GBytes *data = job->data ? g_bytes_ref(job->data) : NULL;
+
+	if (data == NULL && job->path != NULL) {
+		GMappedFile *file = g_mapped_file_new(job->path, FALSE, NULL);
+
+		if (file != NULL) {
+			data = g_mapped_file_get_bytes(file);
+			g_mapped_file_unref(file);
+		}
+	}
+	if (data != NULL && checksum_type(algo, &type)) {
+		gsize expected_len = 0, len = g_checksum_type_get_length(type);
+		guchar *expected = g_base64_decode(strchr(job->hash, ':') + 1, &expected_len);
+		guint8 *digest = g_malloc(len);
+		GChecksum *sum = g_checksum_new(type);
+
+		g_checksum_update(sum, g_bytes_get_data(data, NULL), g_bytes_get_size(data));
+		g_checksum_get_digest(sum, digest, &len);
+		state = (expected_len == len && memcmp(expected, digest, len) == 0)
+			? PIDGIN_ATTACHMENT_HASH_VERIFIED : PIDGIN_ATTACHMENT_HASH_MISMATCH;
+		g_checksum_free(sum);
+		g_free(digest);
+		g_free(expected);
+	}
+	g_clear_pointer(&data, g_bytes_unref);
+	g_free(algo);
+	g_task_return_int(task, state);
+}
+
+static void
+verify_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	PidginAttachment *att = PIDGIN_ATTACHMENT(source);
+	PidginAttachmentHashState state = g_task_propagate_int(G_TASK(res), NULL);
+
+	purple_debug_info("attachment", "%s: hash %s\n", att->name,
+		state == PIDGIN_ATTACHMENT_HASH_VERIFIED ? "verified" :
+		state == PIDGIN_ATTACHMENT_HASH_MISMATCH ? "MISMATCH" : "not checked");
+	set_hash_state(att, state);
+}
+
+static void
+verify_start(PidginAttachment *att, GBytes *data, const char *path)
+{
+	VerifyJob *job;
+	GTask *task;
+
+	if (att->hash == NULL || att->hash_state == PIDGIN_ATTACHMENT_HASH_PENDING)
+		return;
+	job = g_new0(VerifyJob, 1);
+	job->hash = g_strdup(att->hash);
+	job->data = data ? g_bytes_ref(data) : NULL;
+	job->path = g_strdup(path);
+	set_hash_state(att, PIDGIN_ATTACHMENT_HASH_PENDING);
+	task = g_task_new(att, NULL, verify_cb, NULL);
+	g_task_set_task_data(task, job, (GDestroyNotify)verify_job_free);
+	g_task_run_in_thread(task, verify_thread);
+	g_object_unref(task);
+}
+
+void
+pidgin_attachment_verify_bytes(PidginAttachment *att, GBytes *data)
+{
+	g_return_if_fail(PIDGIN_IS_ATTACHMENT(att));
+	g_return_if_fail(data != NULL);
+	verify_start(att, data, NULL);
+}
+
+static void
+share_loaded_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	PidginAttachment *att = data;
+	GError *error = NULL;
+	GdkTexture *texture = pidgin_image_loader_load_finish(PIDGIN_IMAGE_LOADER(source), res,
+	                                                      &error);
+
+	att->fetching = FALSE;
+	if (texture == NULL) {
+		purple_debug_info("attachment", "loading %s: %s\n", att->uri,
+		                  error ? error->message : "?");
+		g_clear_error(&error);
+		g_object_unref(att);
+		return;
+	}
+	g_set_object(&att->texture, texture);
+	g_object_notify_by_pspec(G_OBJECT(att), props[PROP_TEXTURE]);
+	g_object_unref(texture);
+	/* The loader keeps the downloaded bytes in its disk cache: check
+	 * those (not the decoded pixels). */
+	if (att->hash != NULL && att->hash_state == PIDGIN_ATTACHMENT_HASH_NONE) {
+		char *path = pidgin_image_loader_cache_path(PIDGIN_IMAGE_LOADER(source), att->uri);
+
+		if (path != NULL && g_file_test(path, G_FILE_TEST_IS_REGULAR))
+			verify_start(att, NULL, path);
+		else
+			set_hash_state(att, PIDGIN_ATTACHMENT_HASH_UNCHECKED);
+		g_free(path);
+	}
+	g_object_unref(att);
+}
+
+/* Loads a shared image once, when the loader allows its URI. */
+static void
+share_fetch(PidginAttachment *att)
+{
+	PidginImageLoader *loader;
+
+	if (att->fetching || att->texture != NULL || att->kind != PIDGIN_ATTACHMENT_IMAGE ||
+	    att->uri == NULL || (loader = pidgin_image_loader_get_default()) == NULL ||
+	    !pidgin_image_loader_is_allowed(loader, att->uri))
+		return;
+	att->fetching = TRUE;
+	pidgin_image_loader_load_async(loader, att->uri, NULL, share_loaded_cb, g_object_ref(att));
 }
 
 /**************************************************************************
@@ -706,12 +1067,249 @@ media_card(PidginAttachment *att)
 	return card;
 }
 
+/**************************************************************************
+ * File share cards
+ **************************************************************************/
+
+/* The size to reserve for a shared image: the sender's dimensions (or the
+ * thumbnail's) scaled to fit THUMB_SIZE. */
+static void
+share_image_size(PidginAttachment *att, int *w, int *h)
+{
+	GdkTexture *t = att->texture ? att->texture : att->thumbnail;
+	double scale;
+
+	*w = att->width;
+	*h = att->height;
+	if ((*w <= 0 || *h <= 0) && t != NULL) {
+		*w = gdk_texture_get_width(t);
+		*h = gdk_texture_get_height(t);
+		/* a thumbnail stands for a larger image: keep its shape */
+		if (t == att->thumbnail && MAX(*w, *h) < PIDGIN_ATTACHMENT_THUMB_SIZE / 2) {
+			scale = (double)(PIDGIN_ATTACHMENT_THUMB_SIZE / 2) / MAX(*w, *h);
+			*w = *w * scale;
+			*h = *h * scale;
+		}
+	}
+	if (*w <= 0 || *h <= 0) {
+		*w = *h = -1;
+		return;
+	}
+	scale = MIN(1.0, (double)PIDGIN_ATTACHMENT_THUMB_SIZE / MAX(*w, *h));
+	*w = MAX(1, (int)(*w * scale));
+	*h = MAX(1, (int)(*h * scale));
+}
+
+static void
+share_texture_cb(PidginAttachment *att, GParamSpec *pspec, GtkWidget *picture)
+{
+	int w, h;
+
+	if (att->texture == NULL)
+		return;
+	gtk_picture_set_paintable(GTK_PICTURE(picture), GDK_PAINTABLE(att->texture));
+	gtk_widget_remove_css_class(picture, "pidgin-share-thumbnail");
+	share_image_size(att, &w, &h);
+	gtk_widget_set_size_request(picture, w, h);
+}
+
+static GtkWidget *
+share_image_widget(PidginAttachment *att)
+{
+	GtkWidget *picture = gtk_picture_new();
+	GtkGesture *click = gtk_gesture_click_new();
+	int w, h;
+
+	gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
+	gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
+	gtk_widget_set_halign(picture, GTK_ALIGN_START);
+	gtk_widget_add_css_class(picture, "pidgin-attachment-image");
+	gtk_widget_add_css_class(picture, "pidgin-share-image");
+	gtk_widget_set_tooltip_text(picture, att->name);
+	gtk_widget_set_cursor_from_name(picture, "pointer");
+	g_signal_connect_data(click, "released", G_CALLBACK(picture_clicked_cb),
+	                      g_object_ref(att), (GClosureNotify)g_object_unref, 0);
+	gtk_widget_add_controller(picture, GTK_EVENT_CONTROLLER(click));
+
+	if (att->texture != NULL) {
+		gtk_picture_set_paintable(GTK_PICTURE(picture), GDK_PAINTABLE(att->texture));
+	} else if (att->thumbnail != NULL) {
+		gtk_picture_set_paintable(GTK_PICTURE(picture), GDK_PAINTABLE(att->thumbnail));
+		gtk_widget_add_css_class(picture, "pidgin-share-thumbnail");
+	}
+	/* the space the image will take, before it loads */
+	share_image_size(att, &w, &h);
+	gtk_widget_set_size_request(picture, w, h);
+	gtk_widget_set_visible(picture, att->texture != NULL || att->thumbnail != NULL || w > 0);
+
+	g_signal_connect_object(att, "notify::texture", G_CALLBACK(share_texture_cb), picture, 0);
+	share_fetch(att);
+	return picture;
+}
+
+static void
+share_hash_cb(PidginAttachment *att, GParamSpec *pspec, GtkWidget *label)
+{
+	char *algo = hash_algo(att->hash);
+	char *tip = NULL;
+
+	gtk_widget_remove_css_class(label, "error");
+	gtk_widget_remove_css_class(label, "success");
+	switch (att->hash_state) {
+		case PIDGIN_ATTACHMENT_HASH_VERIFIED:
+			gtk_label_set_text(GTK_LABEL(label), _("\xe2\x9c\x93 verified"));
+			tip = g_strdup_printf(_("The downloaded file matches the %s hash the sender "
+			                        "gave."), algo);
+			gtk_widget_add_css_class(label, "success");
+			break;
+		case PIDGIN_ATTACHMENT_HASH_MISMATCH:
+			gtk_label_set_text(GTK_LABEL(label), _("\xe2\x9a\xa0 hash mismatch"));
+			tip = g_strdup_printf(_("The downloaded file does not match the %s hash the "
+			                        "sender gave: it is not the file they shared, or it "
+			                        "was changed on the server."), algo);
+			gtk_widget_add_css_class(label, "error");
+			break;
+		case PIDGIN_ATTACHMENT_HASH_UNCHECKED:
+			gtk_label_set_text(GTK_LABEL(label), _("not verified"));
+			tip = g_strdup_printf(_("The %s hash the sender gave could not be checked."),
+			                      algo);
+			break;
+		default:
+			break;
+	}
+	gtk_widget_set_tooltip_text(label, tip);
+	gtk_widget_set_visible(label, tip != NULL);
+	g_free(tip);
+	g_free(algo);
+}
+
+static void
+open_clicked_cb(GtkButton *button, PidginAttachment *att)
+{
+	pidgin_attachment_open(GTK_WIDGET(button), att);
+}
+
+/* The name, "size · type", the hash state and (for other files) Open. */
+static GtkWidget *
+share_info_row(PidginAttachment *att, gboolean with_name, gboolean with_open)
+{
+	GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	GtkWidget *label, *button;
+	GString *details = g_string_new(NULL);
+
+	if (with_open) {
+		GIcon *icon = NULL;
+		char *type = att->media_type ? g_content_type_from_mime_type(att->media_type) : NULL;
+
+		if (type == NULL)
+			type = g_content_type_guess(att->name, NULL, 0, NULL);
+		if (type != NULL)
+			icon = g_content_type_get_symbolic_icon(type);
+		label = icon ? gtk_image_new_from_gicon(icon) :
+		               gtk_image_new_from_icon_name("text-x-generic-symbolic");
+		gtk_image_set_icon_size(GTK_IMAGE(label), GTK_ICON_SIZE_LARGE);
+		gtk_box_append(GTK_BOX(row), label);
+		g_clear_object(&icon);
+		g_free(type);
+	}
+	if (with_name) {
+		label = gtk_label_new(att->name);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_MIDDLE);
+		gtk_label_set_max_width_chars(GTK_LABEL(label), 40);
+		gtk_widget_add_css_class(label, "pidgin-share-name");
+		gtk_box_append(GTK_BOX(texts), label);
+	}
+	if (with_name && att->size >= 0) {
+		char *size = g_format_size(att->size);
+
+		g_string_append(details, size);
+		g_free(size);
+	}
+	if (with_name && att->media_type != NULL)
+		g_string_append_printf(details, "%s%s", details->len ? " \xc2\xb7 " : "",
+		                       att->media_type);
+	if (details->len > 0) {
+		label = gtk_label_new(details->str);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_add_css_class(label, "dim-label");
+		gtk_widget_add_css_class(label, "pidgin-share-size");
+		gtk_box_append(GTK_BOX(texts), label);
+	}
+	g_string_free(details, TRUE);
+	gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
+	gtk_box_append(GTK_BOX(row), texts);
+
+	label = gtk_label_new(NULL);
+	gtk_widget_add_css_class(label, "pidgin-share-hash");
+	gtk_widget_set_valign(label, GTK_ALIGN_CENTER);
+	gtk_box_append(GTK_BOX(row), label);
+	g_signal_connect_object(att, "notify::hash-state", G_CALLBACK(share_hash_cb), label, 0);
+	share_hash_cb(att, NULL, label);
+
+	if (with_open && att->uri != NULL) {
+		button = gtk_button_new_with_mnemonic(_("_Open"));
+		gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+		gtk_widget_add_css_class(button, "pidgin-share-open");
+		gtk_widget_set_tooltip_text(button, att->uri);
+		g_signal_connect_data(button, "clicked", G_CALLBACK(open_clicked_cb),
+		                      g_object_ref(att), (GClosureNotify)g_object_unref, 0);
+		gtk_box_append(GTK_BOX(row), button);
+	}
+	return row;
+}
+
+static GtkWidget *
+share_widget(PidginAttachment *att)
+{
+	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+
+	gtk_widget_add_css_class(box, "pidgin-attachment");
+	gtk_widget_add_css_class(box, "pidgin-share");
+	gtk_widget_set_halign(box, GTK_ALIGN_START);
+	switch (att->kind) {
+		case PIDGIN_ATTACHMENT_IMAGE:
+			gtk_box_append(GTK_BOX(box), share_image_widget(att));
+			gtk_box_append(GTK_BOX(box), share_info_row(att, TRUE, FALSE));
+			break;
+		case PIDGIN_ATTACHMENT_AUDIO:
+		case PIDGIN_ATTACHMENT_VIDEO:
+			if (att->uri != NULL)
+				gtk_box_append(GTK_BOX(box), media_card(att));
+			gtk_box_append(GTK_BOX(box), share_info_row(att, att->uri == NULL, FALSE));
+			break;
+		default: {
+			GtkWidget *card = share_info_row(att, TRUE, TRUE);
+
+			gtk_widget_add_css_class(card, "card");
+			gtk_widget_add_css_class(card, "pidgin-file-card");
+			gtk_box_append(GTK_BOX(box), card);
+			break;
+		}
+	}
+	if (att->description != NULL) {
+		GtkWidget *caption = gtk_label_new(att->description);
+
+		gtk_label_set_xalign(GTK_LABEL(caption), 0.0);
+		gtk_label_set_wrap(GTK_LABEL(caption), TRUE);
+		gtk_label_set_selectable(GTK_LABEL(caption), TRUE);
+		gtk_label_set_max_width_chars(GTK_LABEL(caption), 60);
+		gtk_widget_add_css_class(caption, "pidgin-share-desc");
+		gtk_box_append(GTK_BOX(box), caption);
+	}
+	return box;
+}
+
 GtkWidget *
 pidgin_attachment_widget_new(PidginAttachment *att)
 {
 	GtkWidget *box;
 
 	g_return_val_if_fail(PIDGIN_IS_ATTACHMENT(att), NULL);
+
+	if (att->share)
+		return share_widget(att);
 
 	box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
 	gtk_widget_add_css_class(box, "pidgin-attachment");
