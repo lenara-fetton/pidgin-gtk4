@@ -736,10 +736,6 @@ view_reaction_cb(PidginMessageView *view, PidginMessage *msg, const char *emoji,
 {
 	char *self = pidgin_conv_meta_self_id(gtkconv->active_conv);
 
-	if (is_chat(gtkconv) && gtkconv->u.chat->self_occupant_id != NULL) {
-		g_free(self);
-		self = g_strdup(gtkconv->u.chat->self_occupant_id);
-	}
 	if (!pidgin_conv_meta_send_reaction(gtkconv->active_conv, msg, emoji, add, self))
 		gtk_widget_error_bell(GTK_WIDGET(view));
 	g_free(self);
@@ -1004,12 +1000,9 @@ update_features(PidginConversation *gtkconv)
 	pidgin_message_view_set_nick_color_scheme(view, account_is_jabber(account)
 		? PIDGIN_NICK_COLOR_XEP0392 : PIDGIN_NICK_COLOR_PIDGIN);
 	{
+		/* Reaction senders are bare JIDs in IMs and nicks in rooms (M8). */
 		char *self = pidgin_conv_meta_self_id(conv);
 
-		if (is_chat(gtkconv) && gtkconv->u.chat->self_occupant_id != NULL) {
-			g_free(self);
-			self = g_strdup(gtkconv->u.chat->self_occupant_id);
-		}
 		pidgin_message_view_set_self_id(view, self);
 		g_free(self);
 	}
@@ -2390,14 +2383,13 @@ pidgin_conv_write_conv(PurpleConversation *conv, const char *name, const char *a
 
 	if (meta != NULL) {
 		pidgin_message_apply_meta(msg, meta);
-		/* Learn our occupant-id from our own room messages. */
+		/* Our occupant-id, from our own room messages (for plugins). */
 		if (is_chat(gtkconv) && (flags & PURPLE_MESSAGE_SEND) &&
 		    g_hash_table_lookup(meta, "occupant-id") != NULL &&
 		    !purple_strequal(gtkconv->u.chat->self_occupant_id,
 		                     g_hash_table_lookup(meta, "occupant-id"))) {
 			g_free(gtkconv->u.chat->self_occupant_id);
 			gtkconv->u.chat->self_occupant_id = g_strdup(g_hash_table_lookup(meta, "occupant-id"));
-			pidgin_message_view_set_self_id(conv_view(gtkconv), gtkconv->u.chat->self_occupant_id);
 		}
 		if (!(flags & PURPLE_MESSAGE_REMOTE_SEND) && (flags & PURPLE_MESSAGE_SEND))
 			pidgin_message_set_receipt(msg, PIDGIN_RECEIPT_SENT);
