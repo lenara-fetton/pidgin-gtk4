@@ -10,7 +10,7 @@
 #define STOCK_DUMP
 #include "test_discord.c"
 
-typedef enum { MSG, EDIT, DISPATCH, HISTORY, SEEN } Kind;
+typedef enum { MSG, EDIT, DISPATCH, HISTORY, SEEN, PRESENCES } Kind;
 
 typedef struct {
 	Kind kind;
@@ -40,6 +40,11 @@ static const Step steps[] = {
 	{ DISPATCH, "MESSAGE_ACK", &message_ack_dm },
 	{ SEEN, "conversation-updated", &msg_create },
 	{ HISTORY, NULL, &reacted_page },
+	{ DISPATCH, "PRESENCE_UPDATE", &presence_game },
+	{ DISPATCH, "PRESENCE_UPDATE", &presence_listening },
+	{ DISPATCH, "PRESENCE_UPDATE", &presence_custom_only },
+	{ PRESENCES, NULL, &ready_presences },
+	{ DISPATCH, "PRESENCE_UPDATE", &presence_offline },
 #ifdef STOCK_DUMP_STEPS
 	STOCK_DUMP_STEPS
 #endif
@@ -137,6 +142,7 @@ main(int argc, char **argv)
 	da->new_guilds = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_guild);
 	da->group_dms = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_channel);
 	da->last_message_id_dm = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	da->cookie_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	g_hash_table_replace(da->one_to_ones, g_strdup(DM_ID), g_strdup("alice"));
 	g_hash_table_replace(da->one_to_ones_rev, g_strdup("alice"), g_strdup(DM_ID));
 	o = parse("{\"id\":\"" GUILD_ID "\",\"name\":\"Guild\"}");
@@ -160,7 +166,7 @@ main(int argc, char **argv)
 
 	for (i = 0; i < G_N_ELEMENTS(steps); i++) {
 		reset();
-		o = steps[i].kind == HISTORY ? json_object_new() : parse(*steps[i].payload);
+		o = (steps[i].kind == HISTORY || steps[i].kind == PRESENCES) ? json_object_new() : parse(*steps[i].payload);
 		switch (steps[i].kind) {
 		case MSG:
 			discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
@@ -181,6 +187,15 @@ main(int argc, char **argv)
 
 				json_parser_load_from_data(parser, *steps[i].payload, -1, NULL);
 				discord_got_history_static(da, json_parser_get_root(parser), NULL);
+				g_object_unref(parser);
+			}
+			break;
+		case PRESENCES:
+			{
+				JsonParser *parser = json_parser_new();
+
+				json_parser_load_from_data(parser, *steps[i].payload, -1, NULL);
+				discord_got_presences(da, json_parser_get_root(parser), NULL);
 				g_object_unref(parser);
 			}
 			break;

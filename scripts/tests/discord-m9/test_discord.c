@@ -483,6 +483,27 @@ static const char *reactors_fire =
 static const char *reactors_new_user =
 	"[{\"id\":\"90000000000000001\",\"username\":\"bob\",\"global_name\":\"Bob\",\"discriminator\":\"0\",\"avatar\":null}]";
 
+/* PRESENCE_UPDATE of a friend (no guild_id): a custom status and a game */
+static const char *presence_game =
+	"{\"user\":{\"id\":\"" ALICE_ID "\",\"username\":\"alice\",\"discriminator\":\"0\"},"
+	" \"status\":\"online\",\"client_status\":{\"desktop\":\"online\"},"
+	" \"activities\":[{\"name\":\"Custom Status\",\"type\":4,\"state\":\"brb\",\"id\":\"custom\",\"created_at\":1507221436000},"
+	"                {\"name\":\"Rocket League\",\"type\":0,\"application_id\":\"379286085710381999\","
+	"                 \"created_at\":1507221436000,\"state\":\"In a Match\",\"details\":\"Ranked Duels: 2-1\","
+	"                 \"timestamps\":{\"start\":1507665886}}]}";
+static const char *presence_listening =
+	"{\"user\":{\"id\":\"" ALICE_ID "\"},\"status\":\"idle\",\"client_status\":{\"desktop\":\"idle\"},"
+	" \"activities\":[{\"name\":\"Spotify\",\"type\":2,\"id\":\"spotify:1\",\"details\":\"Song\",\"state\":\"Artist\"}]}";
+static const char *presence_custom_only =
+	"{\"user\":{\"id\":\"" ALICE_ID "\"},\"status\":\"dnd\",\"client_status\":{\"desktop\":\"dnd\"},"
+	" \"activities\":[{\"name\":\"Custom Status\",\"type\":4,\"state\":\"busy\",\"id\":\"custom\"}]}";
+static const char *presence_offline =
+	"{\"user\":{\"id\":\"" ALICE_ID "\"},\"status\":\"offline\",\"client_status\":{},\"activities\":[]}";
+/* READY's friend presences (discord_got_presences) */
+static const char *ready_presences =
+	"[{\"user_id\":\"" ALICE_ID "\",\"status\":\"dnd\",\"client_status\":{\"desktop\":\"dnd\"},"
+	"  \"activities\":[{\"name\":\"Arena\",\"type\":5,\"application_id\":\"123456789012345678\"}]}]";
+
 /* A bot's rich embed with fields */
 static const char *embed_rich =
 	"{\"type\":\"rich\",\"title\":\"Build #42\",\"color\":65280,"
@@ -631,6 +652,7 @@ main(int argc, char **argv)
 	da->new_guilds = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_guild);
 	da->group_dms = g_hash_table_new_full(g_int64_hash, g_int64_equal, NULL, discord_free_channel);
 	da->last_message_id_dm = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	da->cookie_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	g_hash_table_replace(da->one_to_ones, g_strdup(DM_ID), g_strdup("alice"));
 	g_hash_table_replace(da->one_to_ones_rev, g_strdup("alice"), g_strdup(DM_ID));
 
@@ -1268,6 +1290,64 @@ main(int argc, char **argv)
 	purple_account_set_int(account, "reaction_history_limit", 25);
 	capture_requests = FALSE;
 
+	/* ---- friends' games as status attributes ---- */
+	{
+		PurpleBuddy *buddy;
+		PurpleStatus *st;
+		JsonParser *parser;
+
+		CHECK(purple_status_type_get_attr(purple_account_get_status_type(account, "online"), "game") != NULL);
+		CHECK(purple_status_type_get_attr(purple_account_get_status_type(account, "mobile"), "game_app_id") != NULL);
+		buddy = purple_buddy_new(account, "alice", NULL);
+		purple_blist_add_buddy(buddy, NULL, NULL, NULL);
+
+		o = parse(presence_game);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "online");
+		CHECK_STR(purple_status_get_attr_string(st, "game"), "Rocket League");
+		CHECK_STR(purple_status_get_attr_string(st, "game_app_id"), "379286085710381999");
+
+		o = parse(presence_listening);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "idle");
+		CHECK_STR(purple_status_get_attr_string(st, "game"), "Spotify");
+		CHECK(purple_status_get_attr_string(st, "game_app_id") == NULL);
+
+		o = parse(presence_custom_only);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "dnd");
+		CHECK(purple_status_get_attr_string(st, "game") == NULL);       /* a custom status is no game */
+
+		parser = json_parser_new();
+		json_parser_load_from_data(parser, ready_presences, -1, NULL);
+		discord_got_presences(da, json_parser_get_root(parser), NULL);
+		g_object_unref(parser);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_attr_string(st, "game"), "Arena");
+		CHECK_STR(purple_status_get_attr_string(st, "game_app_id"), "123456789012345678");
+
+		o = parse(presence_offline);
+		discord_process_dispatch(da, "PRESENCE_UPDATE", o);
+		json_object_unref(o);
+		st = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+		CHECK_STR(purple_status_get_id(st), "offline");
+		CHECK(purple_status_get_attr_string(st, "game") == NULL);
+
+		/* The legacy "game" object */
+		o = parse("{\"game\":{\"name\":\"Old Game\",\"type\":0}}");
+		CHECK(discord_presence_game_activity(o) != NULL);
+		json_object_unref(o);
+		o = parse("{\"game\":{\"name\":\"x\",\"id\":\"custom\",\"type\":4}}");
+		CHECK(discord_presence_game_activity(o) == NULL);
+		json_object_unref(o);
+	}
+
 	/* ---- stock UI: the same payloads give the old output ---- */
 	{
 		DiscordAccount *stock = g_new0(DiscordAccount, 1);
@@ -1305,6 +1385,18 @@ main(int argc, char **argv)
 		json_object_unref(o);
 		CHECK(meta_count == 0);
 		CHECK(strstr(written->str, "|Mason|Supa Hot :LUL:|") != NULL);   /* custom smiley path */
+		/* Presence: the message only, no game attributes */
+		{
+			PurpleStatus *st;
+
+			o = parse(presence_game);
+			discord_process_dispatch(stock, "PRESENCE_UPDATE", o);
+			json_object_unref(o);
+			st = purple_presence_get_active_status(purple_buddy_get_presence(purple_find_buddy(account, "alice")));
+			CHECK_STR(purple_status_get_id(st), "online");
+			CHECK(purple_status_get_attr_string(st, "game") == NULL);
+		}
+
 		/* The unseen update acks the channel, MESSAGE_ACK is ignored */
 		capture_requests = TRUE;
 		reset();
