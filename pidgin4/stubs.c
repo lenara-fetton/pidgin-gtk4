@@ -83,3 +83,57 @@ pidgin_pounces_init(void)
 	purple_pounces_register_handler(PIDGIN_UI, pounce_cb, new_pounce,
 	                                free_pounce);
 }
+
+/**************************************************************************
+ * M6: weak stand-ins for what the tray and the notifications need from
+ * gtkconv.c (TODO(M4b)) and gtksavedstatuses.c (TODO(M5)). The real
+ * definitions override them at link time.
+ **************************************************************************/
+
+static GList *
+unseen_list_add(GList *list, GList *convs, PidginUnseenState min_state,
+                guint max_count)
+{
+	for (; convs != NULL; convs = convs->next) {
+		PurpleConversation *conv = convs->data;
+		int state = GPOINTER_TO_INT(purple_conversation_get_data(conv,
+		                                                         "unseen-state"));
+
+		if (max_count != 0 && g_list_length(list) >= max_count)
+			break;
+		if (state >= (int)min_state && state != PIDGIN_UNSEEN_NONE)
+			list = g_list_append(list, conv);
+	}
+	return list;
+}
+
+__attribute__((weak)) GList *
+pidgin_conversations_find_unseen_list(PurpleConversationType type,
+                                      PidginUnseenState min_state,
+                                      gboolean hidden_only, guint max_count)
+{
+	/* Without conversation windows every conversation is "hidden". */
+	if (type == PURPLE_CONV_TYPE_IM)
+		return unseen_list_add(NULL, purple_get_ims(), min_state, max_count);
+	if (type == PURPLE_CONV_TYPE_CHAT)
+		return unseen_list_add(NULL, purple_get_chats(), min_state, max_count);
+	return unseen_list_add(NULL, purple_get_conversations(), min_state, max_count);
+}
+
+__attribute__((weak)) guint
+pidgin_conversations_get_unseen_count(PurpleConversation *conv)
+{
+	return GPOINTER_TO_UINT(purple_conversation_get_data(conv, "unseen-count"));
+}
+
+__attribute__((weak)) void
+pidgin_status_editor_show(gboolean edit, PurpleSavedStatus *saved_status)
+{
+	purple_debug_info("stubs", "TODO(M5): the status editor is not ported yet\n");
+}
+
+__attribute__((weak)) void
+pidgin_status_window_show(void)
+{
+	purple_debug_info("stubs", "TODO(M5): the saved statuses window is not ported yet\n");
+}

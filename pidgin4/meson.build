@@ -116,6 +116,8 @@ pidgin4_sources = files(
 	'gtkconn.c',
 	'gtkdebug.c',
 	'gtkdialogs.c',
+	'gtkdocklet.c',
+	'gtkdocklet-sni.c',
 	'gtkeventloop.c',
 	'gtkidle.c',
 	'gtkmain.c',
@@ -156,6 +158,7 @@ components_sources = files(
 	'pidginanimation.c',
 	# M6: the tray's menu exporter (GIO only).
 	'pidgindbusmenu.c',
+	'pidginsni.c',
 )
 
 components_lib = static_library('pidgin4-components',
@@ -190,6 +193,18 @@ foreach size : ['16x16', '22x22', '24x24', '32x32', '48x48']
 endforeach
 install_data('resources/icons/scalable/apps' / app_id + '.svg',
 	install_dir : datadir / 'icons' / 'hicolor' / 'scalable' / 'apps')
+
+# M6: the tray's status icons (the SNI IconName com.minowick.Pidgin4-<v>).
+# <prefix>/share/icons is the item's IconThemePath; --desktop-integration
+# links them into ~/.local/share/icons as well.
+tray_icon_variants = ['available', 'away', 'busy', 'extended-away',
+                      'invisible', 'offline', 'pending', 'connecting']
+foreach size : ['16x16', '22x22', '32x32', '48x48']
+	foreach variant : tray_icon_variants
+		install_data('resources/icons' / size / 'apps' / app_id + '-' + variant + '.png',
+			install_dir : datadir / 'icons' / 'hicolor' / size / 'apps')
+	endforeach
+endforeach
 
 # Tests
 test_menu = executable('test-pidginmenu',
@@ -261,6 +276,21 @@ test_dbusmenu = executable('test-dbusmenu',
 	dependencies : [glib_dep, gio_dep, gobject_dep],
 	install : false)
 test('dbusmenu', test_dbusmenu, timeout : 60)
+
+test_sni = executable('test-sni',
+	'tests/test-sni.c', 'tests/fake-sni-watcher.c', 'pidginsni.c',
+	'pidgindbusmenu.c', resources,
+	dependencies : [glib_dep, gio_dep, gobject_dep, gtk_dep],
+	install : false)
+test('sni', test_sni, timeout : 60)
+
+# A stand-alone watcher for headless runs: under dbus-run-session, start
+# it before pidgin4 and the tray item registers with it.
+executable('fake-sni-watcher',
+	'tests/fake-sni-watcher.c',
+	c_args : ['-DFAKE_WATCHER_MAIN'],
+	dependencies : [glib_dep, gio_dep, gobject_dep],
+	install : false)
 
 desktop_validate = find_program('desktop-file-validate', required : false)
 if desktop_validate.found()

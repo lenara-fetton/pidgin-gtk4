@@ -157,5 +157,40 @@
     <file>icons/32x32/status/pidgin-status-log-out.png</file>
     <file>icons/32x32/status/pidgin-status-offline.png</file>
     <file>icons/32x32/status/pidgin-status-person.png</file>
+    <!-- M6 tray: the status variants of the app icon (from
+         pidgin/pixmaps/tray), also installed into hicolor for the SNI
+         IconName; the GResource copies are exported as IconPixmap. -->
+    <file>icons/16x16/apps/com.minowick.Pidgin4-available.png</file>
+    <file>icons/16x16/apps/com.minowick.Pidgin4-away.png</file>
+    <file>icons/16x16/apps/com.minowick.Pidgin4-busy.png</file>
+    <file>icons/16x16/apps/com.minowick.Pidgin4-extended-away.png</file>
+    <file>icons/16x16/apps/com.minowick.Pidgin4-invisible.png</file>
+    <file>icons/16x16/apps/com.minowick.Pidgin4-offline.png</file>
+    <file>icons/16x16/apps/com.minowick.Pidgin4-pending.png</file>
+    <file>icons/16x16/apps/com.minowick.Pidgin4-connecting.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-available.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-away.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-busy.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-extended-away.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-invisible.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-offline.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-pending.png</file>
+    <file>icons/22x22/apps/com.minowick.Pidgin4-connecting.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-available.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-away.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-busy.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-extended-away.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-invisible.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-offline.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-pending.png</file>
+    <file>icons/32x32/apps/com.minowick.Pidgin4-connecting.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-available.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-away.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-busy.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-extended-away.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-invisible.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-offline.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-pending.png</file>
+    <file>icons/48x48/apps/com.minowick.Pidgin4-connecting.png</file>
   </gresource>
 </gresources>
