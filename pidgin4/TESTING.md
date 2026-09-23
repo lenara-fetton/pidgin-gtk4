@@ -452,6 +452,13 @@ is best), another IRC client, the Discord web client.
       quoted message above.
 - [ ] React from the row menu or a reaction chip; reactions from the
       other side appear under the message; removing works both ways.
+- [ ] Hover action bar: resting the pointer on a message (~150 ms) shows
+      React/Reply/Edit/Delete/More at its top right (Edit and Delete on
+      your own messages only; none on system lines, messages without ids,
+      IRC or Steam); it goes on leave, text selection under it still
+      works, each button does what the row menu does, and the entry has
+      the keyboard focus afterwards (also after the row menu). Check it in
+      a light and a dark theme.
 - [ ] Delete for Everyone (your message) retracts it on the other side;
       a retraction from the other side shows "This message was deleted."
       In a room where you are a moderator, Delete works on others'
@@ -814,8 +821,9 @@ For headless test runs only:
   checks conversations of both types: writes with every flag, the
   metadata signals (ids, dedup by id and fuzzily, corrections, reactions,
   receipts, retractions, moderation), the entry (send, commands,
-  Up-arrow correction, reply), the IPC calls, the contract rule 7 log
-  lines (read back from the log file), the index rows and log offsets,
+  Up-arrow correction, reply), the hover action bar (buttons per
+  message kind, React/Reply/Edit, focus back in the entry), the IPC
+  calls, the contract rule 7 log lines (read back from the log file), the index rows and log offsets,
   index scroll-back, chat users and the topic, tabs and window actions,
   unseen state, hidden conversations and detaching. It removes the
   account and quits with status 0 when all checks pass ("PASS (N

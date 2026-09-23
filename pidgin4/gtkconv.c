@@ -2528,6 +2528,7 @@ setup_common_pane(PidginConversation *gtkconv)
 	g_signal_connect(entry, "message-send", G_CALLBACK(entry_send_cb), gtkconv);
 	g_signal_connect(entry, "typing-changed", G_CALLBACK(typing_changed_cb), gtkconv);
 	g_signal_connect(entry, "edit-last-requested", G_CALLBACK(edit_last_cb), gtkconv);
+	g_signal_connect_swapped(view, "focus-entry-requested", G_CALLBACK(gtk_widget_grab_focus), entry);
 	g_signal_connect(entry, "paste-image", G_CALLBACK(entry_paste_image_cb), gtkconv);
 	keys = gtk_event_controller_key_new();
 	gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);

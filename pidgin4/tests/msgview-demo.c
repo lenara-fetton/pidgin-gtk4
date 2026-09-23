@@ -308,6 +308,12 @@ retract_requested_cb(PidginMessageView *v, PidginMessage *msg, gpointer data)
 }
 
 static void
+focus_entry_cb(gpointer data)
+{
+	gtk_widget_grab_focus(GTK_WIDGET(entry));
+}
+
+static void
 set_xmpp_mode(gboolean on)
 {
 	xmpp_mode = on;
@@ -391,6 +397,7 @@ build_window(GtkApplication *app)
 	g_signal_connect(view, "reply-requested", G_CALLBACK(reply_requested_cb), NULL);
 	g_signal_connect(view, "edit-requested", G_CALLBACK(edit_requested_cb), NULL);
 	g_signal_connect(view, "retract-requested", G_CALLBACK(retract_requested_cb), NULL);
+	g_signal_connect_swapped(view, "focus-entry-requested", G_CALLBACK(focus_entry_cb), NULL);
 	gtk_box_append(GTK_BOX(box), GTK_WIDGET(view));
 
 	compose = pidgin_create_compose_entry(PURPLE_CONNECTION_HTML |
@@ -593,6 +600,58 @@ selftest(gpointer data)
 
 	/* the toolbar follows the capabilities */
 	CHECK(pidgin_format_toolbar_get_entry(toolbar) == entry);
+
+	/* the hover action bar: none without ids, all of it on our own
+	 * message with one; React opens the emoji chooser */
+	{
+		PidginMessage *plain = pidgin_message_new("alice@example.com", NULL, "no id",
+		                                          PURPLE_MESSAGE_RECV, time(NULL));
+		PidginMessage *own = pidgin_message_new(SELF, NULL, "hover me", PURPLE_MESSAGE_SEND,
+		                                        time(NULL));
+		GtkWidget *bar = NULL, *child, *react = NULL;
+		GString *names = g_string_new(NULL);
+
+		pidgin_message_set_stanza_id(own, "hover-1");
+		pidgin_message_view_append(view, plain);
+		pidgin_message_view_append(view, own);
+		pidgin_message_view_scroll_to_bottom(view);
+		drain();
+		CHECK(pidgin_message_view_test_hover(view, plain, &bar));
+		CHECK(bar == NULL);
+		CHECK(pidgin_message_view_test_hover(view, own, &bar));
+		CHECK(bar != NULL);
+		for (child = bar ? gtk_widget_get_first_child(bar) : NULL; child != NULL;
+		     child = gtk_widget_get_next_sibling(child)) {
+			if (!gtk_widget_get_visible(child))
+				continue;
+			g_string_append_printf(names, "%s%s", names->len ? "," : "",
+			                       gtk_widget_get_name(child));
+			if (purple_strequal(gtk_widget_get_name(child), "react"))
+				react = child;
+		}
+		g_print("selftest: hover bar '%s'\n", names->str);
+		CHECK(purple_strequal(names->str, "react,reply,edit,delete,more"));
+		if (react != NULL) {
+			GtkWidget *row = gtk_widget_get_parent(bar), *chooser = NULL;
+
+			g_signal_emit_by_name(react, "clicked");
+			drain();
+			for (child = gtk_widget_get_first_child(row); child != NULL;
+			     child = gtk_widget_get_next_sibling(child))
+				if (GTK_IS_EMOJI_CHOOSER(child))
+					chooser = child;
+			CHECK(chooser != NULL && gtk_widget_get_visible(chooser));
+			if (chooser != NULL)
+				gtk_popover_popdown(GTK_POPOVER(chooser));
+			drain();
+			CHECK(gtk_root_get_focus(gtk_widget_get_root(GTK_WIDGET(entry))) == GTK_WIDGET(entry));
+		}
+		pidgin_message_view_test_hover(view, NULL, NULL);
+		CHECK(bar == NULL || !gtk_widget_get_visible(bar));
+		g_string_free(names, TRUE);
+		g_object_unref(plain);
+		g_object_unref(own);
+	}
 
 	g_print("selftest: %s\n", failures ? "FAILED" : "passed");
 	g_application_quit(G_APPLICATION(app));

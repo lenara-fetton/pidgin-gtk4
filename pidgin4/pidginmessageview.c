@@ -35,6 +35,8 @@
 #define ACTION_KEY "pidgin-message-action"
 #define DEFAULT_SCROLLBACK 4000
 #define BOTTOM_SLACK 24.0
+#define ROW_SPACING 2
+#define HOVER_DELAY_MS 150
 
 struct _PidginMessageView
 {
@@ -68,6 +70,8 @@ struct _PidginMessageView
 	 * (moderation). */
 	gboolean message_actions;
 	gboolean can_moderate;
+
+	guint focus_idle;               /* "focus-entry-requested" pending */
 };
 
 enum {
@@ -77,6 +81,7 @@ enum {
 	SIG_RETRACT_REQUESTED,
 	SIG_POPULATE_MENU,
 	SIG_TOP_REACHED,
+	SIG_FOCUS_ENTRY_REQUESTED,
 	N_SIGNALS
 };
 
@@ -277,6 +282,17 @@ struct _PidginMessageRow
 	gboolean click_on_body;
 
 	GStrv extra_classes;            /* M7: classes applied from the message */
+
+	/* The hover action bar: made on the first hover, then kept with the
+	 * row (rows are recycled by the list's factory). */
+	GtkWidget *action_bar;
+	GtkWidget *bar_react;
+	GtkWidget *bar_reply;
+	GtkWidget *bar_edit;
+	GtkWidget *bar_retract;
+	GtkWidget *bar_more;
+	guint hover_id;
+	gboolean hovered;
 };
 
 G_DEFINE_FINAL_TYPE(PidginMessageRow, pidgin_message_row, GTK_TYPE_WIDGET)
@@ -369,13 +385,39 @@ act_save_image(GSimpleAction *a, GVariant *p, gpointer data)
 	g_object_unref(dialog);
 }
 
+static gboolean
+focus_entry_idle_cb(gpointer data)
+{
+	PidginMessageView *view = data;
+
+	view->focus_idle = 0;
+	g_signal_emit(view, signals[SIG_FOCUS_ENTRY_REQUESTED], 0);
+	return G_SOURCE_REMOVE;
+}
+
+/*
+ * After a message action the compose entry gets the keyboard back
+ * ("focus-entry-requested"). From an idle: a closing popover (the row
+ * menu, the body's context menu, the emoji chooser) gives the focus to
+ * its parent, the row or the message text, after the action has run,
+ * which would undo a grab made now.
+ */
+static void
+request_entry_focus(PidginMessageView *view)
+{
+	if (view != NULL && view->focus_idle == 0)
+		view->focus_idle = g_idle_add(focus_entry_idle_cb, view);
+}
+
 static void
 act_reply(GSimpleAction *a, GVariant *p, gpointer data)
 {
 	PidginMessageRow *row = data;
 
-	if (row->msg && row->view)
+	if (row->msg && row->view) {
 		g_signal_emit(row->view, signals[SIG_REPLY_REQUESTED], 0, row->msg);
+		request_entry_focus(row->view);
+	}
 }
 
 static void
@@ -383,8 +425,10 @@ act_edit(GSimpleAction *a, GVariant *p, gpointer data)
 {
 	PidginMessageRow *row = data;
 
-	if (row->msg && row->view)
+	if (row->msg && row->view) {
 		g_signal_emit(row->view, signals[SIG_EDIT_REQUESTED], 0, row->msg);
+		request_entry_focus(row->view);
+	}
 }
 
 static void
@@ -392,8 +436,10 @@ act_retract(GSimpleAction *a, GVariant *p, gpointer data)
 {
 	PidginMessageRow *row = data;
 
-	if (row->msg && row->view)
+	if (row->msg && row->view) {
 		g_signal_emit(row->view, signals[SIG_RETRACT_REQUESTED], 0, row->msg);
+		request_entry_focus(row->view);
+	}
 }
 
 static void
@@ -408,19 +454,37 @@ emoji_picked_cb(GtkEmojiChooser *chooser, const char *emoji, PidginMessageRow *r
 	g_signal_emit(view, signals[SIG_REACTION_TOGGLED], 0, row->msg, emoji, add);
 }
 
+static void row_bar_popup_closed_cb(GtkPopover *popover, PidginMessageRow *row);
+
+static void
+emoji_closed_cb(GtkPopover *popover, PidginMessageRow *row)
+{
+	/* picked or dismissed: back to the entry either way */
+	request_entry_focus(row->view);
+	row_bar_popup_closed_cb(popover, row);
+}
+
+/* The reaction emoji chooser, pointing at @rect (row coordinates). */
+static void
+row_popup_emoji(PidginMessageRow *row, const GdkRectangle *rect)
+{
+	if (row->emoji == NULL) {
+		row->emoji = gtk_emoji_chooser_new();
+		gtk_widget_set_parent(row->emoji, GTK_WIDGET(row));
+		g_signal_connect(row->emoji, "emoji-picked", G_CALLBACK(emoji_picked_cb), row);
+		g_signal_connect(row->emoji, "closed", G_CALLBACK(emoji_closed_cb), row);
+	}
+	gtk_popover_set_pointing_to(GTK_POPOVER(row->emoji), rect);
+	gtk_popover_popup(GTK_POPOVER(row->emoji));
+}
+
 static void
 act_react(GSimpleAction *a, GVariant *p, gpointer data)
 {
 	PidginMessageRow *row = data;
 	GdkRectangle rect = { (int)row->last_x, (int)row->last_y, 1, 1 };
 
-	if (row->emoji == NULL) {
-		row->emoji = gtk_emoji_chooser_new();
-		gtk_widget_set_parent(row->emoji, GTK_WIDGET(row));
-		g_signal_connect(row->emoji, "emoji-picked", G_CALLBACK(emoji_picked_cb), row);
-	}
-	gtk_popover_set_pointing_to(GTK_POPOVER(row->emoji), &rect);
-	gtk_popover_popup(GTK_POPOVER(row->emoji));
+	row_popup_emoji(row, &rect);
 }
 
 static const GActionEntry row_actions[] = {
@@ -513,6 +577,21 @@ row_capture_pressed_cb(GtkGestureClick *gesture, int n, double x, double y,
 
 /* Bubble phase: a right click that the body didn't handle (on the
  * timestamp, the name or the margins) opens the row menu. */
+/* The row menu, pointing at @rect (row coordinates). */
+static void
+row_popup_menu(PidginMessageRow *row, const GdkRectangle *rect)
+{
+	if (row->popover == NULL) {
+		row->popover = gtk_popover_menu_new_from_model(G_MENU_MODEL(row->menu));
+		gtk_widget_set_parent(row->popover, GTK_WIDGET(row));
+		gtk_popover_set_has_arrow(GTK_POPOVER(row->popover), FALSE);
+		gtk_widget_set_halign(row->popover, GTK_ALIGN_START);
+		g_signal_connect(row->popover, "closed", G_CALLBACK(row_bar_popup_closed_cb), row);
+	}
+	gtk_popover_set_pointing_to(GTK_POPOVER(row->popover), rect);
+	gtk_popover_popup(GTK_POPOVER(row->popover));
+}
+
 static void
 row_pressed_cb(GtkGestureClick *gesture, int n, double x, double y, PidginMessageRow *row)
 {
@@ -523,14 +602,7 @@ row_pressed_cb(GtkGestureClick *gesture, int n, double x, double y, PidginMessag
 	if (row->click_on_body)
 		return;
 
-	if (row->popover == NULL) {
-		row->popover = gtk_popover_menu_new_from_model(G_MENU_MODEL(row->menu));
-		gtk_widget_set_parent(row->popover, GTK_WIDGET(row));
-		gtk_popover_set_has_arrow(GTK_POPOVER(row->popover), FALSE);
-		gtk_widget_set_halign(row->popover, GTK_ALIGN_START);
-	}
-	gtk_popover_set_pointing_to(GTK_POPOVER(row->popover), &rect);
-	gtk_popover_popup(GTK_POPOVER(row->popover));
+	row_popup_menu(row, &rect);
 	gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
 }
 
@@ -545,6 +617,264 @@ reply_clicked_cb(GtkGestureClick *gesture, int n, double x, double y,
 	target = pidgin_message_view_find_by_id(row->view, pidgin_message_get_reply_to(row->msg));
 	if (target != NULL)
 		pidgin_message_view_scroll_to_message(row->view, target);
+}
+
+/* ---- hover action bar ---- */
+
+/*
+ * React, Reply, Edit, Delete and More over the top right corner of the
+ * row the pointer is on (after HOVER_DELAY_MS), of the row that has the
+ * keyboard focus while focus is visible, and after a touch long press.
+ * The buttons follow the row menu's actions: the bar shows only when one
+ * of reply/react/edit/retract is enabled.
+ */
+
+/* A message the actions can apply to: not a marker, system or error line */
+static gboolean
+row_is_message(PidginMessageRow *row)
+{
+	return row->msg != NULL &&
+	       pidgin_message_get_kind(row->msg) == PIDGIN_MESSAGE_KIND_NORMAL &&
+	       !(pidgin_message_get_flags(row->msg) & (PURPLE_MESSAGE_SYSTEM | PURPLE_MESSAGE_ERROR));
+}
+
+static gboolean
+action_enabled(PidginMessageRow *row, const char *name)
+{
+	return g_action_group_get_action_enabled(G_ACTION_GROUP(row->actions), name);
+}
+
+static gboolean
+row_bar_applies(PidginMessageRow *row)
+{
+	return row_is_message(row) &&
+	       (action_enabled(row, "react") || action_enabled(row, "reply") ||
+	        action_enabled(row, "edit") || action_enabled(row, "retract"));
+}
+
+static gboolean
+row_bar_shown(PidginMessageRow *row)
+{
+	return row->action_bar != NULL && gtk_widget_get_visible(row->action_bar);
+}
+
+/* One of the row's popovers other than @except is open */
+static gboolean
+row_popup_open(PidginMessageRow *row, GtkWidget *except)
+{
+	return (row->emoji != NULL && row->emoji != except && gtk_widget_get_visible(row->emoji)) ||
+	       (row->popover != NULL && row->popover != except &&
+	        gtk_widget_get_visible(row->popover));
+}
+
+static void
+row_bar_hide(PidginMessageRow *row, gboolean force, GtkWidget *closing)
+{
+	if (!row_bar_shown(row))
+		return;
+	if (!force && (row->hovered || row_popup_open(row, closing)))
+		return;
+	gtk_widget_set_visible(row->action_bar, FALSE);
+}
+
+static void
+row_bar_popup_closed_cb(GtkPopover *popover, PidginMessageRow *row)
+{
+	row_bar_hide(row, FALSE, GTK_WIDGET(popover));
+}
+
+static void
+bar_button_bounds(PidginMessageRow *row, GtkWidget *button, GdkRectangle *rect)
+{
+	graphene_rect_t b;
+
+	if (gtk_widget_compute_bounds(button, GTK_WIDGET(row), &b)) {
+		rect->x = (int)b.origin.x;
+		rect->y = (int)b.origin.y;
+		rect->width = MAX((int)b.size.width, 1);
+		rect->height = MAX((int)b.size.height, 1);
+	} else {
+		*rect = (GdkRectangle){ 0, 0, 1, 1 };
+	}
+}
+
+static void
+bar_react_clicked_cb(GtkButton *button, PidginMessageRow *row)
+{
+	GdkRectangle rect;
+
+	bar_button_bounds(row, GTK_WIDGET(button), &rect);
+	row_popup_emoji(row, &rect);
+}
+
+static void
+bar_more_clicked_cb(GtkButton *button, PidginMessageRow *row)
+{
+	GdkRectangle rect;
+
+	bar_button_bounds(row, GTK_WIDGET(button), &rect);
+	/* as a right click on the margin: no link items, Save Image takes
+	 * the first image */
+	row->last_x = rect.x;
+	row->last_y = rect.y;
+	row->click_on_body = FALSE;
+	g_menu_remove_all(row->link_section);
+	g_clear_object(&row->link_actions);
+	gtk_widget_insert_action_group(GTK_WIDGET(row), "link", NULL);
+	row_popup_menu(row, &rect);
+}
+
+static void
+bar_button_set_label(GtkWidget *button, const char *label)
+{
+	gtk_widget_set_tooltip_text(button, label);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL,
+	                               label, -1);
+}
+
+static GtkWidget *
+bar_button_new(PidginMessageRow *row, const char *name, const char *icon,
+               const char *label, const char *action)
+{
+	GtkWidget *button = gtk_button_new_from_icon_name(icon);
+
+	gtk_widget_set_name(button, name);
+	bar_button_set_label(button, label);
+	gtk_button_set_has_frame(GTK_BUTTON(button), FALSE);
+	/* Clicking leaves the text selection and the focus alone. */
+	gtk_widget_set_focus_on_click(button, FALSE);
+	if (action != NULL)
+		gtk_actionable_set_action_name(GTK_ACTIONABLE(button), action);
+	gtk_box_append(GTK_BOX(row->action_bar), button);
+	return button;
+}
+
+static void
+row_bar_ensure(PidginMessageRow *row)
+{
+	if (row->action_bar != NULL)
+		return;
+
+	row->action_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+	gtk_widget_add_css_class(row->action_bar, "pidgin-row-actions");
+	gtk_widget_set_visible(row->action_bar, FALSE);
+
+	row->bar_react = bar_button_new(row, "react", "face-smile-symbolic", _("React"), NULL);
+	g_signal_connect(row->bar_react, "clicked", G_CALLBACK(bar_react_clicked_cb), row);
+	row->bar_reply = bar_button_new(row, "reply", "mail-reply-sender-symbolic", _("Reply"),
+	                                "msg.reply");
+	row->bar_edit = bar_button_new(row, "edit", "document-edit-symbolic", _("Edit"),
+	                               "msg.edit");
+	row->bar_retract = bar_button_new(row, "delete", "user-trash-symbolic",
+	                                  _("Delete for Everyone"), "msg.retract");
+	row->bar_more = bar_button_new(row, "more", "view-more-symbolic", _("More"), NULL);
+	g_signal_connect(row->bar_more, "clicked", G_CALLBACK(bar_more_clicked_cb), row);
+
+	/* The last child: drawn over the message and picked first. The row's
+	 * size_allocate places it; it takes no room in the layout. */
+	gtk_widget_set_parent(row->action_bar, GTK_WIDGET(row));
+}
+
+static void
+row_bar_update(PidginMessageRow *row)
+{
+	gtk_widget_set_visible(row->bar_react, action_enabled(row, "react"));
+	gtk_widget_set_visible(row->bar_reply, action_enabled(row, "reply"));
+	gtk_widget_set_visible(row->bar_edit, action_enabled(row, "edit"));
+	gtk_widget_set_visible(row->bar_retract, action_enabled(row, "retract"));
+	bar_button_set_label(row->bar_retract, message_is_own(row->msg)
+		? _("Delete for Everyone") : _("Delete for Everyone (Moderate)"));
+}
+
+static void
+row_bar_show(PidginMessageRow *row)
+{
+	g_clear_handle_id(&row->hover_id, g_source_remove);
+	if (!row_bar_applies(row)) {
+		row_bar_hide(row, TRUE, NULL);
+		return;
+	}
+	row_bar_ensure(row);
+	row_bar_update(row);
+	gtk_widget_set_visible(row->action_bar, TRUE);
+}
+
+/* The actions changed (update_menu()): follow them if shown. */
+static void
+row_bar_sync(PidginMessageRow *row)
+{
+	if (!row_bar_shown(row))
+		return;
+	if (row_bar_applies(row))
+		row_bar_update(row);
+	else
+		row_bar_hide(row, TRUE, NULL);
+}
+
+static gboolean
+hover_timeout_cb(gpointer data)
+{
+	PidginMessageRow *row = data;
+
+	row->hover_id = 0;
+	if (row->hovered)
+		row_bar_show(row);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+row_hover_enter(PidginMessageRow *row)
+{
+	row->hovered = TRUE;
+	if (row->hover_id != 0 || row_bar_shown(row) || !row_bar_applies(row))
+		return;
+	row->hover_id = g_timeout_add(HOVER_DELAY_MS, hover_timeout_cb, row);
+}
+
+static void
+row_hover_leave(PidginMessageRow *row)
+{
+	row->hovered = FALSE;
+	g_clear_handle_id(&row->hover_id, g_source_remove);
+	/* not from under a bar button the keyboard is on */
+	if (row_bar_shown(row) && gtk_widget_get_focus_child(row->action_bar) != NULL)
+		return;
+	row_bar_hide(row, FALSE, NULL);
+}
+
+static void
+motion_enter_cb(GtkEventControllerMotion *ctl, double x, double y, PidginMessageRow *row)
+{
+	row_hover_enter(row);
+}
+
+static void
+motion_leave_cb(GtkEventControllerMotion *ctl, PidginMessageRow *row)
+{
+	row_hover_leave(row);
+}
+
+/* Keyboard: the bar follows the focus while focus is visible (Tab
+ * reaches its buttons). A click into the text doesn't count. */
+static void
+focus_enter_cb(GtkEventControllerFocus *ctl, PidginMessageRow *row)
+{
+	GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(row));
+
+	if (GTK_IS_WINDOW(root) && gtk_window_get_focus_visible(GTK_WINDOW(root)))
+		row_bar_show(row);
+}
+
+static void
+focus_leave_cb(GtkEventControllerFocus *ctl, PidginMessageRow *row)
+{
+	row_bar_hide(row, FALSE, NULL);
+}
+
+static void
+long_press_cb(GtkGestureLongPress *gesture, double x, double y, PidginMessageRow *row)
+{
+	row_bar_show(row);
 }
 
 /* ---- reactions ---- */
@@ -862,6 +1192,8 @@ update_menu(PidginMessageRow *row)
 	 * the demo offers them, for its own tests. */
 	if (row->view != NULL && row->view->message_actions && !has_id)
 		meta = FALSE;
+	if (!row_is_message(row))
+		meta = FALSE;
 	set_action_enabled(row, "edit", meta && own && !retracted);
 	set_action_enabled(row, "retract", meta && (own || moderate) && !retracted);
 	set_action_enabled(row, "react", meta && !retracted);
@@ -872,6 +1204,8 @@ update_menu(PidginMessageRow *row)
 	if (row->view != NULL)
 		g_signal_emit(row->view, signals[SIG_POPULATE_MENU], 0, row->msg,
 		              row->plugin_section);
+
+	row_bar_sync(row);
 }
 
 /*
@@ -979,6 +1313,16 @@ msg_reactions_cb(PidginMessage *msg, PidginMessageRow *row)
 static void
 row_unbind(PidginMessageRow *row)
 {
+	/* The widget is recycled for another message: nothing may stay
+	 * pointed at this one. (hovered stays: the pointer may still be on
+	 * the widget, row_bind() restarts the delay.) */
+	g_clear_handle_id(&row->hover_id, g_source_remove);
+	if (row->emoji != NULL && gtk_widget_get_visible(row->emoji))
+		gtk_popover_popdown(GTK_POPOVER(row->emoji));
+	if (row->popover != NULL && gtk_widget_get_visible(row->popover))
+		gtk_popover_popdown(GTK_POPOVER(row->popover));
+	row_bar_hide(row, TRUE, NULL);
+
 	if (row->msg == NULL)
 		return;
 	g_clear_signal_handler(&row->notify_id, row->msg);
@@ -996,6 +1340,91 @@ row_bind(PidginMessageRow *row, PidginMessage *msg, guint position)
 	row->reactions_id = g_signal_connect(msg, "reactions-changed",
 	                                     G_CALLBACK(msg_reactions_cb), row);
 	row_update(row);
+	if (row->hovered)
+		row_hover_enter(row);
+}
+
+/* Rows are laid out as a vertical box (spacing ROW_SPACING), except for
+ * the hover action bar, which goes over the top right corner. */
+static GtkSizeRequestMode
+pidgin_message_row_get_request_mode(GtkWidget *widget)
+{
+	return GTK_SIZE_REQUEST_HEIGHT_FOR_WIDTH;
+}
+
+static gboolean
+row_lays_out(PidginMessageRow *row, GtkWidget *child)
+{
+	return child != row->action_bar && gtk_widget_should_layout(child);
+}
+
+static void
+pidgin_message_row_measure(GtkWidget *widget, GtkOrientation orientation, int for_size,
+                           int *minimum, int *natural, int *min_baseline, int *nat_baseline)
+{
+	PidginMessageRow *row = PIDGIN_MESSAGE_ROW(widget);
+	GtkWidget *child;
+	int n = 0;
+
+	*minimum = *natural = 0;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child)) {
+		int cmin, cnat;
+
+		if (!row_lays_out(row, child))
+			continue;
+		if (orientation == GTK_ORIENTATION_VERTICAL) {
+			gtk_widget_measure(child, orientation, for_size, &cmin, &cnat, NULL, NULL);
+			*minimum += cmin;
+			*natural += cnat;
+		} else {
+			gtk_widget_measure(child, orientation, -1, &cmin, &cnat, NULL, NULL);
+			*minimum = MAX(*minimum, cmin);
+			*natural = MAX(*natural, cnat);
+		}
+		n++;
+	}
+	if (orientation == GTK_ORIENTATION_VERTICAL && n > 1) {
+		*minimum += ROW_SPACING * (n - 1);
+		*natural += ROW_SPACING * (n - 1);
+	}
+}
+
+static void
+pidgin_message_row_size_allocate(GtkWidget *widget, int width, int height, int baseline)
+{
+	PidginMessageRow *row = PIDGIN_MESSAGE_ROW(widget);
+	GtkWidget *child;
+	int y = 0;
+
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child)) {
+		int cmin, cnat;
+
+		if (GTK_IS_POPOVER(child)) {
+			if (gtk_widget_get_visible(child))
+				gtk_popover_present(GTK_POPOVER(child));
+			continue;
+		}
+		if (!row_lays_out(row, child))
+			continue;
+		gtk_widget_measure(child, GTK_ORIENTATION_VERTICAL, width, &cmin, &cnat, NULL, NULL);
+		gtk_widget_size_allocate(child, &(GtkAllocation){ 0, y, width, cnat }, -1);
+		y += cnat + ROW_SPACING;
+	}
+
+	if (row_bar_shown(row)) {
+		int wmin, w, hmin, h;
+
+		gtk_widget_measure(row->action_bar, GTK_ORIENTATION_HORIZONTAL, -1,
+		                   &wmin, &w, NULL, NULL);
+		gtk_widget_measure(row->action_bar, GTK_ORIENTATION_VERTICAL, w,
+		                   &hmin, &h, NULL, NULL);
+		/* top right; on a row lower than the bar, over the one above
+		 * (drawn before this one) rather than under the next */
+		gtk_widget_size_allocate(row->action_bar,
+			&(GtkAllocation){ MAX(width - w, 0), MIN(0, height - h), w, h }, -1);
+	}
 }
 
 static void
@@ -1007,6 +1436,8 @@ pidgin_message_row_dispose(GObject *obj)
 	row_unbind(row);
 	g_clear_pointer(&row->popover, gtk_widget_unparent);
 	g_clear_pointer(&row->emoji, gtk_widget_unparent);
+	g_clear_pointer(&row->action_bar, gtk_widget_unparent);
+	row->bar_react = row->bar_reply = row->bar_edit = row->bar_retract = row->bar_more = NULL;
 	while ((child = gtk_widget_get_first_child(GTK_WIDGET(row))) != NULL)
 		gtk_widget_unparent(child);
 	g_clear_object(&row->actions);
@@ -1024,20 +1455,22 @@ pidgin_message_row_dispose(GObject *obj)
 static void
 pidgin_message_row_class_init(PidginMessageRowClass *klass)
 {
+	GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(klass);
+
 	G_OBJECT_CLASS(klass)->dispose = pidgin_message_row_dispose;
-	gtk_widget_class_set_layout_manager_type(GTK_WIDGET_CLASS(klass), GTK_TYPE_BOX_LAYOUT);
-	gtk_widget_class_set_css_name(GTK_WIDGET_CLASS(klass), "pidgin-message-row");
+	widget_class->get_request_mode = pidgin_message_row_get_request_mode;
+	widget_class->measure = pidgin_message_row_measure;
+	widget_class->size_allocate = pidgin_message_row_size_allocate;
+	gtk_widget_class_set_css_name(widget_class, "pidgin-message-row");
 }
 
 static void
 pidgin_message_row_init(PidginMessageRow *row)
 {
-	GtkLayoutManager *layout = gtk_widget_get_layout_manager(GTK_WIDGET(row));
+	GtkEventController *controller;
 	GtkWidget *popover;
 	GtkGesture *gesture;
 
-	gtk_orientable_set_orientation(GTK_ORIENTABLE(layout), GTK_ORIENTATION_VERTICAL);
-	gtk_box_layout_set_spacing(GTK_BOX_LAYOUT(layout), 2);
 	gtk_widget_add_css_class(GTK_WIDGET(row), "pidgin-message-row");
 
 	/* reply quote */
@@ -1126,6 +1559,20 @@ pidgin_message_row_init(PidginMessageRow *row)
 	gesture = gtk_gesture_click_new();
 	gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), GDK_BUTTON_SECONDARY);
 	g_signal_connect(gesture, "pressed", G_CALLBACK(row_pressed_cb), row);
+	gtk_widget_add_controller(GTK_WIDGET(row), GTK_EVENT_CONTROLLER(gesture));
+
+	/* the hover action bar (made when first shown) */
+	controller = gtk_event_controller_motion_new();
+	g_signal_connect(controller, "enter", G_CALLBACK(motion_enter_cb), row);
+	g_signal_connect(controller, "leave", G_CALLBACK(motion_leave_cb), row);
+	gtk_widget_add_controller(GTK_WIDGET(row), controller);
+	controller = gtk_event_controller_focus_new();
+	g_signal_connect(controller, "enter", G_CALLBACK(focus_enter_cb), row);
+	g_signal_connect(controller, "leave", G_CALLBACK(focus_leave_cb), row);
+	gtk_widget_add_controller(GTK_WIDGET(row), controller);
+	gesture = gtk_gesture_long_press_new();
+	gtk_gesture_single_set_touch_only(GTK_GESTURE_SINGLE(gesture), TRUE);
+	g_signal_connect(gesture, "pressed", G_CALLBACK(long_press_cb), row);
 	gtk_widget_add_controller(GTK_WIDGET(row), GTK_EVENT_CONTROLLER(gesture));
 }
 
@@ -1582,6 +2029,40 @@ pidgin_message_view_refresh(PidginMessageView *view)
 			row_update(row);
 }
 
+gboolean
+pidgin_message_view_test_hover(PidginMessageView *view, PidginMessage *msg, GtkWidget **bar)
+{
+	GHashTableIter iter;
+	gpointer key;
+	PidginMessageRow *found = NULL;
+
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE_VIEW(view), FALSE);
+
+	if (bar != NULL)
+		*bar = NULL;
+	g_hash_table_iter_init(&iter, view->rows);
+	while (g_hash_table_iter_next(&iter, &key, NULL)) {
+		PidginMessageRow *row = key;
+
+		if (msg != NULL && row->msg == msg)
+			found = row;
+		else if (row->hovered)
+			row_hover_leave(row);
+	}
+	if (found == NULL)
+		return msg == NULL;
+
+	/* as the motion controller's enter, then the delay's end */
+	row_hover_enter(found);
+	if (found->hover_id != 0) {
+		g_clear_handle_id(&found->hover_id, g_source_remove);
+		hover_timeout_cb(found);
+	}
+	if (bar != NULL && row_bar_shown(found))
+		*bar = found->action_bar;
+	return TRUE;
+}
+
 static void
 edge_reached_cb(GtkScrolledWindow *sw, GtkPositionType pos, PidginMessageView *view)
 {
@@ -1611,6 +2092,7 @@ pidgin_message_view_dispose(GObject *obj)
 		gtk_widget_remove_tick_callback(GTK_WIDGET(view), view->tick_id);
 		view->tick_id = 0;
 	}
+	g_clear_handle_id(&view->focus_idle, g_source_remove);
 	while ((child = gtk_widget_get_first_child(GTK_WIDGET(view))) != NULL)
 		gtk_widget_unparent(child);
 	g_clear_object(&view->filtered);
@@ -1658,6 +2140,9 @@ pidgin_message_view_class_init(PidginMessageViewClass *klass)
 		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
 		G_TYPE_NONE, 2, PIDGIN_TYPE_MESSAGE, G_TYPE_MENU);
 	signals[SIG_TOP_REACHED] = g_signal_new("top-reached",
+		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		G_TYPE_NONE, 0);
+	signals[SIG_FOCUS_ENTRY_REQUESTED] = g_signal_new("focus-entry-requested",
 		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
 		G_TYPE_NONE, 0);
 }
