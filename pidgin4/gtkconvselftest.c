@@ -1007,6 +1007,255 @@ test_attach(PurpleConversation *conv)
 	CHECK(!gtk_widget_get_visible(button), "attach left shown");
 }
 
+/* The calls of @command in the prpl's call log, as their args, "\n"-joined */
+static char *
+logged_calls(const char *command)
+{
+	GPtrArray *log = pidgin_selftest_prpl_get_call_log();
+	GString *out = g_string_new(NULL);
+	char *prefix = g_strconcat(command, "|", NULL);
+	guint i;
+
+	for (i = 0; log != NULL && i < log->len; i++) {
+		const char *c = g_ptr_array_index(log, i);
+
+		if (!g_str_has_prefix(c, prefix))
+			continue;
+		if (out->len > 0)
+			g_string_append_c(out, '\n');
+		g_string_append(out, c + strlen(prefix));
+	}
+	g_free(prefix);
+	return g_string_free(out, FALSE);
+}
+
+static void
+end_xfers(void)
+{
+	GList *l, *xfers = g_list_copy(pidgin_selftest_prpl_get_xfers());
+
+	for (l = xfers; l != NULL; l = l->next)
+		purple_xfer_cancel_local(l->data);
+	g_list_free(xfers);
+	pidgin_selftest_prpl_forget_xfer();
+	spin(300);
+}
+
+/* The path of the file in a "send-file" / "chat-send-file" log entry
+ * ("who|path|") */
+static char *
+logged_path(const char *line)
+{
+	char **parts = g_strsplit(line ? line : "", "|", -1);
+	char *path = g_strv_length(parts) >= 2 ? g_strdup(parts[1]) : NULL;
+
+	g_strfreev(parts);
+	return path;
+}
+
+/* Insert Image by upload (XEP-0363 on XMPP: the prpl's IPC
+ * "http-upload-available"): images go into the entry (Insert Image,
+ * paste, drop) with no confirmation, in IMs and chats; on send the text
+ * goes as one message and each image, in order, as a file under
+ * <profile>/pidgin4/paste/. Larger than "http-upload-max-size": an error
+ * line and nothing sent. Without the service: no Insert Image, and a
+ * paste asks to send a file. */
+static void
+test_upload_images(PurpleConversation *conv, PurpleConversation *chat)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
+	char *dir = g_build_filename(purple_user_dir(), "pidgin4", "paste", NULL);
+	char *ims, *files, **lines, *path, *dropped;
+	int id;
+	guint n;
+
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/confirm_file_send", TRUE);
+	pidgin_selftest_prpl_set_caps(FALSE, TRUE);
+	pidgin_selftest_prpl_set_upload(TRUE, 0);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	if (chat != NULL)
+		pidgin_conv_update_buttons_by_protocol(chat);
+
+	CHECK(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE, "upload: no image caps");
+	CHECK(pidgin_conv_action_enabled(gtkconv, "insert-image"), "upload: Insert Image disabled");
+	CHECK(pidgin_compose_entry_get_paste_images(entry), "upload: images not pasted");
+
+	/* text, an image from a file (Insert Image), a pasted image */
+	pidgin_compose_entry_clear(entry);
+	pidgin_compose_entry_set_markup(entry, "two pictures ");
+	id = add_test_image();
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	paste_image_clipboard(entry, NULL);
+	CHECK(confirm_dialog(conv) == NULL, "upload: the paste asked to send a file");
+	{
+		GArray *ids = pidgin_compose_entry_get_image_ids(entry);
+
+		CHECK(ids->len == 2, "upload: %u images in the entry", ids->len);
+		g_array_unref(ids);
+	}
+	pidgin_selftest_prpl_clear_call_log();
+	pidgin_selftest_prpl_forget_xfer();
+	CHECK(pidgin_compose_entry_send(entry), "upload: send");
+	spin(300);
+	CHECK(pidgin_compose_entry_is_empty(entry), "upload: entry not cleared");
+	ims = logged_calls("send-im");
+	CHECK(purple_strequal(ims, ST_BUDDY "|two pictures|"), "upload: send-im \"%s\"", ims);
+	files = logged_calls("send-file");
+	lines = g_strsplit(files, "\n", -1);
+	CHECK(g_strv_length(lines) == 2, "upload: send-file \"%s\"", files);
+	if (g_strv_length(lines) == 2) {
+		char *p1 = logged_path(lines[0]), *p2 = logged_path(lines[1]);
+		char *b1 = g_path_get_basename(p1), *b2 = g_path_get_basename(p2);
+		char *d1 = g_path_get_dirname(p1), *d2 = g_path_get_dirname(p2);
+
+		CHECK(g_str_has_prefix(lines[0], ST_BUDDY "|") && g_str_has_prefix(lines[1], ST_BUDDY "|"),
+		      "upload: sent to %s", files);
+		CHECK(purple_strequal(d1, dir) && purple_strequal(d2, dir),
+		      "upload: files not under pidgin4/paste: %s", files);
+		CHECK(purple_strequal(b1, "selftest.png"), "upload: first file %s", b1);
+		CHECK(g_str_has_prefix(b2, "pasted-") && g_str_has_suffix(b2, ".png"),
+		      "upload: second file %s", b2);
+		CHECK(g_file_test(p1, G_FILE_TEST_EXISTS) && g_file_test(p2, G_FILE_TEST_EXISTS),
+		      "upload: files gone before the transfers ended");
+		CHECK(g_list_length(pidgin_selftest_prpl_get_xfers()) == 2, "upload: %u transfers",
+		      g_list_length(pidgin_selftest_prpl_get_xfers()));
+		end_xfers();
+		CHECK(!g_file_test(p1, G_FILE_TEST_EXISTS) && !g_file_test(p2, G_FILE_TEST_EXISTS),
+		      "upload: files left after the transfers ended");
+		g_free(d1);
+		g_free(d2);
+		g_free(b1);
+		g_free(b2);
+		g_free(p1);
+		g_free(p2);
+	}
+	g_strfreev(lines);
+	g_free(files);
+	g_free(ims);
+	end_xfers();
+
+	/* an image alone: no message, one file; a dropped image goes into the
+	 * entry too, and is sent as the dropped file was */
+	dropped = g_build_filename(purple_user_dir(), "selftest-upload-drop.png", NULL);
+	{
+		gsize len;
+		gpointer data = make_png(10, 10, &len);
+
+		CHECK(g_file_set_contents(dropped, data, len, NULL), "writing %s", dropped);
+		g_free(data);
+	}
+	path = drop_file(conv, dropped);
+	CHECK(path == NULL && confirm_dialog(conv) == NULL, "upload: drop asked %s", path);
+	g_free(path);
+	CHECK(entry_has_anchor(entry), "upload: the dropped image isn't in the entry");
+	pidgin_selftest_prpl_clear_call_log();
+	CHECK(pidgin_compose_entry_send(entry), "upload: image-only send");
+	spin(300);
+	ims = logged_calls("send-im");
+	files = logged_calls("send-file");
+	CHECK(*ims == '\0', "upload: image-only send-im \"%s\"", ims);
+	path = logged_path(files);
+	CHECK(strchr(files, '\n') == NULL && path != NULL &&
+	      g_str_has_suffix(path, G_DIR_SEPARATOR_S "selftest-upload-drop.png"),
+	      "upload: image-only send-file \"%s\"", files);
+	g_free(path);
+	g_free(files);
+	g_free(ims);
+	end_xfers();
+	g_unlink(dropped);
+	g_free(dropped);
+
+	/* larger than the service takes: an error line, nothing sent, the
+	 * entry kept */
+	pidgin_selftest_prpl_set_upload(TRUE, 64);
+	pidgin_compose_entry_set_markup(entry, "too big ");
+	id = add_test_image();
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	pidgin_selftest_prpl_clear_call_log();
+	n = n_messages(conv);
+	CHECK(!pidgin_compose_entry_send(entry), "upload: too large sent");
+	spin(200);
+	CHECK(n_messages(conv) == n + 1 &&
+	      strstr(pidgin_message_get_html(last_message(conv)), "larger than the server") != NULL,
+	      "upload: no error line (%s)",
+	      n_messages(conv) > n ? pidgin_message_get_html(last_message(conv)) : "-");
+	CHECK(pidgin_selftest_prpl_get_call_log()->len == 0, "upload: too large: %s",
+	      pidgin_selftest_prpl_get_call_log()->len > 0
+	          ? (char *)g_ptr_array_index(pidgin_selftest_prpl_get_call_log(), 0) : "");
+	CHECK(entry_has_anchor(entry), "upload: too large: the entry lost the image");
+	pidgin_compose_entry_clear(entry);
+	pidgin_selftest_prpl_set_upload(TRUE, 0);
+
+	/* a chat: Insert Image, and chat_send_file */
+	if (chat != NULL) {
+		PidginConversation *gtkchat = PIDGIN_CONVERSATION(chat);
+		PidginComposeEntry *chat_entry = PIDGIN_COMPOSE_ENTRY(gtkchat->entry);
+
+		pidgin_conv_window_switch_gtkconv(gtkchat->win, gtkchat);
+		pidgin_conv_update_buttons_by_protocol(chat);
+		CHECK(pidgin_conv_action_enabled(gtkchat, "insert-image"),
+		      "upload: Insert Image disabled in a chat");
+		pidgin_compose_entry_set_markup(chat_entry, "room picture ");
+		id = add_test_image();
+		pidgin_compose_entry_insert_image(chat_entry, id);
+		purple_imgstore_unref_by_id(id);
+		pidgin_selftest_prpl_clear_call_log();
+		n = n_messages(chat);
+		CHECK(pidgin_compose_entry_send(chat_entry), "upload: chat send");
+		spin(300);
+		files = logged_calls("chat-send-file");
+		path = logged_path(files);
+		CHECK(g_str_has_prefix(files, ST_ROOM "|") && strchr(files, '\n') == NULL &&
+		      path != NULL && g_str_has_suffix(path, G_DIR_SEPARATOR_S "selftest.png"),
+		      "upload: chat-send-file \"%s\"", files);
+		{
+			/* the room's reflection, then the transfer's status lines */
+			gboolean found = FALSE;
+			guint i;
+
+			for (i = n; i < n_messages(chat); i++)
+				if (strstr(pidgin_message_get_html(nth_message(chat, i)), "room picture"))
+					found = TRUE;
+			CHECK(found, "upload: the chat text wasn't sent");
+		}
+		g_free(path);
+		g_free(files);
+		end_xfers();
+		pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+	}
+
+	/* no upload service: no Insert Image, and a paste asks to send a file */
+	pidgin_selftest_prpl_set_upload(FALSE, 0);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(!(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE),
+	      "no upload: image caps");
+	CHECK(!pidgin_conv_action_enabled(gtkconv, "insert-image"),
+	      "no upload: Insert Image enabled");
+	if (chat != NULL) {
+		pidgin_conv_update_buttons_by_protocol(chat);
+		CHECK(!pidgin_conv_action_enabled(PIDGIN_CONVERSATION(chat), "insert-image"),
+		      "no upload: Insert Image enabled in a chat");
+	}
+	pidgin_selftest_prpl_clear_call_log();
+	pidgin_compose_entry_clear(entry);
+	paste_image_clipboard(entry, NULL);
+	CHECK(!entry_has_anchor(entry), "no upload: the paste went into the entry");
+	CHECK(confirm_dialog(conv) != NULL, "no upload: no confirmation");
+	confirm_answer(conv, FALSE);
+	CHECK(pidgin_selftest_prpl_get_call_log()->len == 0, "no upload: something was sent");
+
+	pidgin_selftest_prpl_set_caps(TRUE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	if (chat != NULL)
+		pidgin_conv_update_buttons_by_protocol(chat);
+	g_free(dir);
+	hold("upload images");
+}
+
 /**************************************************************************
  * Shared URLs and received files shown inline
  **************************************************************************/
@@ -2125,6 +2374,7 @@ selftest_run(gpointer data)
 	test_attention(im);
 	test_paste_image(im);
 	test_attach(im);
+	test_upload_images(im, chat);
 	test_xmpp_shares(im);
 	test_received_files(im);
 	test_media(im);

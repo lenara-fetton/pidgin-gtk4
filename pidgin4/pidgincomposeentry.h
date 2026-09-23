@@ -115,6 +115,12 @@ gboolean pidgin_compose_entry_get_spellcheck(PidginComposeEntry *entry);
 char *pidgin_compose_entry_get_markup(PidginComposeEntry *entry);
 /** The content as plain text (smileys as their shortcuts). */
 char *pidgin_compose_entry_get_text(PidginComposeEntry *entry);
+/**
+ * The imgstore ids of the inserted images (the <IMG ID> in the markup),
+ * in their order in the text; smileys aren't included. g_array_unref()
+ * it. The entry holds a reference on each while it shows them.
+ */
+GArray *pidgin_compose_entry_get_image_ids(PidginComposeEntry *entry);
 /** Replaces the content with @html (e.g. to edit the last message). */
 void pidgin_compose_entry_set_markup(PidginComposeEntry *entry, const char *html);
 /** Empties the entry, keeping the formatting for new text. */

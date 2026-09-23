@@ -82,6 +82,8 @@ static ImageOffer image_offer(PidginConversation *gtkconv);
 static void update_typing(PidginConversation *gtkconv);
 static void chat_users_update_count(PidginConversation *gtkconv);
 static void cancel_banner(PidginConversation *gtkconv);
+static char *save_paste_file(GBytes *data, const char *filename);
+static void send_file_now(PidginConversation *gtkconv, const char *path);
 
 /**************************************************************************
  * Small helpers
@@ -575,6 +577,168 @@ markup_to_plain(const char *markup)
 	return purple_unescape_html(markup);
 }
 
+/**************************************************************************
+ * Images sent by upload (XEP-0363)
+ *
+ * A prpl that answers the IPC "http-upload-available" with TRUE (the
+ * jabber prpl, once the server's upload service is known; see
+ * pidgin_format_account_uploads_images()) and can send this conversation
+ * a file (IM: send_file; chat: chat_send_file) takes inserted images as
+ * uploads, unless the conversation takes real inline images (an IM on a
+ * prpl with OPT_PROTO_IM_IMAGE, e.g. Discord). Insert Image is then
+ * offered (the entry's caps get IMAGE, in chats too), and a pasted or
+ * dropped image goes into the entry, as for inline images. On send the
+ * text, without the images, goes as a message (if there is any), then
+ * each image, in order, as a file: written to <profile>/pidgin4/paste/ as
+ * it is in the imgstore (an image from a file is that file; a paste was
+ * encoded by the paste prefs when pasted) and removed when its transfer
+ * ends (see "Images: paste and drop"). The prpl uploads it and posts its
+ * URL. An image larger than the IPC "http-upload-max-size" (0: unknown)
+ * refuses the send with an error line; the entry keeps everything.
+ **************************************************************************/
+
+static gboolean
+real_inline_images(PidginConversation *gtkconv)
+{
+	PurpleConversation *conv = gtkconv->active_conv;
+	PurplePluginProtocolInfo *prpl_info = conv_prpl_info(conv);
+
+	return !is_chat(gtkconv) && prpl_info != NULL &&
+	       (prpl_info->options & OPT_PROTO_IM_IMAGE) &&
+	       !(conv->features & PURPLE_CONNECTION_NO_IMAGES);
+}
+
+static gboolean
+upload_images(PidginConversation *gtkconv)
+{
+	PurpleConversation *conv = gtkconv->active_conv;
+	PurplePluginProtocolInfo *prpl_info = conv_prpl_info(conv);
+
+	if (purple_conversation_get_gc(conv) == NULL || prpl_info == NULL ||
+	    (is_chat(gtkconv) ? prpl_info->chat_send_file == NULL
+	                      : prpl_info->send_file == NULL) ||
+	    real_inline_images(gtkconv))
+		return FALSE;
+	return pidgin_format_account_uploads_images(purple_conversation_get_account(conv));
+}
+
+/* @markup without the <IMG ID> of @ids (raw in HTML, escaped in XEP-0393
+ * text), and without the whitespace and line breaks left around them */
+static char *
+strip_images(const char *markup, GArray *ids)
+{
+	char *out = g_strdup(markup);
+	char *start;
+	guint i;
+	gsize len;
+
+	for (i = 0; i < ids->len; i++) {
+		char *forms[2], *tmp;
+		int k;
+
+		forms[0] = g_strdup_printf("<IMG ID=\"%d\">", g_array_index(ids, int, i));
+		forms[1] = g_markup_escape_text(forms[0], -1);
+		for (k = 0; k < 2; k++) {
+			tmp = purple_strcasereplace(out, forms[k], "");
+			g_free(out);
+			out = tmp;
+			g_free(forms[k]);
+		}
+	}
+	for (start = out;;) {
+		while (g_ascii_isspace(*start))
+			start++;
+		if (g_ascii_strncasecmp(start, "<br>", 4) == 0)
+			start += 4;
+		else if (g_ascii_strncasecmp(start, "<br/>", 5) == 0)
+			start += 5;
+		else
+			break;
+	}
+	memmove(out, start, strlen(start) + 1);
+	for (len = strlen(out); len > 0;) {
+		if (g_ascii_isspace(out[len - 1]))
+			len--;
+		else if (len >= 4 && g_ascii_strncasecmp(out + len - 4, "<br>", 4) == 0)
+			len -= 4;
+		else if (len >= 5 && g_ascii_strncasecmp(out + len - 5, "<br/>", 5) == 0)
+			len -= 5;
+		else
+			break;
+		out[len] = '\0';
+	}
+	return out;
+}
+
+/* The name an image is uploaded under */
+static char *
+upload_filename(PurpleStoredImage *img, guint n)
+{
+	const char *name = purple_imgstore_get_filename(img);
+
+	if (name != NULL && *name != '\0')
+		return g_path_get_basename(name);
+	return g_strdup_printf("image-%u.%s", n, purple_imgstore_get_extension(img));
+}
+
+/* FALSE, with an error line for each, if an image of @ids is larger than
+ * the upload service takes */
+static gboolean
+upload_sizes_ok(PidginConversation *gtkconv, GArray *ids)
+{
+	PurpleConversation *conv = gtkconv->active_conv;
+	guint64 max = pidgin_format_account_upload_max_size(purple_conversation_get_account(conv));
+	gboolean ok = TRUE;
+	guint i;
+
+	for (i = 0; max > 0 && i < ids->len; i++) {
+		PurpleStoredImage *img = purple_imgstore_find_by_id(g_array_index(ids, int, i));
+		char *filename, *base, *size, *limit, *msg;
+
+		if (img == NULL || purple_imgstore_get_size(img) <= max)
+			continue;
+		filename = upload_filename(img, i + 1);
+		base = g_markup_escape_text(filename, -1);
+		size = purple_str_size_to_units(purple_imgstore_get_size(img));
+		limit = purple_str_size_to_units(max);
+		msg = g_strdup_printf(_("The image %s (%s) is larger than the server accepts "
+		                        "(%s). Nothing was sent."), base, size, limit);
+		purple_conversation_write(conv, NULL, msg,
+		                          PURPLE_MESSAGE_ERROR | PURPLE_MESSAGE_NO_LOG, time(NULL));
+		g_free(msg);
+		g_free(limit);
+		g_free(size);
+		g_free(base);
+		g_free(filename);
+		ok = FALSE;
+	}
+	return ok;
+}
+
+/* Each image of @ids, in order, as a file */
+static void
+send_images_as_files(PidginConversation *gtkconv, GArray *ids)
+{
+	guint i;
+
+	for (i = 0; i < ids->len; i++) {
+		PurpleStoredImage *img = purple_imgstore_find_by_id(g_array_index(ids, int, i));
+		char *filename, *path;
+		GBytes *data;
+
+		if (img == NULL)
+			continue;
+		filename = upload_filename(img, i + 1);
+		data = g_bytes_new(purple_imgstore_get_data(img), purple_imgstore_get_size(img));
+		path = save_paste_file(data, filename);
+		if (path != NULL)
+			send_file_now(gtkconv, path);
+		g_free(path);
+		g_bytes_unref(data);
+		g_free(filename);
+	}
+}
+
 static void
 send_markup(PidginConversation *gtkconv, const char *markup)
 {
@@ -628,8 +792,47 @@ entry_send_cb(PidginComposeEntry *entry, const char *markup, PidginConversation 
 
 	if ((purple_conversation_get_type(conv) == PURPLE_CONV_TYPE_CHAT &&
 	     purple_conv_chat_has_left(PURPLE_CONV_CHAT(conv))) ||
-	    !purple_account_is_connected(account) || text == NULL ||
-	    *g_strstrip(text) == '\0') {
+	    !purple_account_is_connected(account)) {
+		g_free(text);
+		return FALSE;
+	}
+
+	/* Images by upload: the text as a message, then each image as a
+	 * file. Not for a correction (it can't take images). */
+	if (gtkconv->editing == NULL && upload_images(gtkconv)) {
+		GArray *ids = pidgin_compose_entry_get_image_ids(entry);
+
+		if (ids->len > 0) {
+			char *rest;
+
+			g_free(text);
+			if (!upload_sizes_ok(gtkconv, ids)) {
+				g_array_unref(ids);
+				return FALSE;
+			}
+			purple_idle_touch();
+			rest = strip_images(markup, ids);
+			plain = markup_to_plain(rest);
+			if (*g_strstrip(plain) != '\0') {
+				if (gtkconv->replying != NULL)
+					sent = pidgin_conv_meta_send_reply(conv,
+						PIDGIN_MESSAGE(gtkconv->replying), plain);
+				if (!sent)
+					send_markup(gtkconv, rest);
+			}
+			if (gtkconv->replying != NULL)
+				cancel_banner(gtkconv);
+			g_free(plain);
+			g_free(rest);
+			send_images_as_files(gtkconv, ids);
+			g_array_unref(ids);
+			pidgin_conv_set_unseen(conv, PIDGIN_UNSEEN_NONE);
+			return TRUE;
+		}
+		g_array_unref(ids);
+	}
+
+	if (text == NULL || *g_strstrip(text) == '\0') {
 		g_free(text);
 		return FALSE;
 	}
@@ -1030,7 +1233,8 @@ update_features(PidginConversation *gtkconv)
 	PidginMessageView *view = conv_view(gtkconv);
 	gboolean meta, moderate = FALSE;
 
-	pidgin_compose_entry_set_caps(entry, pidgin_format_caps_for_account(account));
+	pidgin_compose_entry_set_caps(entry, pidgin_format_caps_for_account(account) |
+		(upload_images(gtkconv) ? PIDGIN_FORMAT_IMAGE : 0));
 	pidgin_compose_entry_set_markup_flags(entry,
 		(prpl_info && (prpl_info->options & OPT_PROTO_USE_POINTSIZE))
 			? PIDGIN_MARKUP_USE_POINTSIZE : 0);
@@ -1728,7 +1932,10 @@ entry_key_cb(GtkEventControllerKey *ctl, guint keyval, guint keycode,
  * (pidgin_conv_offer_image()):
  *  (a) inline in the message, if the conversation takes inline images
  *      (an IM on a prpl with OPT_PROTO_IM_IMAGE whose connection doesn't
- *      say PURPLE_CONNECTION_NO_IMAGES: what enables Insert Image);
+ *      say PURPLE_CONNECTION_NO_IMAGES: what enables Insert Image), or
+ *      sends inserted images by upload (upload_images(): XMPP with an
+ *      HTTP upload service, IMs and chats; they go as files on send,
+ *      without a confirmation, see "Images sent by upload");
  *  (b) else as a file transfer, if the prpl can send this conversation a
  *      file (IM: send_file and can_receive_file; chat: chat_send_file and
  *      chat_can_receive_file: what enables Send File). XMPP sends it by
@@ -1742,7 +1949,10 @@ entry_key_cb(GtkEventControllerKey *ctl, guint keyval, guint keycode,
  *      first shown in a dialog modal to the conversation window
  *      (pidginfileconfirm.h): only its Send saves the paste and sends;
  *      Cancel (or the conversation closing) drops it without a trace. A
- *      dropped file of any other type is confirmed the same way;
+ *      dropped file of any other type is confirmed the same way (on XMPP
+ *      with an upload service images take (a), so the dialog is left for
+ *      other files, servers without one, and prpls with send_file but no
+ *      images);
  *  (c) else it is not taken: a paste pastes the clipboard's text, and a
  *      drop offers, as Pidgin 2 did, to make it the buddy icon (IMs with
  *      the buddy on the list), or does nothing.
@@ -1758,7 +1968,7 @@ image_offer(PidginConversation *gtkconv)
 	if (purple_conversation_get_gc(conv) == NULL)
 		return IMAGE_OFFER_NONE;
 	if (pidgin_conv_action_enabled(gtkconv, "insert-image") &&
-	    !(conv->features & PURPLE_CONNECTION_NO_IMAGES))
+	    (!(conv->features & PURPLE_CONNECTION_NO_IMAGES) || upload_images(gtkconv)))
 		return IMAGE_OFFER_INLINE;
 	if (pidgin_conv_action_enabled(gtkconv, "send-file"))
 		return IMAGE_OFFER_FILE;
@@ -3424,7 +3634,8 @@ pidgin_conv_action_enabled(PidginConversation *gtkconv, const char *action)
 	if (purple_strequal(action, "insert-link"))
 		return (pidgin_compose_entry_get_caps(conv_entry(gtkconv)) & PIDGIN_FORMAT_LINK) != 0;
 	if (purple_strequal(action, "insert-image"))
-		return !chat && (pidgin_compose_entry_get_caps(conv_entry(gtkconv)) & PIDGIN_FORMAT_IMAGE);
+		return (!chat || upload_images(gtkconv)) &&
+		       (pidgin_compose_entry_get_caps(conv_entry(gtkconv)) & PIDGIN_FORMAT_IMAGE);
 	/* TODO(M5): the log viewer and the pounce editor. */
 	if (purple_strequal(action, "view-log") || purple_strequal(action, "add-pounce"))
 		return FALSE;

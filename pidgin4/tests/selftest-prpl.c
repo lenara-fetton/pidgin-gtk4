@@ -35,6 +35,9 @@
 
 static PurplePlugin *st_plugin = NULL;
 static GHashTable *st_calls = NULL;     /* command -> last args (string) */
+static GPtrArray *st_call_log = NULL;   /* "command|args", every call */
+static gboolean st_upload = FALSE;      /* http-upload-available */
+static guint64 st_upload_max = 0;       /* http-upload-max-size */
 static int sent_counter = 0;
 
 static const char *
@@ -129,8 +132,23 @@ st_op_cmd(PurpleConversation *conv, const char *cmd, char **args, char **error, 
 static void
 record(const char *command, const char *a, const char *b, const char *c)
 {
-	g_hash_table_replace(st_calls, g_strdup(command),
-	                     g_strdup_printf("%s|%s|%s", a ? a : "", b ? b : "", c ? c : ""));
+	char *args = g_strdup_printf("%s|%s|%s", a ? a : "", b ? b : "", c ? c : "");
+
+	g_ptr_array_add(st_call_log, g_strdup_printf("%s|%s", command, args));
+	g_hash_table_replace(st_calls, g_strdup(command), args);
+}
+
+/* As the jabber prpl's (XEP-0363); pidgin_selftest_prpl_set_upload() */
+static gboolean
+ipc_http_upload_available(PurpleAccount *account)
+{
+	return st_upload;
+}
+
+static gpointer
+ipc_http_upload_max_size(PurpleAccount *account)
+{
+	return st_upload ? GSIZE_TO_POINTER((gsize)st_upload_max) : NULL;
 }
 
 static gboolean
@@ -187,6 +205,7 @@ st_send_attention(PurpleConnection *gc, const char *who, guint type)
  * records the call; with a file, starts a transfer that never moves, for
  * the test to finish or cancel. */
 static PurpleXfer *st_last_xfer = NULL;
+static GList *st_xfers = NULL;      /* all started, oldest first */
 
 static void
 st_xfer_init(PurpleXfer *xfer)
@@ -203,6 +222,7 @@ st_xfer_start(PurpleConnection *gc, int chat_id, const char *who, const char *fi
 	xfer = purple_xfer_new(purple_connection_get_account(gc), PURPLE_XFER_SEND, who);
 	purple_xfer_set_init_fnc(xfer, st_xfer_init);
 	st_last_xfer = xfer;
+	st_xfers = g_list_append(st_xfers, xfer);
 	purple_xfer_request_accepted(xfer, file);
 }
 
@@ -271,6 +291,12 @@ st_load(PurplePlugin *plugin)
 		purple_marshal_BOOLEAN__POINTER_POINTER_POINTER,
 		purple_value_new(PURPLE_TYPE_BOOLEAN), 3, purple_value_dup(acct),
 		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING));
+	purple_plugin_ipc_register(plugin, "http-upload-available",
+		PURPLE_CALLBACK(ipc_http_upload_available), purple_marshal_BOOLEAN__POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 1, purple_value_dup(acct));
+	purple_plugin_ipc_register(plugin, "http-upload-max-size",
+		PURPLE_CALLBACK(ipc_http_upload_max_size), purple_marshal_POINTER__POINTER,
+		purple_value_new(PURPLE_TYPE_UINT64), 1, purple_value_dup(acct));
 	purple_value_destroy(acct);
 
 	st_cmd_id = purple_cmd_register("op", "w", PURPLE_CMD_P_PRPL,
@@ -328,6 +354,7 @@ pidgin_selftest_prpl_register(void)
 		return st_plugin;
 
 	st_calls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	st_call_log = g_ptr_array_new_with_free_func(g_free);
 	st_plugin = purple_plugin_new(TRUE, NULL);
 	st_plugin->info = &st_info;
 	purple_plugin_register(st_plugin);
@@ -348,6 +375,7 @@ pidgin_selftest_prpl_unregister(void)
 		st_plugin = NULL;
 	}
 	g_clear_pointer(&st_calls, g_hash_table_destroy);
+	g_clear_pointer(&st_call_log, g_ptr_array_unref);
 }
 
 PurpleAccount *
@@ -384,6 +412,26 @@ pidgin_selftest_prpl_clear_call(const char *command)
 		g_hash_table_remove(st_calls, command);
 }
 
+GPtrArray *
+pidgin_selftest_prpl_get_call_log(void)
+{
+	return st_call_log;
+}
+
+void
+pidgin_selftest_prpl_clear_call_log(void)
+{
+	if (st_call_log != NULL)
+		g_ptr_array_set_size(st_call_log, 0);
+}
+
+void
+pidgin_selftest_prpl_set_upload(gboolean available, guint64 max_size)
+{
+	st_upload = available;
+	st_upload_max = max_size;
+}
+
 void
 pidgin_selftest_prpl_set_caps(gboolean im_images, gboolean files)
 {
@@ -403,10 +451,17 @@ pidgin_selftest_prpl_get_last_xfer(void)
 	return st_last_xfer;
 }
 
+GList *
+pidgin_selftest_prpl_get_xfers(void)
+{
+	return st_xfers;
+}
+
 void
 pidgin_selftest_prpl_forget_xfer(void)
 {
 	st_last_xfer = NULL;
+	g_clear_pointer(&st_xfers, g_list_free);
 }
 
 void

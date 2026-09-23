@@ -728,6 +728,29 @@ pidgin_compose_entry_get_text(PidginComposeEntry *entry)
 	return text;
 }
 
+GArray *
+pidgin_compose_entry_get_image_ids(PidginComposeEntry *entry)
+{
+	GArray *ids;
+	GtkTextIter iter;
+
+	g_return_val_if_fail(PIDGIN_IS_COMPOSE_ENTRY(entry), NULL);
+
+	ids = g_array_new(FALSE, FALSE, sizeof(int));
+	gtk_text_buffer_get_start_iter(get_buffer(entry), &iter);
+	do {
+		GtkTextChildAnchor *anchor = gtk_text_iter_get_child_anchor(&iter);
+		int id;
+
+		if (anchor == NULL)
+			continue;
+		id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(anchor), "pidgin-image-id"));
+		if (id > 0)
+			g_array_append_val(ids, id);
+	} while (gtk_text_iter_forward_char(&iter));
+	return ids;
+}
+
 void
 pidgin_compose_entry_clear(PidginComposeEntry *entry)
 {
