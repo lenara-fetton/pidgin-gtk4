@@ -1,0 +1,7 @@
+Conversation with #channel at Sat 10 Feb 2024 08:00:00 AM PST on me@irc.example.net (irc)
+(08:00:01) alice: good morning
+(08:00:30) ***bob stretches
+(08:01:00) carol has joined the channel
+(08:02:00) dave: multi
+second line
+(08:03:00) alice <AUTO-REPLY>: brb
