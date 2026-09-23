@@ -577,7 +577,8 @@ destroy_if_empty_cb(gpointer data)
 {
 	PidginWindow *win = data;
 
-	if (g_list_find(window_list, win) != NULL && win->gtkconvs == NULL)
+	win->destroy_idle = 0;
+	if (win->gtkconvs == NULL)
 		pidgin_conv_window_destroy(win);
 	return G_SOURCE_REMOVE;
 }
@@ -610,8 +611,8 @@ page_removed_cb(GtkNotebook *nb, GtkWidget *page, guint num, PidginWindow *win)
 	if (gtkconv != NULL && gtkconv->win == win)
 		pidgin_conv_set_window(gtkconv, NULL);
 	update_tabs_visible(win);
-	if (win->gtkconvs == NULL && win != hidden_win && !win->closing)
-		g_idle_add(destroy_if_empty_cb, win);
+	if (win->gtkconvs == NULL && win != hidden_win && !win->closing && win->destroy_idle == 0)
+		win->destroy_idle = g_idle_add(destroy_if_empty_cb, win);
 	else
 		pidgin_conv_window_update_menu(win);
 }
@@ -794,6 +795,10 @@ pidgin_conv_window_destroy(PidginWindow *win)
 	if (win == NULL || win->closing)
 		return;
 	win->closing = TRUE;
+	if (win->destroy_idle != 0) {
+		g_source_remove(win->destroy_idle);
+		win->destroy_idle = 0;
+	}
 	if (win != hidden_win)
 		save_size(win);
 
@@ -866,9 +871,7 @@ pidgin_conv_window_add_gtkconv(PidginWindow *win, PidginConversation *gtkconv)
 	gtk_notebook_append_page(nb, gtkconv->tab_cont, gtkconv->tabby);
 	gtk_notebook_set_menu_label_text(nb, gtkconv->tab_cont,
 	                                 purple_conversation_get_title(gtkconv->active_conv));
-	/* The first conversation of a window is its current one. */
-	if (gtk_notebook_get_n_pages(nb) == 1)
-		switch_page_cb(nb, gtkconv->tab_cont, 0, win);
+	/* (The first page becomes current with a switch-page of its own.) */
 }
 
 void

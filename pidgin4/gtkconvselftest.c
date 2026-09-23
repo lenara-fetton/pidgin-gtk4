@@ -300,6 +300,32 @@ spin(guint ms)
 		g_main_context_iteration(NULL, FALSE);
 }
 
+/* PIDGIN4_CONV_SELFTEST_HOLD=N: stay N seconds at the named points (for
+ * screenshots: xwd/import on the Xvfb display, grim on Wayland). */
+static void
+hold(const char *what)
+{
+	const char *env = g_getenv("PIDGIN4_CONV_SELFTEST_HOLD");
+	int secs = env ? atoi(env) : 0;
+
+	if (secs <= 0)
+		return;
+	g_print("PIDGIN4_CONV_SELFTEST: holding %d s (%s)\n", secs, what);
+	spin(secs * 1000);
+	/* What input during the hold did (e.g. xdotool key ctrl+Tab). */
+	{
+		GList *l;
+
+		for (l = pidgin_conv_windows_get_list(); l != NULL; l = l->next) {
+			PurpleConversation *c = pidgin_conv_window_get_active_conversation(l->data);
+
+			g_print("PIDGIN4_CONV_SELFTEST: after %s: window %p on %s (%u tabs)\n", what,
+			        l->data, c ? purple_conversation_get_name(c) : "-",
+			        pidgin_conv_window_get_gtkconv_count(l->data));
+		}
+	}
+}
+
 static GHashTable *
 meta_new(const char *first_key, ...)
 {
@@ -796,8 +822,11 @@ selftest_run(gpointer data)
 	win = gtkim->win;
 	CHECK(pidgin_conv_window_get_gtkconv_count(win) == 2, "%u tabs",
 	      pidgin_conv_window_get_gtkconv_count(win));
+	pidgin_conv_window_switch_gtkconv(win, gtkchat);
+	hold("chat");
 	pidgin_conv_window_switch_gtkconv(win, gtkim);
 	CHECK(pidgin_conv_window_get_active_gtkconv(win) == gtkim, "switch to IM");
+	hold("im");
 	CHECK(activate(win, "conv.next-tab", NULL), "conv.next-tab");
 	CHECK(pidgin_conv_window_get_active_gtkconv(win) == gtkchat, "next-tab");
 	CHECK(activate(win, "conv.tab", g_variant_new_int32(1)), "conv.tab(1)");

@@ -1042,6 +1042,21 @@ pidgin_conv_update_buttons_by_protocol(PurpleConversation *conv)
  * Chat user list
  **************************************************************************/
 
+/* purple_normalize() returns a static buffer: compare copies. */
+static gboolean
+same_nick(PurpleAccount *account, const char *a, const char *b)
+{
+	char *na;
+	gboolean ret;
+
+	if (a == NULL || b == NULL)
+		return FALSE;
+	na = g_strdup(purple_normalize(account, a));
+	ret = purple_strequal(na, purple_normalize(account, b));
+	g_free(na);
+	return ret;
+}
+
 #define PIDGIN_TYPE_CHAT_USER (pidgin_chat_user_get_type())
 G_DECLARE_FINAL_TYPE(PidginChatUser, pidgin_chat_user, PIDGIN, CHAT_USER, GObject)
 
@@ -1188,8 +1203,7 @@ userlist_bind_cb(GtkSignalListItemFactory *f, GtkListItem *item, PidginConversat
 	PurpleConversation *conv = gtkconv->active_conv;
 	PangoAttrList *attrs = pango_attr_list_new();
 	const char *nick = purple_conv_chat_get_nick(PURPLE_CONV_CHAT(conv));
-	gboolean is_me = purple_strequal(purple_normalize(conv->account, u->name),
-	                                 nick ? purple_normalize(conv->account, nick) : NULL);
+	gboolean is_me = same_nick(conv->account, u->name, nick);
 
 	gtk_image_set_from_icon_name(GTK_IMAGE(image), chat_user_icon(u->flags));
 	gtk_label_set_text(GTK_LABEL(label), u->alias);
@@ -1384,8 +1398,7 @@ build_user_menu(PidginConversation *gtkconv, const char *who, GSimpleActionGroup
 	PurpleConnection *gc = purple_conversation_get_gc(conv);
 	PurplePluginProtocolInfo *prpl_info = conv_prpl_info(conv);
 	GMenu *menu = g_menu_new(), *section;
-	gboolean is_me = purple_strequal(purple_normalize(conv->account, who),
-		chat->nick ? purple_normalize(conv->account, chat->nick) : NULL);
+	gboolean is_me = same_nick(conv->account, who, chat->nick);
 	PurpleBuddy *buddy = purple_find_buddy(conv->account, who);
 	static const struct { const char *cmd, *label; } mod_cmds[] = {
 		{ "op", N_("_Op") }, { "deop", N_("_Deop") },
@@ -2346,7 +2359,16 @@ pidgin_conv_write_conv(PurpleConversation *conv, const char *name, const char *a
 	}
 
 	inline_html = pidgin_conv_meta_inline_image_html(conv, displaying);
-	msg = pidgin_message_new(name, alias, inline_html ? inline_html : displaying, flags, mtime);
+	if (flags & (PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_RECV)) {
+		msg = pidgin_message_new(name, alias, inline_html ? inline_html : displaying,
+		                         flags, mtime);
+	} else {
+		/* Status lines (NO_LOG notices, /help, ...) have no name, as
+		 * Pidgin 2 showed them: styled like system lines. */
+		msg = pidgin_message_new(NULL, NULL, inline_html ? inline_html : displaying,
+		                         flags | (flags & PURPLE_MESSAGE_ERROR ? 0 : PURPLE_MESSAGE_SYSTEM),
+		                         mtime);
+	}
 	g_free(inline_html);
 
 	prpl_info = conv_prpl_info(conv);

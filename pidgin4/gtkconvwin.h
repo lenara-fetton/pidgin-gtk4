@@ -75,6 +75,7 @@ struct _PidginWindow
 	GtkWidget *tab_menu;         /**< The tab context menu popover. */
 	PidginConversation *tab_menu_conv;
 	gboolean closing;
+	guint destroy_idle;
 };
 
 /*@}*/
