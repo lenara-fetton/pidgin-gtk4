@@ -1985,6 +1985,12 @@ offer_image_path(PidginConversation *gtkconv, const char *path)
  *     complete" line (kept as libpurple wrote it, as in the log), as that
  *     row's attachment; clicking the picture opens the file like the
  *     link. /pidgin4/images/inline_received_files (default TRUE).
+ * (c) Audio and video, always (pidginattachment.h, "media card"): a
+ *     received file transfer (by g_content_type_guess()), an XMPP file
+ *     share (by extension, or the HEAD Content-Type when it has none),
+ *     and a lone URL on an allowlisted host (Discord attachments) get a
+ *     media card under the row, whose text and link stay as they are.
+ *     aesgcm:// shares get none (a player can't open them).
  **************************************************************************/
 
 #define IMAGES4_PREFS PIDGIN4_PREFS_ROOT "/images"
@@ -2001,7 +2007,8 @@ share_probe_cb(GObject *source, GAsyncResult *res, gpointer data)
 	ShareProbe *probe = data;
 	PidginMessage *msg = g_weak_ref_get(&probe->msg);
 	GError *error = NULL;
-	char *type = pidgin_image_loader_probe_finish(PIDGIN_IMAGE_LOADER(source), res, NULL,
+	goffset size = -1;
+	char *type = pidgin_image_loader_probe_finish(PIDGIN_IMAGE_LOADER(source), res, &size,
 	                                              &error);
 
 	if (type == NULL) {
@@ -2017,6 +2024,12 @@ share_probe_cb(GObject *source, GAsyncResult *res, gpointer data)
 		if (html != NULL)
 			pidgin_message_set_html(msg, html);
 		g_free(html);
+	} else if (msg != NULL && pidgin_attachment_classify(NULL, type) != PIDGIN_ATTACHMENT_NONE) {
+		PidginAttachment *att = pidgin_attachment_new_for_uri(probe->url,
+			pidgin_attachment_classify(NULL, type), size);
+
+		pidgin_message_set_attachment(msg, att);
+		g_object_unref(att);
 	}
 	g_free(type);
 	g_clear_object(&msg);
@@ -2025,20 +2038,43 @@ share_probe_cb(GObject *source, GAsyncResult *res, gpointer data)
 	g_free(probe);
 }
 
-/* A shared URL without a telling extension: ask the server what it is. */
+/* A lone URL not already inlined: a media card for audio/video (an XMPP
+ * share, or a URL on an allowlisted host such as Discord's CDN), and for
+ * an XMPP share without a telling extension, ask the server what it is. */
 static void
-probe_share(PurpleConversation *conv, PidginMessage *msg, const char *displaying)
+share_attachment(PurpleConversation *conv, PidginMessage *msg, const char *displaying)
 {
 	PidginImageLoader *loader = pidgin_image_loader_get_default();
+	PidginAttachmentKind kind;
+	gboolean xmpp = TRUE;
 	char *url;
 	ShareProbe *probe;
 
-	if (loader == NULL || !pidgin_conv_meta_inline_xmpp_shares() ||
-	    (url = pidgin_conv_meta_share_url(conv, displaying)) == NULL)
+	if (loader == NULL)
 		return;
-	if (g_str_has_prefix(url, "aesgcm://") ||
-	    pidgin_attachment_classify(url, NULL) != PIDGIN_ATTACHMENT_NONE) {
-		g_free(url);    /* encrypted (HEAD says nothing), or known by its name */
+	if ((url = pidgin_conv_meta_share_url(conv, displaying)) == NULL) {
+		xmpp = FALSE;
+		url = pidgin_conv_meta_lone_url(displaying);
+		if (url != NULL && !pidgin_image_loader_is_allowed(loader, url))
+			g_clear_pointer(&url, g_free);
+	}
+	if (url == NULL)
+		return;
+	if (g_str_has_prefix(url, "aesgcm://")) {
+		g_free(url);    /* encrypted: HEAD says nothing, and no player opens it */
+		return;
+	}
+	kind = pidgin_attachment_classify(url, NULL);
+	if (kind == PIDGIN_ATTACHMENT_AUDIO || kind == PIDGIN_ATTACHMENT_VIDEO) {
+		PidginAttachment *att = pidgin_attachment_new_for_uri(url, kind, -1);
+
+		pidgin_message_set_attachment(msg, att);
+		g_object_unref(att);
+		g_free(url);
+		return;
+	}
+	if (kind != PIDGIN_ATTACHMENT_NONE || !xmpp || !pidgin_conv_meta_inline_xmpp_shares()) {
+		g_free(url);    /* known by its name, or not a share we probe */
 		return;
 	}
 	probe = g_new0(ShareProbe, 1);
@@ -2052,6 +2088,7 @@ typedef struct
 	PurpleAccount *account;
 	char *who;
 	char *path;
+	PidginAttachmentKind kind;
 } ReceivedFile;
 
 static void
@@ -2093,8 +2130,7 @@ received_file_idle(gpointer data)
 
 		if (html != NULL && strstr(html, needle) != NULL &&
 		    pidgin_message_get_attachment(msg) == NULL) {
-			PidginAttachment *att = pidgin_attachment_new_for_file(rf->path,
-				PIDGIN_ATTACHMENT_IMAGE);
+			PidginAttachment *att = pidgin_attachment_new_for_file(rf->path, rf->kind);
 
 			pidgin_message_set_attachment(msg, att);
 			g_object_unref(att);
@@ -2112,20 +2148,24 @@ static void
 file_recv_complete_cb(PurpleXfer *xfer, gpointer data)
 {
 	const char *path = purple_xfer_get_local_filename(xfer);
+	PidginAttachmentKind kind;
 	ReceivedFile *rf;
-	char *type;
-	gboolean image;
+	char *type, *mime;
 
-	if (path == NULL || purple_xfer_get_type(xfer) != PURPLE_XFER_RECEIVE ||
-	    !purple_prefs_get_bool(IMAGES4_PREFS "/inline_received_files"))
+	if (path == NULL || purple_xfer_get_type(xfer) != PURPLE_XFER_RECEIVE)
 		return;
 	type = g_content_type_guess(path, NULL, 0, NULL);
-	image = type != NULL && g_content_type_is_a(type, "image/*");
+	mime = type ? g_content_type_get_mime_type(type) : NULL;
+	kind = pidgin_attachment_classify(path, mime);
+	g_free(mime);
 	g_free(type);
-	if (!image)
+	if (kind == PIDGIN_ATTACHMENT_NONE ||
+	    (kind == PIDGIN_ATTACHMENT_IMAGE &&
+	     !purple_prefs_get_bool(IMAGES4_PREFS "/inline_received_files")))
 		return;
 
 	rf = g_new0(ReceivedFile, 1);
+	rf->kind = kind;
 	rf->account = purple_xfer_get_account(xfer);
 	rf->who = g_strdup(purple_xfer_get_remote_user(xfer));
 	rf->path = g_strdup(path);
@@ -2827,7 +2867,7 @@ pidgin_conv_write_conv(PurpleConversation *conv, const char *name, const char *a
 		                         mtime);
 	}
 	if (inline_html == NULL)
-		probe_share(conv, msg, displaying);
+		share_attachment(conv, msg, displaying);
 	g_free(inline_html);
 
 	prpl_info = conv_prpl_info(conv);
@@ -4027,6 +4067,8 @@ pidgin_conversations_init(void)
 	/* received images shown inline (see "Received files and shared URLs") */
 	purple_signal_connect(purple_xfers_get_handle(), "file-recv-complete", handle,
 	                      PURPLE_CALLBACK(file_recv_complete_cb), NULL);
+	/* whether media cards can embed a player: checked once, at startup */
+	pidgin_media_backend_available();
 	paste_dir_cleanup();
 }
 

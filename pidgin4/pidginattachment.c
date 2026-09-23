@@ -17,6 +17,7 @@
 #include <gdk-pixbuf/gdk-pixbuf.h>
 
 #include "debug.h"
+#include "prefs.h"
 #include "util.h"
 
 #include "gtkutils.h"
@@ -68,11 +69,23 @@ static const char *const image_exts[] = {
 	"png", "jpg", "jpeg", "jpe", "gif", "webp", "bmp", "avif", "heic", "tif", "tiff", NULL
 };
 
+static const char *const audio_exts[] = {
+	"mp3", "ogg", "oga", "opus", "m4a", "aac", "flac", "wav", "weba", "amr", "mka", NULL
+};
+
+static const char *const video_exts[] = {
+	"mp4", "m4v", "webm", "mkv", "mov", "ogv", "avi", "3gp", "mpeg", "mpg", NULL
+};
+
 static PidginAttachmentKind
 kind_for_type(const char *type)
 {
 	if (g_str_has_prefix(type, "image/"))
 		return PIDGIN_ATTACHMENT_IMAGE;
+	if (g_str_has_prefix(type, "audio/"))
+		return PIDGIN_ATTACHMENT_AUDIO;
+	if (g_str_has_prefix(type, "video/"))
+		return PIDGIN_ATTACHMENT_VIDEO;
 	return PIDGIN_ATTACHMENT_NONE;
 }
 
@@ -129,6 +142,10 @@ pidgin_attachment_classify(const char *name, const char *content_type)
 		return PIDGIN_ATTACHMENT_NONE;
 	if (in_list(ext, image_exts))
 		kind = PIDGIN_ATTACHMENT_IMAGE;
+	else if (in_list(ext, audio_exts))
+		kind = PIDGIN_ATTACHMENT_AUDIO;
+	else if (in_list(ext, video_exts))
+		kind = PIDGIN_ATTACHMENT_VIDEO;
 	g_free(ext);
 	return kind;
 }
@@ -152,6 +169,31 @@ pidgin_attachment_new_for_file(const char *path, PidginAttachmentKind kind)
 	att->name = g_filename_display_basename(path);
 	if (g_stat(path, &st) == 0)
 		att->size = st.st_size;
+	return att;
+}
+
+PidginAttachment *
+pidgin_attachment_new_for_uri(const char *uri, PidginAttachmentKind kind, goffset size)
+{
+	PidginAttachment *att;
+	GUri *guri;
+
+	g_return_val_if_fail(uri != NULL, NULL);
+
+	att = g_object_new(PIDGIN_TYPE_ATTACHMENT, NULL);
+	att->kind = kind;
+	att->uri = g_strdup(uri);
+	att->size = size;
+	if ((guri = g_uri_parse(uri, G_URI_FLAGS_NONE, NULL)) != NULL) {
+		const char *path = g_uri_get_path(guri);
+		const char *slash = path ? strrchr(path, '/') : NULL;
+
+		if (slash != NULL && slash[1] != '\0')
+			att->name = g_strdup(slash + 1);
+		g_uri_unref(guri);
+	}
+	if (att->name == NULL)
+		att->name = g_strdup(uri);
 	return att;
 }
 
@@ -239,6 +281,101 @@ pidgin_attachment_open(GtkWidget *widget, PidginAttachment *att)
 	} else if (att->uri != NULL) {
 		pidgin_open_uri(parent_of(widget), att->uri);
 	}
+}
+
+void
+pidgin_attachment_play(GtkWidget *widget, PidginAttachment *att)
+{
+	g_return_if_fail(PIDGIN_IS_ATTACHMENT(att));
+
+	if (launch_hook != NULL) {
+		launch_hook("play", att->path ? att->path : att->uri);
+		return;
+	}
+	pidgin_attachment_open(widget, att);
+}
+
+static void
+folder_launch_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	GError *error = NULL;
+
+	if (!gtk_file_launcher_open_containing_folder_finish(GTK_FILE_LAUNCHER(source), res,
+	                                                     &error)) {
+		if (!g_error_matches(error, GTK_DIALOG_ERROR, GTK_DIALOG_ERROR_DISMISSED))
+			purple_debug_warning("attachment", "opening the folder: %s\n",
+			                     error->message);
+		g_clear_error(&error);
+	}
+}
+
+static void
+open_folder(GtkWidget *widget, PidginAttachment *att)
+{
+	GFile *file;
+	GtkFileLauncher *launcher;
+
+	if (att->path == NULL)
+		return;
+	if (launch_hook != NULL) {
+		launch_hook("open-folder", att->path);
+		return;
+	}
+	file = g_file_new_for_path(att->path);
+	launcher = gtk_file_launcher_new(file);
+	gtk_file_launcher_open_containing_folder(launcher, parent_of(widget), NULL,
+	                                         folder_launch_cb, NULL);
+	g_object_unref(launcher);
+	g_object_unref(file);
+}
+
+/**************************************************************************
+ * Media backend
+ **************************************************************************/
+
+#define MEDIA_PROBE_RESOURCE "/com/minowick/Pidgin4/media/silence.wav"
+
+static int backend_state = -1;      /* -1 unknown, 0 no, 1 yes */
+static GtkMediaStream *backend_probe = NULL;
+
+static void
+backend_probe_notify_cb(GtkMediaStream *stream, GParamSpec *pspec, gpointer data)
+{
+	const GError *error = gtk_media_stream_get_error(stream);
+
+	if (error != NULL) {
+		purple_debug_info("attachment", "the media backend can't play a WAV (%s): "
+		                  "no inline playback\n", error->message);
+		backend_state = 0;
+	}
+	if (error != NULL || gtk_media_stream_is_prepared(stream)) {
+		g_signal_handlers_disconnect_by_func(stream, backend_probe_notify_cb, data);
+		g_clear_object(&backend_probe);
+	}
+}
+
+gboolean
+pidgin_media_backend_available(void)
+{
+	const GError *error;
+
+	if (backend_state >= 0)
+		return backend_state == 1;
+
+	backend_probe = gtk_media_file_new_for_resource(MEDIA_PROBE_RESOURCE);
+	error = gtk_media_stream_get_error(backend_probe);
+	if (error != NULL) {
+		purple_debug_info("attachment", "no inline media playback: %s\n", error->message);
+		backend_state = 0;
+		g_clear_object(&backend_probe);
+	} else {
+		backend_state = 1;
+		g_signal_connect(backend_probe, "notify::error",
+		                 G_CALLBACK(backend_probe_notify_cb), NULL);
+		g_signal_connect(backend_probe, "notify::prepared",
+		                 G_CALLBACK(backend_probe_notify_cb), NULL);
+	}
+	return backend_state == 1;
 }
 
 /**************************************************************************
@@ -352,6 +489,98 @@ image_widget(PidginAttachment *att)
 	return picture;
 }
 
+/**************************************************************************
+ * Media cards
+ **************************************************************************/
+
+static void
+play_clicked_cb(GtkButton *button, PidginAttachment *att)
+{
+	pidgin_attachment_play(GTK_WIDGET(button), att);
+}
+
+static void
+folder_clicked_cb(GtkButton *button, PidginAttachment *att)
+{
+	open_folder(GTK_WIDGET(button), att);
+}
+
+static gboolean
+inline_playback(void)
+{
+	return !purple_prefs_exists(PIDGIN4_PREFS_ROOT "/media/inline_playback") ||
+	       purple_prefs_get_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback");
+}
+
+static GtkWidget *
+media_card(PidginAttachment *att)
+{
+	gboolean video = att->kind == PIDGIN_ATTACHMENT_VIDEO;
+	GtkWidget *card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+	GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	GtkWidget *texts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	GtkWidget *icon, *label, *button;
+
+	gtk_widget_add_css_class(card, "pidgin-media-card");
+	gtk_widget_add_css_class(card, "card");
+	gtk_widget_set_halign(card, GTK_ALIGN_START);
+
+	/* the player, when GTK has a media backend */
+	if (inline_playback() && pidgin_media_backend_available()) {
+		GFile *file = att->path ? g_file_new_for_path(att->path) : g_file_new_for_uri(att->uri);
+		GtkWidget *player = gtk_video_new_for_file(file);
+
+		gtk_video_set_autoplay(GTK_VIDEO(player), FALSE);
+		gtk_widget_set_size_request(player, PIDGIN_ATTACHMENT_VIDEO_WIDTH,
+		                            video ? PIDGIN_ATTACHMENT_VIDEO_WIDTH * 9 / 16 : -1);
+		gtk_widget_add_css_class(player, "pidgin-media-player");
+		gtk_box_append(GTK_BOX(card), player);
+		g_object_unref(file);
+	}
+
+	icon = gtk_image_new_from_icon_name(video ? "video-x-generic-symbolic"
+	                                          : "audio-x-generic-symbolic");
+	gtk_image_set_icon_size(GTK_IMAGE(icon), GTK_ICON_SIZE_LARGE);
+	gtk_box_append(GTK_BOX(row), icon);
+
+	label = gtk_label_new(att->name);
+	gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+	gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_MIDDLE);
+	gtk_label_set_max_width_chars(GTK_LABEL(label), 40);
+	gtk_widget_add_css_class(label, "pidgin-media-name");
+	gtk_box_append(GTK_BOX(texts), label);
+	if (att->size >= 0) {
+		char *size = g_format_size(att->size);
+
+		label = gtk_label_new(size);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_add_css_class(label, "dim-label");
+		gtk_widget_add_css_class(label, "pidgin-media-size");
+		gtk_box_append(GTK_BOX(texts), label);
+		g_free(size);
+	}
+	gtk_widget_set_valign(texts, GTK_ALIGN_CENTER);
+	gtk_box_append(GTK_BOX(row), texts);
+
+	button = gtk_button_new_with_mnemonic(_("_Play"));
+	gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+	gtk_widget_add_css_class(button, "pidgin-media-play");
+	gtk_widget_set_tooltip_text(button, _("Play with the default application"));
+	g_signal_connect_data(button, "clicked", G_CALLBACK(play_clicked_cb), g_object_ref(att),
+	                      (GClosureNotify)g_object_unref, 0);
+	gtk_box_append(GTK_BOX(row), button);
+	if (att->path != NULL) {
+		button = gtk_button_new_with_mnemonic(_("Open _Folder"));
+		gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+		gtk_widget_add_css_class(button, "pidgin-media-folder");
+		g_signal_connect_data(button, "clicked", G_CALLBACK(folder_clicked_cb),
+		                      g_object_ref(att), (GClosureNotify)g_object_unref, 0);
+		gtk_box_append(GTK_BOX(row), button);
+	}
+	gtk_box_append(GTK_BOX(card), row);
+	return card;
+}
+
 GtkWidget *
 pidgin_attachment_widget_new(PidginAttachment *att)
 {
@@ -363,5 +592,7 @@ pidgin_attachment_widget_new(PidginAttachment *att)
 	gtk_widget_add_css_class(box, "pidgin-attachment");
 	if (att->kind == PIDGIN_ATTACHMENT_IMAGE && att->path != NULL)
 		gtk_box_append(GTK_BOX(box), image_widget(att));
+	else if (att->kind == PIDGIN_ATTACHMENT_AUDIO || att->kind == PIDGIN_ATTACHMENT_VIDEO)
+		gtk_box_append(GTK_BOX(box), media_card(att));
 	return box;
 }

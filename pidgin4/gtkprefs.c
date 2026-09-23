@@ -178,6 +178,10 @@ prefs_register_pidgin4(void)
 	 * is one image URL), and received file transfers that are images. */
 	purple_prefs_add_bool(PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares", TRUE);
 	purple_prefs_add_bool(PIDGIN4_PREFS_ROOT "/images/inline_received_files", TRUE);
+	/* Audio/video cards embed a player when GTK has a media backend;
+	 * off: the card only (Play opens the default player). */
+	purple_prefs_add_none(PIDGIN4_PREFS_ROOT "/media");
+	purple_prefs_add_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", TRUE);
 }
 
 /*
@@ -664,6 +668,8 @@ conv_page(void)
 	         PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares");
 	checkbox(vbox, _("Show _received image files inline"),
 	         PIDGIN4_PREFS_ROOT "/images/inline_received_files");
+	checkbox(vbox, _("Play audio and video _inline (needs GTK with GStreamer)"),
+	         PIDGIN4_PREFS_ROOT "/media/inline_playback");
 	/* Pasted images (and dropped image data) */
 	dropdown_string(vbox, _("Send _pasted images as:"),
 	                PIDGIN4_PREFS_ROOT "/images/paste_format", sg,

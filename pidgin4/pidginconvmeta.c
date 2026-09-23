@@ -985,12 +985,19 @@ pidgin_conv_meta_inline_xmpp_shares(void)
 char *
 pidgin_conv_meta_share_url(PurpleConversation *conv, const char *html)
 {
+	if (conv == NULL || !account_has_shares(purple_conversation_get_account(conv)))
+		return NULL;
+	return pidgin_conv_meta_lone_url(html);
+}
+
+char *
+pidgin_conv_meta_lone_url(const char *html)
+{
 	char *plain;
 	GUri *uri;
 	gboolean ok = FALSE;
 
-	if (conv == NULL || html == NULL || !markup_is_text_or_links(html) ||
-	    !account_has_shares(purple_conversation_get_account(conv)))
+	if (html == NULL || !markup_is_text_or_links(html))
 		return NULL;
 	plain = g_strstrip(pidgin_markup_plain_from_html(html));
 	if (*plain != '\0' && strpbrk(plain, " \t\r\n") == NULL &&

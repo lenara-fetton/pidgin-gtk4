@@ -25,6 +25,9 @@
     <file>icons/scalable/apps/pidgin4-protocol-irc.svg</file>
     <file>icons/scalable/apps/pidgin4-protocol-jabber.svg</file>
     <file>style.css</file>
+    <!-- A 0.1 s silent WAV: pidgin_media_backend_available() opens it to
+         see whether GTK has a media backend (GStreamer). -->
+    <file>media/silence.wav</file>
     <!-- M3 buddy list: status icons (pidgin-status-*), prpl emblems
          (pidgin-emblem-*) and mood icons (pidgin-mood-*) from
          pidgin/pixmaps/{status,emblems,emotes/small}. -->

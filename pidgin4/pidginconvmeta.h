@@ -118,6 +118,9 @@ char *pidgin_conv_meta_inline_image_html(PurpleConversation *conv, const char *h
  * loader whatever its host when its extension says it is an image.
  */
 char *pidgin_conv_meta_share_url(PurpleConversation *conv, const char *html);
+/** If @html is exactly one http(s)/aesgcm URL (plain or linkified), that
+ * URL, else NULL (any protocol). */
+char *pidgin_conv_meta_lone_url(const char *html);
 /** /pidgin4/images/inline_xmpp_shares (default TRUE). */
 gboolean pidgin_conv_meta_inline_xmpp_shares(void);
 /** The inline preview HTML (link + IMG) for @url if the loader allows it,

@@ -385,6 +385,15 @@ is best), another IRC client, the Discord web client.
       line keeps its blue link and the picture shows under it; clicking
       the picture opens the file ("Show received image files inline"
       turns it off).
+- [ ] Audio and video: receive a voice message or clip over XMPP (a
+      share from Conversations/Dino, and a Jingle/SI transfer) and a
+      Discord video attachment: libpurple's line and the link stay, and
+      a card under it shows the name, the size when known, "Play" (opens
+      the default player, e.g. mpv) and, for a received file, "Open
+      Folder". With this machine's GTK (USE=-gstreamer) there is no
+      inline player; rebuilding gtk with USE=gstreamer turns inline
+      playback on by itself (a player in the card), unless Preferences →
+      Conversations → "Play audio and video inline" is off.
 - [ ] The toolbar's paperclip (Send File) shows in XMPP IMs and MUCs
       (HTTP upload) and wherever the protocol can send a file, not on
       Steam; clicking it opens the file chooser and sends the file. It

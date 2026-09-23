@@ -850,6 +850,11 @@ share_server_cb(SoupServer *server, SoupServerMessage *msg, const char *path,
 		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
 		                                 g_bytes_get_data(share_png, NULL),
 		                                 g_bytes_get_size(share_png));
+	} else if (g_str_has_prefix(path, "/share/clip")) {
+		/* no extension: only the Content-Type says it is a video */
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "video/mp4", SOUP_MEMORY_STATIC,
+		                                 "0123456789", 10);
 	} else if (g_str_has_prefix(path, "/share/doc")) {
 		soup_server_message_set_status(msg, 200, NULL);
 		soup_server_message_set_response(msg, "text/plain", SOUP_MEMORY_STATIC,
@@ -1134,6 +1139,129 @@ test_received_files(PurpleConversation *conv)
 	g_free(png);
 	g_free(png2);
 	g_free(txt);
+	g_free(dir);
+}
+
+/* The media card of a row's attachment: shown in the view, Play and Open
+ * Folder go to the launcher (test hook), and no player without a media
+ * backend. */
+static void
+check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentKind kind,
+                 const char *target, gboolean local, const char *what)
+{
+	PidginAttachment *att = msg ? pidgin_message_get_attachment(msg) : NULL;
+	GtkWidget *card, *button;
+	char *expect;
+
+	CHECK(att != NULL && pidgin_attachment_get_kind(att) == kind, "%s: no %s attachment",
+	      what, kind == PIDGIN_ATTACHMENT_VIDEO ? "video" : "audio");
+	if (att == NULL)
+		return;
+	CHECK(msg == NULL || strstr(pidgin_message_get_html(msg), "<img") == NULL,
+	      "%s: the text changed: %s", what, pidgin_message_get_html(msg));
+
+	/* in the view: the row built its card */
+	card = find_widget(GTK_WIDGET(view_of(conv)), "pidgin-media-card", NULL);
+	CHECK(card != NULL, "%s: no media card in the view", what);
+	/* the attachment's own card, to press its buttons */
+	card = pidgin_attachment_widget_new(att);
+	g_object_ref_sink(card);
+	CHECK(find_widget(card, "pidgin-media-name", NULL) != NULL, "%s: no name", what);
+	CHECK((find_widget(card, "pidgin-media-player", NULL) != NULL) ==
+	      pidgin_media_backend_available(), "%s: a player without a backend, or none with",
+	      what);
+	pidgin_attachment_set_launch_hook(launch_hook);
+	button = find_widget(card, "pidgin-media-play", NULL);
+	g_clear_pointer(&launched, g_free);
+	if (button != NULL)
+		g_signal_emit_by_name(button, "clicked");
+	expect = g_strconcat("play|", target, NULL);
+	CHECK(purple_strequal(launched, expect), "%s: Play launched %s (expected %s)", what,
+	      launched, expect);
+	g_free(expect);
+	button = find_widget(card, "pidgin-media-folder", NULL);
+	CHECK((button != NULL) == local, "%s: Open Folder %s", what, local ? "missing" : "for a URL");
+	if (button != NULL) {
+		g_clear_pointer(&launched, g_free);
+		g_signal_emit_by_name(button, "clicked");
+		expect = g_strconcat("open-folder|", target, NULL);
+		CHECK(purple_strequal(launched, expect), "%s: Open Folder launched %s", what, launched);
+		g_free(expect);
+	}
+	pidgin_attachment_set_launch_hook(NULL);
+	g_object_unref(card);
+}
+
+/* Audio and video: received transfers, an XMPP share (by its HEAD
+ * Content-Type), a lone URL on an allowlisted host (as Discord's). */
+static void
+test_media(PurpleConversation *conv)
+{
+	char *dir = g_build_filename(purple_user_dir(), "selftest-media", NULL);
+	char *mp4 = g_build_filename(dir, "clip.mp4", NULL);
+	char *ogg = g_build_filename(dir, "voice.ogg", NULL);
+	char *url, *esc;
+	PidginMessage *msg;
+
+	/* This machine's GTK is built without GStreamer (USE=-gstreamer):
+	 * no inline player. PIDGIN4_SELFTEST_MEDIA_BACKEND=1 after rebuilding
+	 * GTK with it. */
+	g_print("PIDGIN4_CONV_SELFTEST: media backend: %s\n",
+	        pidgin_media_backend_available() ? "yes" : "no");
+	CHECK(pidgin_media_backend_available() ==
+	      purple_strequal(g_getenv("PIDGIN4_SELFTEST_MEDIA_BACKEND"), "1"),
+	      "media backend check: %d", pidgin_media_backend_available());
+
+	g_mkdir_with_parents(dir, 0700);
+	g_file_set_contents(mp4, "not really a video", -1, NULL);
+	g_file_set_contents(ogg, "not really audio", -1, NULL);
+	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
+
+	receive_file(conv, mp4);
+	spin(600);
+	esc = g_markup_escape_text(mp4, -1);
+	msg = find_message(conv, esc);
+	g_free(esc);
+	CHECK(msg != NULL, "no line for the received video");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, mp4, TRUE, "received mp4");
+	CHECK(msg == NULL || pidgin_attachment_get_size(pidgin_message_get_attachment(msg)) == 18,
+	      "received mp4 size");
+
+	receive_file(conv, ogg);
+	spin(600);
+	esc = g_markup_escape_text(ogg, -1);
+	msg = find_message(conv, esc);
+	g_free(esc);
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, ogg, TRUE, "received ogg");
+
+	/* an XMPP share without an extension: video/mp4 by HEAD */
+	url = g_strconcat(share_base, "/share/clip", NULL);
+	msg = receive(conv, url, 1200);
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, url, FALSE, "shared clip");
+	CHECK(msg == NULL || pidgin_message_get_attachment(msg) == NULL ||
+	      pidgin_attachment_get_size(pidgin_message_get_attachment(msg)) == 10,
+	      "shared clip size");
+	g_free(url);
+
+	/* not XMPP: a lone URL on an allowlisted host (Discord's CDN) */
+	pidgin_conv_meta_set_share_protocol_for_tests(NULL);
+	url = g_strconcat(share_base, "/share/voice-message.ogg", NULL);
+	msg = receive(conv, url, 300);
+	CHECK(msg != NULL && pidgin_message_get_attachment(msg) == NULL,
+	      "a card for a URL on a host that isn't allowed");
+	g_free(url);
+	pidgin_image_loader_allow_host(pidgin_image_loader_get_default(), "127.0.0.1");
+	url = g_strconcat(share_base, "/share/voice-message2.ogg", NULL);
+	msg = receive(conv, url, 300);
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, url, FALSE, "allowlisted ogg");
+	g_free(url);
+	hold("media");
+
+	g_unlink(mp4);
+	g_unlink(ogg);
+	g_rmdir(dir);
+	g_free(mp4);
+	g_free(ogg);
 	g_free(dir);
 }
 
@@ -1593,6 +1721,7 @@ selftest_run(gpointer data)
 	test_attach(im);
 	test_xmpp_shares(im);
 	test_received_files(im);
+	test_media(im);
 	share_server_stop();
 	test_send_to(im);
 	spin(200);

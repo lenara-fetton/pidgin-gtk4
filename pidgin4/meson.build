@@ -296,6 +296,7 @@ component_tests = [
 	'backfill',
 	'imageloader',
 	'imageencode',
+	'attachment',
 	'nickcolor',
 	'convmeta',
 ]
