@@ -293,6 +293,66 @@ static const char *dm_own_other_client =
 	" \"timestamp\":\"2017-07-11T18:02:00+00:00\","
 	" \"author\":{\"username\":\"me\",\"discriminator\":\"0\",\"id\":\"" SELF_ID "\"}}";
 
+/* Stickers (sticker item objects: PNG, Lottie, GIF) */
+static const char *msg_stickers =
+	"{\"type\":0,\"id\":\"900000000000000001\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"\",\"timestamp\":\"2017-07-11T17:40:00+00:00\",\"edited_timestamp\":null,\"embeds\":[],"
+	" \"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"},"
+	" \"sticker_items\":[{\"id\":\"749054660769218631\",\"name\":\"Wave\",\"format_type\":1},"
+	"                   {\"id\":\"816087792291282944\",\"name\":\"Hi <3\",\"format_type\":3},"
+	"                   {\"id\":\"1045000000000000000\",\"name\":\"Dance\",\"format_type\":4}]}";
+
+/* A Tenor GIF: the bare URL, with a gifv embed (thumbnail + MP4 video) */
+#define TENOR_URL "https://tenor.com/view/cat-typing-gif-12002898"
+static const char *msg_tenor =
+	"{\"type\":0,\"id\":\"900000000000000002\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"" TENOR_URL "\",\"timestamp\":\"2017-07-11T17:41:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	" \"embeds\":[{\"type\":\"gifv\",\"url\":\"" TENOR_URL "\","
+	"   \"provider\":{\"name\":\"Tenor\",\"url\":\"https://tenor.co\"},"
+	"   \"thumbnail\":{\"url\":\"https://media.tenor.com/x5BgTNkA0CUAAAAe/cat-typing.png\","
+	"     \"proxy_url\":\"https://images-ext-1.discordapp.net/external/abc/https/media.tenor.com/x5BgTNkA0CUAAAAe/cat-typing.png\","
+	"     \"width\":498,\"height\":280},"
+	"   \"video\":{\"url\":\"https://media.tenor.com/x5BgTNkA0CUAAAPo/cat-typing.mp4\",\"width\":640,\"height\":360}}]}";
+
+static const char *embed_giphy =
+	"{\"type\":\"gifv\",\"url\":\"https://giphy.com/gifs/cat-abc\",\"provider\":{\"name\":\"GIPHY\"},"
+	" \"thumbnail\":{\"url\":\"https://media.giphy.com/media/abc/giphy_s.gif\",\"width\":480,\"height\":270},"
+	" \"video\":{\"url\":\"https://media.giphy.com/media/abc/giphy.mp4\"}}";
+
+/* A link embed (OpenGraph article) with a long description */
+#define LONG_DESC "This **is** a long description that goes on and on. " \
+	"Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore " \
+	"et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris END"
+#define LINK_EMBED \
+	"{\"type\":\"article\",\"url\":\"https://example.com/post?a=1&b=2\",\"title\":\"A <title>\"," \
+	" \"description\":\"" LONG_DESC "\"," \
+	" \"provider\":{\"name\":\"Example\"}," \
+	" \"thumbnail\":{\"url\":\"https://example.com/t.png\"," \
+	"   \"proxy_url\":\"https://images-ext-2.discordapp.net/external/x/https/example.com/t.png\",\"width\":400,\"height\":300}}"
+static const char *msg_link =
+	"{\"type\":0,\"id\":\"900000000000000003\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"look https://example.com/post?a=1&b=2\",\"timestamp\":\"2017-07-11T17:42:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	" \"embeds\":[" LINK_EMBED "]}";
+
+/* The same message before its embed arrived, and the embed-only MESSAGE_UPDATE */
+static const char *msg_link_bare =
+	"{\"type\":0,\"id\":\"900000000000000004\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"see https://example.com/post?a=1&b=2\",\"timestamp\":\"2017-07-11T17:43:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},\"embeds\":[]}";
+static const char *msg_link_update =
+	"{\"type\":0,\"id\":\"900000000000000004\",\"channel_id\":\"" CHANNEL_ID "\",\"guild_id\":\"" GUILD_ID "\","
+	" \"content\":\"see https://example.com/post?a=1&b=2\",\"timestamp\":\"2017-07-11T17:43:00+00:00\",\"edited_timestamp\":null,"
+	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	" \"embeds\":[" LINK_EMBED "]}";
+
+/* A bot's rich embed with fields */
+static const char *embed_rich =
+	"{\"type\":\"rich\",\"title\":\"Build #42\",\"color\":65280,"
+	" \"fields\":[{\"name\":\"Status\",\"value\":\"**passed**\",\"inline\":true}]}";
+
+#ifndef STOCK_DUMP	/* stock_dump.c has its own */
 int
 main(int argc, char **argv)
 {
@@ -530,6 +590,102 @@ main(int argc, char **argv)
 	discord_process_message(da, o, DISCORD_MESSAGE_EDITED);
 	json_object_unref(o);
 	CHECK_STR(events->str, "");
+	CHECK_STR(written->str, "");
+
+	/* ---- stickers, GIFs and link embeds ---- */
+	reset();
+	o = parse(msg_stickers);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(meta_count == 1);
+	CHECK(strstr(written->str, "|Mason|<img src=\"https://media.discordapp.net/stickers/749054660769218631.png?size=160\" alt=\"Wave\"/>"
+	                           "<br/>[Hi &lt;3]"
+	                           "<br/><img src=\"https://media.discordapp.net/stickers/1045000000000000000.gif?size=160\" alt=\"Dance\"/>|") != NULL);
+	CHECK(strstr(written->str, ".json") == NULL);
+	fprintf(stderr, "written: %s\n", written->str);
+
+	reset();
+	o = parse(msg_tenor);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(strstr(written->str, "|alice|" TENOR_URL "<br/><img src=\"https://media.tenor.com/x5BgTNkA0CUAAAAC/cat-typing.gif\" alt=\"GIF\"/>|") != NULL);
+	CHECK_STR(M("embed-type"), "gifv");
+	CHECK_STR(M("embed-url"), TENOR_URL);
+	CHECK_STR(M("embed-image"), "https://media.tenor.com/x5BgTNkA0CUAAAAC/cat-typing.gif");
+	CHECK(M("embed-title") == NULL);
+	fprintf(stderr, "written: %s\n", written->str);
+
+	{
+		char *gif;
+
+		o = parse(embed_giphy);
+		gif = discord_embed_gif_url(o);
+		CHECK_STR(gif, "https://media.giphy.com/media/abc/giphy.gif");
+		g_free(gif);
+		json_object_unref(o);
+		/* No video, no GIF anywhere: nothing better than the thumbnail */
+		o = parse("{\"type\":\"gifv\",\"url\":\"https://tenor.com/view/x\",\"thumbnail\":{\"url\":\"https://media.tenor.com/abcAAAAe/x.png\"}}");
+		CHECK(discord_embed_gif_url(o) == NULL);
+		gif = discord_native_embed_html(o);
+		CHECK_STR(gif, "<img src=\"https://media.tenor.com/abcAAAAe/x.png\" alt=\"GIF\"/>");
+		g_free(gif);
+		json_object_unref(o);
+		o = parse(embed_rich);
+		gif = discord_native_embed_html(o);
+		CHECK_STR(gif, "<b>Build #42</b><br/><b>Status</b> <b>passed</b>");
+		g_free(gif);
+		json_object_unref(o);
+		o = parse("{\"type\":\"link\",\"url\":\"https://example.com\"}");
+		CHECK(discord_native_embed_html(o) == NULL);    /* nothing to show */
+		json_object_unref(o);
+	}
+
+	reset();
+	o = parse(msg_link);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(strstr(written->str, "<br/><b><a href=\"https://example.com/post?a=1&amp;b=2\">A &lt;title&gt;</a></b><br/>This <b>is</b> a long description") != NULL);
+	CHECK(strstr(written->str, "END") == NULL);                            /* cut at ~200 characters */
+	CHECK(strstr(written->str, "\xe2\x80\xa6<br/><img src=\"https://images-ext-2.discordapp.net/external/x/https/example.com/t.png\" alt=\"Image\"/>|") != NULL);
+	CHECK(strstr(written->str, "<font back=") == NULL);                    /* not the old block */
+	CHECK_STR(M("embed-type"), "article");
+	CHECK_STR(M("embed-title"), "A <title>");
+	CHECK_STR(M("embed-description"), LONG_DESC);
+	CHECK_STR(M("embed-url"), "https://example.com/post?a=1&b=2");
+	CHECK_STR(M("embed-image"), "https://images-ext-2.discordapp.net/external/x/https/example.com/t.png");
+	fprintf(stderr, "written: %s\n", written->str);
+
+	/* An embed-only MESSAGE_UPDATE: a correction with the embed block,
+	 * described by embed-only-update */
+	reset();
+	o = parse(msg_link_bare);
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(M("embed-type") == NULL);
+	reset();
+	o = parse(msg_link_update);
+	discord_process_dispatch(da, "MESSAGE_UPDATE", o);
+	json_object_unref(o);
+	CHECK(meta_count == 1);
+	CHECK_STR(M("embed-only-update"), "1");
+	CHECK_STR(M("correction-of"), "900000000000000004");
+	CHECK(M("stanza-id") == NULL && M("server-id") == NULL);
+	CHECK_STR(M("sender"), "alice");
+	CHECK_STR(M("embed-title"), "A <title>");
+	CHECK(g_str_has_prefix(events->str, "corrected(" CHANNEL_ID ",900000000000000004,900000000000000004,see "));
+	CHECK(strstr(events->str, "<b><a href=\"https://example.com/post?a=1&amp;b=2\">A &lt;title&gt;</a></b>") != NULL);
+	CHECK(strstr(events->str, "EDIT") == NULL);
+	CHECK_STR(written->str, "");
+	fprintf(stderr, "events: %s\n", events->str);
+
+	/* ... for a message the UI doesn't show: nothing (no EDIT: line) */
+	reset();
+	handle_events = FALSE;
+	o = parse(msg_link_update);
+	discord_process_message(da, o, DISCORD_MESSAGE_EDITED);
+	json_object_unref(o);
+	handle_events = TRUE;
+	CHECK(strstr(events->str, "corrected(") != NULL);
 	CHECK_STR(written->str, "");
 
 	/* ---- reactions ---- */
@@ -814,6 +970,43 @@ main(int argc, char **argv)
 		json_object_unref(o);
 		CHECK(meta_count == 0);
 		CHECK(strstr(written->str, "|Mason|Supa Hot :LUL:|") != NULL);   /* custom smiley path */
+		/* Stickers, GIF and link embeds: the old lines and block */
+		reset();
+		o = parse(msg_stickers);
+		discord_process_message(stock, o, DISCORD_MESSAGE_NORMAL);
+		json_object_unref(o);
+		CHECK(strstr(written->str, "|Mason|\nhttps://cdn.discordapp.com/stickers/749054660769218631.png"
+		                           "\nhttps://cdn.discordapp.com/stickers/816087792291282944.json"
+		                           "\nhttps://cdn.discordapp.com/stickers/1045000000000000000.png|") != NULL);
+		CHECK(strstr(written->str, "<img") == NULL);
+		fprintf(stderr, "stock written: %s\n", written->str);
+
+		reset();
+		o = parse(msg_tenor);
+		discord_process_message(stock, o, DISCORD_MESSAGE_NORMAL);
+		json_object_unref(o);
+		CHECK(meta_count == 0);
+		CHECK(strstr(written->str, "<font back=\"#cccccc\" color=\"#cccccc\"> </font> " TENOR_URL "<br/>") != NULL);
+		CHECK(strstr(written->str, "<img") == NULL);
+
+		reset();
+		o = parse(msg_link);
+		discord_process_message(stock, o, DISCORD_MESSAGE_NORMAL);
+		json_object_unref(o);
+		CHECK(strstr(written->str, "<a href=\"https://example.com/post?a=1&amp;b=2\">A &lt;title&gt;</a><br/>") != NULL);
+		CHECK(strstr(written->str, "END") != NULL);                /* the whole description */
+		CHECK(strstr(written->str, "<img") == NULL);
+		fprintf(stderr, "stock written: %s\n", written->str);
+
+		/* ... and an embed-only update is an EDIT: line, as before */
+		reset();
+		o = parse(msg_link_update);
+		discord_process_dispatch(stock, "MESSAGE_UPDATE", o);
+		json_object_unref(o);
+		CHECK_STR(events->str, "");
+		CHECK(meta_count == 0);
+		CHECK(strstr(written->str, "|alice|EDIT: see ") != NULL);
+
 		gc->proto_data = da;
 		g_free(stock);
 	}
@@ -821,3 +1014,4 @@ main(int argc, char **argv)
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }
+#endif /* STOCK_DUMP */

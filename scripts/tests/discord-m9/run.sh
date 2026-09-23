@@ -37,3 +37,30 @@ cc -O0 -g -std=c99 -Wall -Wno-unused-function $SAN \
 
 mkdir "$OUT/run"
 ASAN_OPTIONS=detect_leaks=0 "$OUT/test_discord" "$OUT/run"
+
+# The stock-output gate (stock_dump.c): the same payloads on a UI without
+# message-meta must give exactly what the base commit's plugin gives.
+BASE=${STOCK_BASE:-c5f7c41}
+mkdir "$OUT/base" "$OUT/run-new" "$OUT/run-base"
+git -C "$D" archive "$BASE" | tar -x -C "$OUT/base"
+for which in new base; do
+	if [ $which = new ]; then S=$D; else S=$OUT/base; fi
+	cc -O0 -g -std=c99 -w $SAN \
+		-DDISCORD_PLUGIN_VERSION='"test"' -DMARKDOWN_PIDGIN -DENABLE_NLS \
+		-DUSE_QRCODE_AUTH -DLOCALEDIR='"/usr/share/locale"' \
+		$(pkg-config --cflags nss) -I"$HERE" -I"$S" -I"$S/purple2compat" \
+		-o "$OUT/stock_dump_$which" "$HERE/stock_dump.c" \
+		"$S/markdown.c" "$S/purple2compat/http.c" "$S/purple2compat/purple-socket.c" \
+		$(pkg-config --libs nss) -lqrencode -lm \
+		$(pkg-config --cflags --libs purple glib-2.0 json-glib-1.0 zlib)
+	# The old embed block ends in the current time: mask it
+	ASAN_OPTIONS=detect_leaks=0 "$OUT/stock_dump_$which" "$OUT/run-$which" 2>/dev/null |
+		sed -E 's/[A-Z][a-z]{2} [A-Z][a-z]{2} +[0-9]+ [0-9:]{8} [0-9]{4}/<now>/g' > "$OUT/stock-$which.txt"
+done
+if cmp -s "$OUT/stock-base.txt" "$OUT/stock-new.txt"; then
+	echo "stock output: identical to $BASE ($(grep -c '^step' "$OUT/stock-new.txt") payloads)"
+else
+	echo "stock output: DIFFERS from $BASE"
+	diff -u "$OUT/stock-base.txt" "$OUT/stock-new.txt"
+	exit 1
+fi
