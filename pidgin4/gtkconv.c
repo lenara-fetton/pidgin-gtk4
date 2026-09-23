@@ -66,6 +66,7 @@
 #define CONV_PREFS PIDGIN_PREFS_ROOT "/conversations"
 #define CONV4_PREFS PIDGIN4_PREFS_ROOT "/conversations"
 #define AUTO_RESPONSE "&lt;AUTO-REPLY&gt; :"
+#define BUDDY_ICON_SIZE 32          /* the infopane's, as Pidgin 2's */
 
 static void update_tab_and_infopane(PidginConversation *gtkconv);
 static void update_typing(PidginConversation *gtkconv);
@@ -911,7 +912,7 @@ pidgin_conv_update_buddy_icon(PurpleConversation *conv)
 		}
 	}
 
-	gtk_picture_set_paintable(GTK_PICTURE(gtkconv->u.im->icon), paintable);
+	gtk_image_set_from_paintable(GTK_IMAGE(gtkconv->u.im->icon), paintable);
 	gtk_widget_set_visible(gtkconv->u.im->icon, paintable != NULL && gtkconv->u.im->show_icon);
 	g_clear_object(&paintable);
 }
@@ -1949,10 +1950,14 @@ setup_infopane(PidginConversation *gtkconv)
 
 	gtk_widget_add_css_class(hbox, "pidgin-conv-infopane");
 	if (!is_chat(gtkconv)) {
-		GtkWidget *pic = gtk_picture_new();
+		/* A GtkImage, not a GtkPicture: a picture asks for the icon's own
+		 * size (a Steam avatar is 184 px) and a size request is only a
+		 * minimum. The image draws any paintable, animated ones too,
+		 * within its pixel size, keeping the aspect. */
+		GtkWidget *pic = gtk_image_new();
 
-		gtk_picture_set_content_fit(GTK_PICTURE(pic), GTK_CONTENT_FIT_CONTAIN);
-		gtk_widget_set_size_request(pic, 32, 32);
+		gtk_image_set_pixel_size(GTK_IMAGE(pic), BUDDY_ICON_SIZE);
+		gtk_widget_set_valign(pic, GTK_ALIGN_CENTER);
 		gtk_widget_add_css_class(pic, "pidgin-conv-buddy-icon");
 		gtk_widget_set_visible(pic, FALSE);
 		gtkconv->u.im->icon = pic;

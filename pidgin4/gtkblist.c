@@ -83,6 +83,7 @@
 #include "pidginmenu.h"
 #include "pidginminidialog.h"
 #include "pidginomemo.h"
+#include "pidginselftest.h"
 
 #define BLIST_PREFS  PIDGIN_PREFS_ROOT "/blist"
 #define BLIST4_PREFS PIDGIN4_PREFS_ROOT "/blist"
@@ -1188,10 +1189,9 @@ tooltip_block(PurpleBlistNode *node, gboolean full)
 
 	texture = node_icon_texture(node);
 	if (texture != NULL) {
-		GtkWidget *picture = gtk_picture_new_for_paintable(GDK_PAINTABLE(texture));
+		GtkWidget *picture = gtk_image_new_from_paintable(GDK_PAINTABLE(texture));
 
-		gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
-		gtk_widget_set_size_request(picture, 96, 96);
+		gtk_image_set_pixel_size(GTK_IMAGE(picture), 96);
 		gtk_widget_set_valign(picture, GTK_ALIGN_START);
 		gtk_box_append(GTK_BOX(hbox), picture);
 		g_object_unref(texture);
@@ -1793,10 +1793,10 @@ factory_setup_cb(GtkSignalListItemFactory *factory, GObject *object, gpointer da
 	r->protocol = row_image("pidgin-blist-protocol-icon");
 	gtk_box_append(GTK_BOX(box), r->protocol);
 
-	r->avatar = gtk_picture_new();
-	gtk_picture_set_content_fit(GTK_PICTURE(r->avatar), GTK_CONTENT_FIT_CONTAIN);
-	gtk_picture_set_can_shrink(GTK_PICTURE(r->avatar), TRUE);
-	gtk_widget_set_size_request(r->avatar, 32, 32);
+	/* A GtkImage draws the icon within 32 px keeping the aspect; a
+	 * GtkPicture would ask for the icon's own size. */
+	r->avatar = gtk_image_new();
+	gtk_image_set_pixel_size(GTK_IMAGE(r->avatar), 32);
 	gtk_widget_set_valign(r->avatar, GTK_ALIGN_CENTER);
 	gtk_widget_add_css_class(r->avatar, "pidgin-blist-avatar");
 	gtk_box_append(GTK_BOX(box), r->avatar);
@@ -5141,11 +5141,34 @@ typedef struct {
 	gboolean collapsed;
 } SelftestGroupState;
 
+/* The largest natural size of the pictures and paintable images under
+ * widget (buddy icons in rows and tooltips) */
+static int
+selftest_max_picture(GtkWidget *widget, int max)
+{
+	GtkWidget *child;
+
+	if (gtk_widget_get_visible(widget) &&
+	    ((GTK_IS_PICTURE(widget) && gtk_picture_get_paintable(GTK_PICTURE(widget)) != NULL) ||
+	     (GTK_IS_IMAGE(widget) &&
+	      gtk_image_get_storage_type(GTK_IMAGE(widget)) == GTK_IMAGE_PAINTABLE))) {
+		int w = 0, h = 0;
+
+		gtk_widget_measure(widget, GTK_ORIENTATION_HORIZONTAL, -1, NULL, &w, NULL, NULL);
+		gtk_widget_measure(widget, GTK_ORIENTATION_VERTICAL, -1, NULL, &h, NULL, NULL);
+		max = MAX(max, MAX(w, h));
+	}
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		max = selftest_max_picture(child, max);
+	return max;
+}
+
 static void
 selftest_menus(void)
 {
 	PurpleBlistNode *node;
-	int menus = 0, items = 0, tips = 0;
+	int menus = 0, items = 0, tips = 0, tip_icon = 0;
 
 	for (node = purple_blist_get_root(); node != NULL; node = purple_blist_node_next(node, TRUE)) {
 		GSimpleActionGroup *group = g_simple_action_group_new();
@@ -5163,6 +5186,7 @@ selftest_menus(void)
 			g_free(text);
 			tip = tooltip_widget(node);
 			g_object_ref_sink(tip);
+			tip_icon = selftest_max_picture(tip, tip_icon);
 			g_object_unref(tip);
 			tips++;
 		}
@@ -5171,6 +5195,11 @@ selftest_menus(void)
 	}
 	purple_debug_info("gtkblist", "selftest: built %d context menus (%d sections) "
 	                  "and %d tooltips\n", menus, items, tips);
+	/* Pidgin 2's tooltip icon was 96 px (PIDGIN_ICON_SIZE_TANGO_LARGE) */
+	if (tip_icon > 96)
+		purple_debug_error("gtkblist", "selftest: FAIL: a tooltip icon is %d px\n", tip_icon);
+	else
+		purple_debug_info("gtkblist", "selftest: largest tooltip icon %d px\n", tip_icon);
 }
 
 static gboolean
@@ -5205,6 +5234,21 @@ selftest_run(gpointer data)
 	g_action_group_change_action_state(G_ACTION_GROUP(gtkblist->window), "show-disconnected",
 	                                   g_variant_new_boolean(TRUE));
 	selftest_log_counts("everything shown");
+
+	/* Buddy icons in the rows are 32 px ("Buddy Details" on) */
+	g_action_group_change_action_state(G_ACTION_GROUP(gtkblist->window), "show-buddy-details",
+	                                   g_variant_new_boolean(TRUE));
+	pidgin_selftest_iterate(500);
+	{
+		int row_icon = selftest_max_picture(GTK_WIDGET(gtkblist->window), 0);
+
+		if (row_icon > 32)
+			purple_debug_error("gtkblist", "selftest: FAIL: a row's buddy icon is %d px\n",
+			                   row_icon);
+		else
+			purple_debug_info("gtkblist", "selftest: largest row buddy icon %d px\n",
+			                  row_icon);
+	}
 
 	/* Collapse and expand every group, then put them back. */
 	for (gnode = purple_blist_get_root(); gnode; gnode = purple_blist_node_get_sibling_next(gnode)) {

@@ -26,6 +26,7 @@
 
 #include "account.h"
 #include "blist.h"
+#include "buddyicon.h"
 #include "cmds.h"
 #include "connection.h"
 #include "conversation.h"
@@ -207,29 +208,36 @@ activate(PidginWindow *win, const char *action, GVariant *param)
 	return gtk_widget_activate_action_variant(win->window, action, param);
 }
 
-/* A small PNG in the imgstore (the caller unrefs it) */
-static int
-add_test_image(void)
+/* A plain red PNG of the given size (g_free it) */
+static gpointer
+make_png(int width, int height, gsize *len)
 {
-	guchar pixels[8 * 8 * 4];
+	guchar *pixels = g_malloc(width * height * 4);
 	GBytes *bytes, *png;
 	GdkTexture *texture;
-	gpointer data;
-	gsize len;
-	guint i;
+	int i;
 
-	for (i = 0; i < sizeof(pixels); i += 4) {
+	for (i = 0; i < width * height * 4; i += 4) {
 		pixels[i] = 0xcc;
 		pixels[i + 1] = 0x22;
 		pixels[i + 2] = 0x22;
 		pixels[i + 3] = 0xff;
 	}
-	bytes = g_bytes_new(pixels, sizeof(pixels));
-	texture = gdk_memory_texture_new(8, 8, GDK_MEMORY_R8G8B8A8, bytes, 8 * 4);
+	bytes = g_bytes_new_take(pixels, width * height * 4);
+	texture = gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, bytes, width * 4);
 	png = gdk_texture_save_to_png_bytes(texture);
 	g_bytes_unref(bytes);
 	g_object_unref(texture);
-	data = g_bytes_unref_to_data(png, &len);
+	return g_bytes_unref_to_data(png, len);
+}
+
+/* A small PNG in the imgstore (the caller unrefs it) */
+static int
+add_test_image(void)
+{
+	gsize len;
+	gpointer data = make_png(8, 8, &len);
+
 	return purple_imgstore_add_with_id(data, len, "selftest.png");
 }
 
@@ -386,6 +394,37 @@ test_images(PurpleConversation *conv)
 	      n_messages(conv), n);
 	set_steam_like(conv, FALSE);
 	hold("images");
+}
+
+/* The infopane's buddy icon is 32 px, whatever the icon's size (it took
+ * a large part of the window with a Steam avatar). */
+static void
+test_buddy_icon(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	GtkWidget *icon = gtkconv->u.im->icon;
+	gboolean show = purple_prefs_get_bool(PIDGIN_PREFS_ROOT "/conversations/im/show_buddy_icons");
+	int min = 0, nat = 0;
+	gsize len;
+	gpointer data;
+
+	purple_prefs_set_bool(PIDGIN_PREFS_ROOT "/conversations/im/show_buddy_icons", TRUE);
+	data = make_png(256, 128, &len);
+	purple_buddy_icons_set_for_user(st_account, ST_BUDDY, data, len, NULL);
+	pidgin_conv_update_buddy_icon(conv);
+	spin(300);
+	CHECK(gtk_widget_get_visible(icon), "no buddy icon");
+	gtk_widget_measure(icon, GTK_ORIENTATION_HORIZONTAL, -1, &min, &nat, NULL, NULL);
+	CHECK(nat <= 32, "icon natural width %d", nat);
+	gtk_widget_measure(icon, GTK_ORIENTATION_VERTICAL, -1, &min, &nat, NULL, NULL);
+	CHECK(nat <= 32, "icon natural height %d", nat);
+	CHECK(gtk_widget_get_width(icon) <= 32 && gtk_widget_get_height(icon) <= 32,
+	      "icon allocated %dx%d", gtk_widget_get_width(icon), gtk_widget_get_height(icon));
+	hold("buddy icon");
+
+	purple_buddy_icons_set_for_user(st_account, ST_BUDDY, NULL, 0, NULL);
+	pidgin_conv_update_buddy_icon(conv);
+	purple_prefs_set_bool(PIDGIN_PREFS_ROOT "/conversations/im/show_buddy_icons", show);
 }
 
 static gboolean
@@ -716,6 +755,7 @@ test_im(PurpleConversation **im_out)
 	/* Last: its waits let the view's scroll-back run out of history. */
 	test_images(conv);
 	test_smileys(conv);
+	test_buddy_icon(conv);
 
 	g_free(akey);
 	g_free(ckey);
