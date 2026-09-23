@@ -43,7 +43,8 @@ XML_FILES = ('accounts.xml', 'blist.xml', 'prefs.xml', 'status.xml', 'pounces.xm
 VOLATILE_SETTINGS = (
 	'signedon', 'signedoff', 'last_seen', 'lastseen', 'icon_checksum',
 	'buddy_icon', 'buddy_icon_timestamp', 'avatar_hash', 'last_message_id',
-	'last_message_id_high', 'last_message_timestamp', 'gtk-mute-sound',
+	'last_message_id_high', 'last_message_id_low', 'last_message_timestamp',
+	'gtk-mute-sound',
 )
 
 DEFAULT_RULES = [
@@ -71,6 +72,11 @@ DEFAULT_RULES = [
 	# Session state kept in settings.
 	('changed', r'^(accounts|blist)\.xml:.*/setting\[(%s)\]( |$)' % '|'.join(VOLATILE_SETTINGS)),
 	('removed', r'^blist\.xml:.*/setting\[(%s)\]( |$)' % '|'.join(VOLATILE_SETTINGS)),
+	# blist.xml: a live session receives roster pushes and adds buddies
+	# (libpurple does this identically in both UIs). Removing a buddy,
+	# contact or group is still an error, and the counts must not shrink.
+	('added', r'^blist\.xml:/purple/blist/group(\[[^]]*\])?/contact\['),
+	('added', r'^blist\.xml:/purple/blist/group(\[[^]]*\])?/chat\['),
 ]
 
 # Files outside the five XML files. Paths are relative to the profile root.
