@@ -159,7 +159,7 @@ am__libjabber_la_SOURCES_DIST = adhoccommands.c adhoccommands.h auth.c \
 	roster.h si.c si.h stream_management.c stream_management.h \
 	useravatar.c useravatar.h usermood.c usermood.h usernick.c \
 	usernick.h usertune.c usertune.h xdata.c xdata.h httpupload.c \
-	httpupload.h auth_cyrus.c libxmpp.c
+	httpupload.h receipts.c receipts.h correction.c correction.h reactions.c reactions.h retraction.c retraction.h styling.c styling.h displayed.c displayed.h auth_cyrus.c libxmpp.c
 @USE_CYRUS_SASL_TRUE@am__objects_1 = libjabber_la-auth_cyrus.lo
 am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
 	libjabber_la-auth_digest_md5.lo libjabber_la-auth_plain.lo \
@@ -183,7 +183,7 @@ am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
 	libjabber_la-stream_management.lo libjabber_la-useravatar.lo \
 	libjabber_la-usermood.lo libjabber_la-usernick.lo \
 	libjabber_la-usertune.lo libjabber_la-xdata.lo \
-	libjabber_la-httpupload.lo $(am__objects_1)
+	libjabber_la-httpupload.lo libjabber_la-receipts.lo libjabber_la-correction.lo libjabber_la-reactions.lo libjabber_la-retraction.lo libjabber_la-styling.lo libjabber_la-displayed.lo $(am__objects_1)
 @STATIC_JABBER_FALSE@am_libjabber_la_OBJECTS = $(am__objects_2)
 @STATIC_JABBER_TRUE@am_libjabber_la_OBJECTS = $(am__objects_2) \
 @STATIC_JABBER_TRUE@	libjabber_la-libxmpp.lo
@@ -239,6 +239,12 @@ am__depfiles_remade = ./$(DEPDIR)/libjabber_la-adhoccommands.Plo \
 	./$(DEPDIR)/libjabber_la-google_roster.Plo \
 	./$(DEPDIR)/libjabber_la-google_session.Plo \
 	./$(DEPDIR)/libjabber_la-httpupload.Plo \
+	./$(DEPDIR)/libjabber_la-receipts.Plo \
+	./$(DEPDIR)/libjabber_la-correction.Plo \
+	./$(DEPDIR)/libjabber_la-reactions.Plo \
+	./$(DEPDIR)/libjabber_la-retraction.Plo \
+	./$(DEPDIR)/libjabber_la-styling.Plo \
+	./$(DEPDIR)/libjabber_la-displayed.Plo \
 	./$(DEPDIR)/libjabber_la-ibb.Plo \
 	./$(DEPDIR)/libjabber_la-iceudp.Plo \
 	./$(DEPDIR)/libjabber_la-iq.Plo \
@@ -610,7 +616,7 @@ JABBERSOURCES = adhoccommands.c adhoccommands.h auth.c auth.h \
 	roster.h si.c si.h stream_management.c stream_management.h \
 	useravatar.c useravatar.h usermood.c usermood.h usernick.c \
 	usernick.h usertune.c usertune.h xdata.c xdata.h httpupload.c \
-	httpupload.h $(am__append_1)
+	httpupload.h receipts.c receipts.h correction.c correction.h reactions.c reactions.h retraction.c retraction.h styling.c styling.h displayed.c displayed.h $(am__append_1)
 AM_CFLAGS = $(st)
 libxmpp_la_LDFLAGS = -module -avoid-version
 @STATIC_JABBER_FALSE@st = 
@@ -746,6 +752,12 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-google_roster.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-google_session.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-httpupload.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-receipts.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-correction.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-reactions.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-retraction.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-styling.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-displayed.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-ibb.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-iceudp.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-iq.Plo@am__quote@ # am--include-marker
@@ -1142,6 +1154,48 @@ libjabber_la-httpupload.lo: httpupload.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-httpupload.lo `test -f 'httpupload.c' || echo '$(srcdir)/'`httpupload.c
 
+libjabber_la-receipts.lo: receipts.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-receipts.lo -MD -MP -MF $(DEPDIR)/libjabber_la-receipts.Tpo -c -o libjabber_la-receipts.lo `test -f 'receipts.c' || echo '$(srcdir)/'`receipts.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-receipts.Tpo $(DEPDIR)/libjabber_la-receipts.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='receipts.c' object='libjabber_la-receipts.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-receipts.lo `test -f 'receipts.c' || echo '$(srcdir)/'`receipts.c
+
+libjabber_la-correction.lo: correction.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-correction.lo -MD -MP -MF $(DEPDIR)/libjabber_la-correction.Tpo -c -o libjabber_la-correction.lo `test -f 'correction.c' || echo '$(srcdir)/'`correction.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-correction.Tpo $(DEPDIR)/libjabber_la-correction.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='correction.c' object='libjabber_la-correction.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-correction.lo `test -f 'correction.c' || echo '$(srcdir)/'`correction.c
+
+libjabber_la-reactions.lo: reactions.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-reactions.lo -MD -MP -MF $(DEPDIR)/libjabber_la-reactions.Tpo -c -o libjabber_la-reactions.lo `test -f 'reactions.c' || echo '$(srcdir)/'`reactions.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-reactions.Tpo $(DEPDIR)/libjabber_la-reactions.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='reactions.c' object='libjabber_la-reactions.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-reactions.lo `test -f 'reactions.c' || echo '$(srcdir)/'`reactions.c
+
+libjabber_la-retraction.lo: retraction.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-retraction.lo -MD -MP -MF $(DEPDIR)/libjabber_la-retraction.Tpo -c -o libjabber_la-retraction.lo `test -f 'retraction.c' || echo '$(srcdir)/'`retraction.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-retraction.Tpo $(DEPDIR)/libjabber_la-retraction.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='retraction.c' object='libjabber_la-retraction.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-retraction.lo `test -f 'retraction.c' || echo '$(srcdir)/'`retraction.c
+
+libjabber_la-styling.lo: styling.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-styling.lo -MD -MP -MF $(DEPDIR)/libjabber_la-styling.Tpo -c -o libjabber_la-styling.lo `test -f 'styling.c' || echo '$(srcdir)/'`styling.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-styling.Tpo $(DEPDIR)/libjabber_la-styling.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='styling.c' object='libjabber_la-styling.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-styling.lo `test -f 'styling.c' || echo '$(srcdir)/'`styling.c
+
+libjabber_la-displayed.lo: displayed.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-displayed.lo -MD -MP -MF $(DEPDIR)/libjabber_la-displayed.Tpo -c -o libjabber_la-displayed.lo `test -f 'displayed.c' || echo '$(srcdir)/'`displayed.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-displayed.Tpo $(DEPDIR)/libjabber_la-displayed.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='displayed.c' object='libjabber_la-displayed.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-displayed.lo `test -f 'displayed.c' || echo '$(srcdir)/'`displayed.c
+
 libjabber_la-auth_cyrus.lo: auth_cyrus.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-auth_cyrus.lo -MD -MP -MF $(DEPDIR)/libjabber_la-auth_cyrus.Tpo -c -o libjabber_la-auth_cyrus.lo `test -f 'auth_cyrus.c' || echo '$(srcdir)/'`auth_cyrus.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-auth_cyrus.Tpo $(DEPDIR)/libjabber_la-auth_cyrus.Plo
@@ -1309,6 +1363,12 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-google_roster.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_session.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-httpupload.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-receipts.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-correction.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-reactions.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-retraction.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-styling.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-displayed.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-ibb.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iceudp.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iq.Plo
@@ -1405,6 +1465,12 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-google_roster.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_session.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-httpupload.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-receipts.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-correction.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-reactions.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-retraction.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-styling.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-displayed.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-ibb.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iceudp.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iq.Plo

@@ -64,6 +64,12 @@ typedef struct _JabberChat {
 	gboolean selfping_rejoining;
 	time_t selfping_sent;        /* outstanding ping, 0 if none */
 	time_t selfping_last_activity;
+
+	/* M8 message semantics */
+	gboolean nonanonymous;       /* disco#info muc_nonanonymous */
+	const char *moderation_ns;   /* XEP-0425 namespace the room advertises, or NULL */
+	GHashTable *occupant_ids;    /* message id -> occupant-id (bounded) */
+	GQueue *occupant_keys;       /* insertion order for occupant_ids */
 } JabberChat;
 
 /** XEP-0410 self-ping timing, in seconds. */
@@ -127,6 +133,22 @@ JabberChat *jabber_chat_find(JabberStream *js, const char *room,
 		const char *server);
 JabberChat *jabber_chat_find_by_id(JabberStream *js, int id);
 JabberChat *jabber_chat_find_by_conv(PurpleConversation *conv);
+
+/**
+ * M8 (XEP-0421): remembers which occupant-id sent the message known by
+ * @a id, @a origin_id and @a server_id (any may be NULL), so that
+ * corrections and retractions can be matched to the original sender by
+ * occupant-id rather than by nick.  Bounded per room.
+ */
+void jabber_chat_note_occupant(JabberChat *chat, const char *occupant_id,
+		const char *id, const char *origin_id, const char *server_id);
+
+/**
+ * TRUE if the message @a target_id is known to have been sent by a
+ * different occupant than @a occupant_id.  FALSE when either is unknown.
+ */
+gboolean jabber_chat_occupant_mismatch(JabberChat *chat,
+		const char *target_id, const char *occupant_id);
 void jabber_chat_destroy(JabberChat *chat);
 void jabber_chat_free(JabberChat *chat);
 gboolean jabber_chat_find_buddy(PurpleConversation *conv, const char *name);

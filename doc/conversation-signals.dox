@@ -589,7 +589,10 @@ void (*sending_message_meta)(PurpleAccount *account, const char *conv_name,
    assigned, so the UI can associate them with the message it shows.
    The keys are those of receiving-message-meta ("stanza-id",
    "origin-id", "conv-type", "correction-of", "reply-to", ...).  Only
-   emitted when the UI advertises "message-meta".
+   emitted when the UI advertises "message-meta".  For an IM it is
+   followed by the write of the sent message, except when
+   "correction-of" is set: a correction is reported through
+   message-corrected (sender: the account's own JID) instead.
   @param account   The account.
   @param conv_name The conversation name.
   @param meta      The metadata table (string to string).
@@ -652,7 +655,11 @@ gboolean (*message_receipt)(PurpleAccount *account, const char *conv_name,
   @param id        The id of the message concerned.  A "displayed" state
                    implies all earlier messages were displayed too.
   @param state     "delivered" or "displayed".
-  @param sender    Who sent the receipt.
+  @param sender    Who sent the receipt.  The account's own bare JID
+                   when the message was displayed on another device of
+                   the account (XMPP: a carbon of our own chat marker,
+                   or XEP-0490 displayed-state sync), so the UI can
+                   clear its unread state.
   @return @c TRUE if a handler rendered it.
   @since 2.14.14-gtk4
  @endsignaldef

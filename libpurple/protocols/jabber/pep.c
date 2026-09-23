@@ -32,6 +32,7 @@
 #include "usernick.h"
 #include "usertune.h"
 #include "bookmarks.h"
+#include "displayed.h"
 
 static GHashTable *pep_handlers = NULL;
 
@@ -45,6 +46,7 @@ void jabber_pep_init(void) {
 		jabber_tune_init();
 		jabber_nick_init();
 		jabber_bookmarks_pep_init();
+		jabber_displayed_pep_init();
 	}
 }
 

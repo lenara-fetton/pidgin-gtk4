@@ -25,6 +25,7 @@
 #define PURPLE_JABBER_MESSAGE_H_
 
 #include "buddy.h"
+#include "chat.h"
 #include "jabber.h"
 #include "xmlnode.h"
 
@@ -105,7 +106,49 @@ typedef struct _JabberMessage {
 	char *reply_to_jid;      /**< XEP-0461 <reply to=''/> */
 	GList *fallbacks;        /**< XEP-0428, JabberFallback* */
 	gboolean fallback_stripped;
+
+	/* M8 message semantics.  On incoming messages these are parsed from
+	 * the stanza; on outgoing ones (jabber_message_send) the flags and
+	 * replace_id, reply_to_*, fallbacks add the matching elements. */
+	gboolean receipt_request; /**< XEP-0184 <request/> */
+	char *receipt_id;         /**< XEP-0184 <received id=''/> */
+	const char *marker;       /**< XEP-0333 "received", "displayed", "acknowledged" */
+	char *marker_id;
+	gboolean markable;        /**< XEP-0333 <markable/> */
+	xmlnode *reactions;       /**< XEP-0444 <reactions/> (points into the stanza) */
+	char *retract_id;         /**< XEP-0424 target, or XEP-0425 target */
+	gboolean moderated;       /**< XEP-0425: retract_id was moderated */
+	char *moderated_by;       /**< XEP-0425 <moderated by=''/> */
+	char *retract_reason;     /**< XEP-0425 <reason/> */
+	gboolean unstyled;        /**< XEP-0393 <unstyled/> */
+	gboolean store_hint;      /**< outgoing: XEP-0334 <store/> */
 } JabberMessage;
+
+/**
+ * Where the events carried by an incoming message belong (M8 message
+ * semantics), with the same conv_name and sender as its
+ * receiving-message-meta would carry.
+ */
+typedef struct {
+	char *conv_name; /**< full JID (IM), room JID (MUC), counterpart (own) */
+	char *sender;    /**< full JID (IM), nick (MUC), own full JID (own IM);
+	                      NULL for the room itself */
+	char *identity;  /**< stable sender key: bare JID (IM), occupant-id or
+	                      nick (MUC) */
+	JabberChat *chat;/**< the room, for groupchat messages */
+	gboolean own;    /**< sent by this account (another device, or our own
+	                      nick in a room) */
+} JabberMessageTarget;
+
+/**
+ * The destination of a UI -> prpl IPC command (send-correction etc.).
+ */
+typedef struct {
+	JabberStream *js;
+	JabberChat *chat;    /**< set when conv_name is a joined room */
+	char *to;            /**< the room's bare JID, or the peer's (full) JID */
+	gboolean groupchat;  /**< send type='groupchat' */
+} JabberIpcTarget;
 
 void jabber_message_free(JabberMessage *jm);
 
@@ -169,5 +212,71 @@ char *jabber_fallback_strip(const char *body, GList *fallbacks,
 
 /** The namespaces whose fallback we strip when the UI renders them natively. */
 extern const char * const jabber_native_fallback_namespaces[];
+
+/*
+ * M8 message semantics (receipts.c, correction.c, reactions.c,
+ * retraction.c, displayed.c, styling.c)
+ */
+
+/** Registers the send-* IPC commands and the disco features. */
+void jabber_message_semantics_init(PurplePlugin *plugin);
+void jabber_message_semantics_uninit(void);
+
+/**
+ * Resolves the account and conversation name an IPC command received.
+ * FALSE if the account is not a connected XMPP account.  Clear @a t with
+ * jabber_ipc_target_clear() either way.
+ */
+gboolean jabber_ipc_target_init(JabberIpcTarget *t, PurpleAccount *account,
+		const char *conv_name);
+void jabber_ipc_target_clear(JabberIpcTarget *t);
+
+/**
+ * A new <message/> to @a to (type chat or groupchat) with a fresh UUID id
+ * that is also its XEP-0359 origin-id.  The id is remembered so the same
+ * stanza coming back from the archive is not shown twice.
+ */
+xmlnode *jabber_message_stanza_new(JabberStream *js, const char *to,
+		gboolean groupchat);
+
+/** Our own full JID (newly allocated). */
+char *jabber_message_own_jid(JabberStream *js, gboolean bare);
+
+/**
+ * Escaped, human-readable name for the sender of @a t: the nick in rooms,
+ * the buddy alias or bare JID in IMs, our own alias for own messages.
+ */
+char *jabber_message_display_name(JabberStream *js, const JabberMessageTarget *t);
+
+/**
+ * Writes a readable text line (already escaped markup) for an event that
+ * no UI rendered natively (contract rule 7: logs stay self-contained).
+ */
+void jabber_message_write_event(JabberStream *js, const JabberMessageTarget *t,
+		const char *markup, time_t when, gboolean delayed);
+
+/**
+ * A new outgoing message with a body (plain text, as it goes on the wire)
+ * for an IPC command: type chat or groupchat, chat state active for IMs.
+ * Send it with jabber_message_send_ipc().
+ */
+JabberMessage *jabber_message_new_outgoing(const JabberIpcTarget *t,
+		const char *body);
+
+/**
+ * Assigns the ids (UUID id = origin-id), adds the receipt request (IMs)
+ * and <markable/> when the UI handles message metadata, sends @a jm and
+ * emits sending-message-meta for @a conv_name with the usual keys plus
+ * @a extra (key, value, ..., NULL; NULL values are skipped).
+ */
+void jabber_message_send_ipc(JabberMessage *jm, const char *conv_name,
+		const char *first_key, ...) G_GNUC_NULL_TERMINATED;
+
+/** Plain text -> libpurple markup (escaped, newlines as <br>). */
+char *jabber_message_plain_to_markup(const char *plain);
+
+/** The IM conversation for @a name (full or bare JID), created if missing. */
+PurpleConversation *jabber_message_im_conv(PurpleAccount *account,
+		const char *name);
 
 #endif /* PURPLE_JABBER_MESSAGE_H_ */

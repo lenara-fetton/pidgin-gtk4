@@ -101,7 +101,19 @@ JABBERSOURCES = \
 			  xdata.c \
 			  xdata.h \
 			  httpupload.c \
-			  httpupload.h
+			  httpupload.h \
+			  receipts.c \
+			  receipts.h \
+			  correction.c \
+			  correction.h \
+			  reactions.c \
+			  reactions.h \
+			  retraction.c \
+			  retraction.h \
+			  styling.c \
+			  styling.h \
+			  displayed.c \
+			  displayed.h
 
 AM_CFLAGS = $(st)
 
