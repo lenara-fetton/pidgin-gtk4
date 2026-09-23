@@ -29,6 +29,8 @@ ported_plugins = {
 	'history' : [files('history.c'), []],
 	'markerline' : [files('markerline.c'), []],
 	'timestamp_format' : [files('timestamp_format.c'), []],
+	'notify' : [files('notify.c'), []],
+	'cap' : [files('cap/cap.c'), [sqlite_dep]],
 }
 
 pidgin4_plugin_dir = libdir / 'pidgin4'
