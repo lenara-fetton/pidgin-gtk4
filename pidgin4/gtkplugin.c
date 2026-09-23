@@ -480,9 +480,11 @@ plugin_config_show(PurplePlugin *plug)
 	window = pidgin_dialog_new(plugin_display_name(plug),
 		plugin_dialog != NULL ? GTK_WINDOW(plugin_dialog->window) : NULL,
 		"plugin_config", TRUE);
-	sw = pidgin_make_scrollable(config, GTK_POLICY_AUTOMATIC,
-	                            GTK_POLICY_AUTOMATIC, 400, 400);
+	sw = pidgin_make_scrollable(config, GTK_POLICY_NEVER,
+	                            GTK_POLICY_AUTOMATIC, -1, -1);
+	gtk_window_set_default_size(GTK_WINDOW(window), 460, -1);
 	gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(sw), TRUE);
+	gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(sw), 520);
 	gtk_widget_set_vexpand(sw, TRUE);
 	gtk_box_append(GTK_BOX(pidgin_dialog_get_content_area(window)), sw);
 	pidgin_dialog_add_button(window, _("_Close"), G_CALLBACK(config_close_cb), window);

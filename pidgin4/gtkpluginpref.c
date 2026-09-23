@@ -309,9 +309,17 @@ make_bool_pref(GtkWidget *parent, PurplePluginPref *pref)
 {
 	const char *name = purple_plugin_pref_get_name(pref);
 	const char *label = purple_plugin_pref_get_label(pref);
-	GtkWidget *check;
+	GtkWidget *check, *text;
 
-	check = pidgin_pref_checkbox_new(label ? label : "", name);
+	/* A wrapping label: plugin labels can be long sentences. */
+	check = gtk_check_button_new();
+	text = gtk_label_new_with_mnemonic(label ? label : "");
+	gtk_label_set_wrap(GTK_LABEL(text), TRUE);
+	gtk_label_set_xalign(GTK_LABEL(text), 0.0);
+	gtk_label_set_max_width_chars(GTK_LABEL(text), 60);
+	gtk_label_set_mnemonic_widget(GTK_LABEL(text), check);
+	gtk_check_button_set_child(GTK_CHECK_BUTTON(check), text);
+	pidgin_pref_bind_bool(check, name);
 	gtk_widget_set_name(check, name);
 	gtk_box_append(GTK_BOX(parent), check);
 }
