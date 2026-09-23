@@ -80,6 +80,7 @@
 #include "gtkstatusbox.h"
 #include "gtkutils.h"
 #include "pidginblistmodel.h"
+#include "pidginimageloader.h"
 #include "pidginmenu.h"
 #include "pidginminidialog.h"
 #include "pidginomemo.h"
@@ -433,6 +434,132 @@ presence_game(PurplePresence *presence)
 	return NULL;
 }
 
+/* The picture of that game: a "game_icon_url" attribute next to "game"
+ * (Steam's 184x69 capsule), or NULL. */
+static const char *
+presence_game_icon_url(PurplePresence *presence)
+{
+	GList *l;
+
+	for (l = purple_presence_get_statuses(presence); l != NULL; l = l->next) {
+		PurpleStatus *status = l->data;
+		PurpleStatusType *type = purple_status_get_type(status);
+		const char *game, *url;
+
+		if (!purple_status_is_active(status) ||
+		    purple_status_type_get_attr(type, "game") == NULL)
+			continue;
+		game = purple_status_get_attr_string(status, "game");
+		if (game == NULL || *game == '\0')
+			continue;
+		if (purple_status_type_get_attr(type, "game_icon_url") == NULL)
+			return NULL;
+		url = purple_status_get_attr_string(status, "game_icon_url");
+		return (url != NULL && *url != '\0') ? url : NULL;
+	}
+	return NULL;
+}
+
+/*
+ * Game pictures come through the image loader (its allowlist, caches):
+ * a cached one at once, else a load whose end refreshes the rows of the
+ * buddies playing that game. url -> 1 loading, 2 failed.
+ */
+static GHashTable *game_icon_loads = NULL;
+
+static void blist_refresh_item(PidginBlistNodeItem *item);
+
+static void
+refresh_game_icon_rows(const char *url)
+{
+	PurpleBlistNode *node;
+
+	for (node = purple_blist_get_root(); node != NULL; node = purple_blist_node_next(node, FALSE)) {
+		PidginBlistNodeItem *item;
+
+		if (!PURPLE_BLIST_NODE_IS_BUDDY(node) ||
+		    !purple_strequal(presence_game_icon_url(
+		        purple_buddy_get_presence((PurpleBuddy *)node)), url))
+			continue;
+		if ((item = lookup_item(node)) != NULL)
+			blist_refresh_item(item);
+		if ((item = lookup_item(purple_blist_node_get_parent(node))) != NULL)
+			blist_refresh_item(item);
+	}
+}
+
+static void
+game_icon_loaded_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	char *url = data;
+	GError *error = NULL;
+	GdkTexture *texture = pidgin_image_loader_load_finish(PIDGIN_IMAGE_LOADER(source), res,
+	                                                      &error);
+
+	if (texture == NULL) {
+		purple_debug_info("gtkblist", "game icon %s: %s\n", url,
+		                  error ? error->message : "?");
+		g_clear_error(&error);
+		if (game_icon_loads != NULL)
+			g_hash_table_replace(game_icon_loads, g_strdup(url), GINT_TO_POINTER(2));
+	} else {
+		if (game_icon_loads != NULL)
+			g_hash_table_remove(game_icon_loads, url);
+		g_object_unref(texture);    /* the loader keeps it in its caches */
+		if (gtkblist != NULL)
+			refresh_game_icon_rows(url);
+	}
+	g_free(url);
+}
+
+/* A new reference, or NULL (and maybe a load started). */
+static GdkTexture *
+game_icon_texture(const char *url)
+{
+	PidginImageLoader *loader = pidgin_image_loader_get_default();
+	GdkTexture *texture;
+
+	if (url == NULL || loader == NULL || !pidgin_image_loader_is_allowed(loader, url))
+		return NULL;
+	if ((texture = pidgin_image_loader_lookup_cached(loader, url)) != NULL)
+		return texture;
+	if (game_icon_loads == NULL)
+		game_icon_loads = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	if (!g_hash_table_contains(game_icon_loads, url)) {
+		g_hash_table_insert(game_icon_loads, g_strdup(url), GINT_TO_POINTER(1));
+		pidgin_image_loader_load_async(loader, url, NULL, game_icon_loaded_cb, g_strdup(url));
+	}
+	return NULL;
+}
+
+/* A picture @height px tall, keeping the texture's aspect. */
+static GtkWidget *
+game_picture_new(int height, const char *css_class)
+{
+	GtkWidget *picture = gtk_picture_new();
+
+	gtk_picture_set_can_shrink(GTK_PICTURE(picture), TRUE);
+	gtk_picture_set_content_fit(GTK_PICTURE(picture), GTK_CONTENT_FIT_CONTAIN);
+	gtk_widget_set_valign(picture, GTK_ALIGN_CENTER);
+	gtk_widget_set_halign(picture, GTK_ALIGN_START);
+	gtk_widget_add_css_class(picture, css_class);
+	g_object_set_data(G_OBJECT(picture), "pidgin-game-height", GINT_TO_POINTER(height));
+	return picture;
+}
+
+static void
+game_picture_sync(GtkWidget *picture, GParamSpec *pspec, gpointer data)
+{
+	GdkPaintable *p = gtk_picture_get_paintable(GTK_PICTURE(picture));
+	int height = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(picture), "pidgin-game-height"));
+	int w = p ? gdk_paintable_get_intrinsic_width(p) : 0;
+	int h = p ? gdk_paintable_get_intrinsic_height(p) : 0;
+
+	gtk_widget_set_visible(picture, p != NULL);
+	if (w > 0 && h > 0)
+		gtk_widget_set_size_request(picture, MAX(1, w * height / h), height);
+}
+
 /* Pidgin 2's pidgin_blist_get_emblem(). Returns a new reference or NULL. */
 static GIcon *
 node_emblem(PurpleBlistNode *node)
@@ -559,7 +686,7 @@ refresh_buddy_row(PidginBlistNodeItem *item, PurpleBlistNode *node,
 	char *idle_short = NULL;
 	const char *name;
 	GIcon *status, *emblem;
-	GdkTexture *texture = NULL;
+	GdkTexture *texture = NULL, *game_icon = NULL;
 
 	/* Name */
 	if (contact_row && contact != NULL && contact->alias != NULL)
@@ -646,10 +773,15 @@ refresh_buddy_row(PidginBlistNodeItem *item, PurpleBlistNode *node,
 
 	status = g_themed_icon_new(buddy_status_icon_name(buddy));
 	emblem = node_emblem(node);
+	/* M9: the game's picture next to its name (on the second line, so
+	 * with Buddy Details) */
+	if (gtkblist->biglist && purple_presence_is_online(presence))
+		game_icon = game_icon_texture(presence_game_icon_url(presence));
 
 	g_object_set(item,
 		"name", nametext,
 		"secondary", secondary,
+		"game-icon", game_icon,
 		"idle", idle_short,
 		"status-icon", status,
 		"emblem", emblem,
@@ -661,6 +793,7 @@ refresh_buddy_row(PidginBlistNodeItem *item, PurpleBlistNode *node,
 	g_clear_object(&status);
 	g_clear_object(&emblem);
 	g_clear_object(&texture);
+	g_clear_object(&game_icon);
 	g_free(nametext);
 	g_free(statustext);
 	g_free(idle_long);
@@ -724,6 +857,7 @@ blist_refresh_item(PidginBlistNodeItem *item)
 			g_object_set(item,
 				"name", mark,
 				"secondary", NULL,
+				"game-icon", NULL,
 				"idle", NULL,
 				"status-icon", status,
 				"emblem", NULL,
@@ -1188,6 +1322,24 @@ tooltip_block(PurpleBlistNode *node, gboolean full)
 		gtk_box_append(GTK_BOX(vbox), tooltip_label(text));
 	g_free(text);
 
+	/* M9: the game's picture, larger */
+	if (PURPLE_BLIST_NODE_IS_BUDDY(node) || PURPLE_BLIST_NODE_IS_CONTACT(node)) {
+		PurpleBuddy *buddy = node_buddy(node);
+		PurplePresence *presence = buddy ? purple_buddy_get_presence(buddy) : NULL;
+		GdkTexture *game = presence && purple_presence_is_online(presence)
+			? game_icon_texture(presence_game_icon_url(presence)) : NULL;
+
+		if (game != NULL) {
+			GtkWidget *picture = game_picture_new(46, "pidgin-blist-tooltip-game-icon");
+
+			gtk_picture_set_paintable(GTK_PICTURE(picture), GDK_PAINTABLE(game));
+			game_picture_sync(picture, NULL, NULL);
+			gtk_widget_set_tooltip_text(picture, presence_game(presence));
+			gtk_box_append(GTK_BOX(vbox), picture);
+			g_object_unref(game);
+		}
+	}
+
 	texture = node_icon_texture(node);
 	if (texture != NULL) {
 		GtkWidget *picture = gtk_image_new_from_paintable(GDK_PAINTABLE(texture));
@@ -1230,6 +1382,13 @@ tooltip_widget(PurpleBlistNode *node)
 	return vbox;
 }
 
+GtkWidget *
+pidgin_blist_tooltip_widget_new(PurpleBlistNode *node)
+{
+	g_return_val_if_fail(node != NULL && gtkblist != NULL, NULL);
+	return tooltip_widget(node);
+}
+
 /**************************************************************************
  * Rows
  **************************************************************************/
@@ -1240,6 +1399,7 @@ typedef struct {
 	GtkWidget *status;
 	GtkWidget *name;
 	GtkWidget *secondary;
+	GtkWidget *game_icon;
 	GtkWidget *idle;
 	GtkWidget *emblem;
 	GtkWidget *protocol;
@@ -1795,7 +1955,18 @@ factory_setup_cb(GtkSignalListItemFactory *factory, GObject *object, gpointer da
 	gtk_label_set_xalign(GTK_LABEL(r->secondary), 0.0);
 	gtk_label_set_ellipsize(GTK_LABEL(r->secondary), PANGO_ELLIPSIZE_END);
 	gtk_widget_add_css_class(r->secondary, "pidgin-blist-status-text");
-	gtk_box_append(GTK_BOX(vbox), r->secondary);
+	/* M9: the game's picture before the second line ("Playing ...") */
+	{
+		GtkWidget *line = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+
+		r->game_icon = game_picture_new(18, "pidgin-blist-game-icon");
+		g_signal_connect(r->game_icon, "notify::paintable", G_CALLBACK(game_picture_sync), NULL);
+		gtk_widget_set_visible(r->game_icon, FALSE);
+		gtk_box_append(GTK_BOX(line), r->game_icon);
+		gtk_widget_set_hexpand(r->secondary, TRUE);
+		gtk_box_append(GTK_BOX(line), r->secondary);
+		gtk_box_append(GTK_BOX(vbox), line);
+	}
 
 	r->idle = gtk_label_new(NULL);
 	gtk_widget_add_css_class(r->idle, "pidgin-blist-idle-time");
@@ -1864,6 +2035,7 @@ factory_bind_cb(GtkSignalListItemFactory *factory, GObject *object, gpointer dat
 	bind_prop(r, "name", r->name, "label");
 	bind_prop(r, "secondary", r->secondary, "label");
 	bind_visible(r, "secondary", r->secondary, TRUE);
+	bind_prop(r, "game-icon", r->game_icon, "paintable");
 	bind_prop(r, "idle", r->idle, "label");
 	bind_visible(r, "idle", r->idle, TRUE);
 	bind_prop(r, "status-icon", r->status, "gicon");

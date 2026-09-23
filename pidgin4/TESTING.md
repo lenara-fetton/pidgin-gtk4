@@ -728,6 +728,11 @@ in a DM and in a small server channel.
 - [ ] A friend who is playing shows the game emblem on the buddy row and
       "In game <name>" as the secondary line (large list), and the game in
       the tooltip. When they stop, the emblem and the line go.
+- [ ] With the plugin's `game_icon_url` (branch pidgin4-rich-presence):
+      the game's capsule picture sits before that line (about 18 px tall,
+      its aspect kept) once it has loaded, and larger (46 px tall) in the
+      tooltip; it goes with the game. A second friend in the same game
+      shows it at once (cached).
 - [ ] A non-Steam game shows its name too ("In non-Steam game …").
 - [ ] Steam Guard and login are unchanged; Pidgin 2 shows friends' games
       as before.
@@ -970,7 +975,10 @@ For headless test runs only:
   `urn:xmpp:omemo:2` message); the XMPP account editor's
   `mam_prefs_always` check box (label, on by default); and a buddy's
   idle time on its row and in its tooltip after
-  `purple_prpl_got_user_idle()`. It removes its account and quits with
+  `purple_prpl_got_user_idle()`; and (M9) a buddy in a game with a
+  `game_icon_url` served by the local server: the picture on the row
+  item, on the row (18 px tall) and in the tooltip (46 px), gone with
+  the game. It removes its account and quits with
   status 0 ("PASS (N checks)"). Scratch profile only.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`

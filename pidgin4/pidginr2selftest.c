@@ -193,6 +193,12 @@ st_status_types(PurpleAccount *account)
 		"invisible", NULL, TRUE));
 	types = g_list_append(types, purple_status_type_new(PURPLE_STATUS_OFFLINE,
 		"offline", NULL, TRUE));
+	/* Steam's rich presence (M9): an independent "ingame" status */
+	types = g_list_append(types, purple_status_type_new_with_attrs(PURPLE_STATUS_AVAILABLE,
+		"ingame", "In game", FALSE, FALSE, TRUE,
+		"game", "Game", purple_value_new(PURPLE_TYPE_STRING),
+		"game_icon_url", "Game icon", purple_value_new(PURPLE_TYPE_STRING),
+		NULL));
 	return types;
 }
 
@@ -723,6 +729,7 @@ test_invisible(void)
 static SoupServer *server = NULL;
 static char *server_base = NULL;
 static GBytes *pic_png = NULL;
+static GBytes *capsule_png = NULL;     /* a Steam-like 184x69 game capsule */
 
 static GBytes *
 make_png(int width, int height, guint8 red)
@@ -755,6 +762,11 @@ server_cb(SoupServer *srv, SoupServerMessage *msg, const char *path, GHashTable 
 		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
 		                                 g_bytes_get_data(pic_png, NULL),
 		                                 g_bytes_get_size(pic_png));
+	} else if (g_str_has_prefix(path, "/r2/capsule")) {
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
+		                                 g_bytes_get_data(capsule_png, NULL),
+		                                 g_bytes_get_size(capsule_png));
 	} else {
 		soup_server_message_set_status(msg, 404, NULL);
 	}
@@ -767,6 +779,7 @@ server_start(void)
 	GSList *uris;
 
 	pic_png = make_png(64, 48, 0x22);
+	capsule_png = make_png(184, 69, 0x66);
 	server = soup_server_new(NULL, NULL);
 	soup_server_add_handler(server, NULL, server_cb, NULL, NULL);
 	if (!soup_server_listen_local(server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error)) {
@@ -792,6 +805,7 @@ server_stop(void)
 	}
 	g_clear_pointer(&server_base, g_free);
 	g_clear_pointer(&pic_png, g_bytes_unref);
+	g_clear_pointer(&capsule_png, g_bytes_unref);
 	pidgin_conv_meta_set_share_protocol_for_tests(NULL);
 	pidgin_image_loader_set_allow_http_for_tests(pidgin_image_loader_get_default(), FALSE);
 }
@@ -893,7 +907,7 @@ test_file_shares(void)
 	int width = 0, height = 0;
 	gboolean playback;
 
-	if (!server_start()) {
+	if (server == NULL) {
 		CHECK(FALSE, "no local server");
 		return;
 	}
@@ -901,7 +915,7 @@ test_file_shares(void)
 	spin(200);
 	CHECK(conv != NULL && PIDGIN_CONVERSATION(conv) != NULL, "no conversation");
 	if (conv == NULL)
-		goto out;
+		return;
 	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
 	view = GTK_WIDGET(view_of(conv));
 
@@ -1076,8 +1090,6 @@ test_file_shares(void)
 	g_free(thumb);
 	purple_conversation_destroy(conv);
 	spin(100);
-out:
-	server_stop();
 }
 
 /**************************************************************************
@@ -1345,6 +1357,146 @@ test_idle(void)
 }
 
 /**************************************************************************
+ * M9 addendum: the game's picture (a "game_icon_url" status attribute)
+ **************************************************************************/
+
+#define GAMER "gamer@example.invalid"
+
+static gboolean
+item_has_game_icon(gpointer data)
+{
+	GdkPaintable *p = NULL;
+	gboolean ret;
+
+	g_object_get(data, "game-icon", &p, NULL);
+	ret = p != NULL;
+	g_clear_object(&p);
+	return ret;
+}
+
+/* Scrolls the buddy list to @item's row (rows exist only on screen). */
+static void
+scroll_to_item(PidginBlistNodeItem *item)
+{
+	GtkWidget *list = find_type(pidgin_blist_get_window(), GTK_TYPE_LIST_VIEW);
+	GListModel *model = list ? G_LIST_MODEL(gtk_list_view_get_model(GTK_LIST_VIEW(list)))
+	                         : NULL;
+	guint i, n = model ? g_list_model_get_n_items(model) : 0;
+
+	for (i = 0; i < n; i++) {
+		GtkTreeListRow *row = g_list_model_get_item(model, i);
+		gpointer it = gtk_tree_list_row_get_item(row);
+		gboolean hit = it == (gpointer)item;
+
+		g_object_unref(it);
+		g_object_unref(row);
+		if (hit) {
+			gtk_list_view_scroll_to(GTK_LIST_VIEW(list), i, GTK_LIST_SCROLL_NONE, NULL);
+			return;
+		}
+	}
+}
+
+/* A row picture showing @paintable. */
+static GtkWidget *
+find_picture(GtkWidget *widget, const char *css_class, GdkPaintable *paintable)
+{
+	GtkWidget *child, *found;
+
+	if (widget == NULL)
+		return NULL;
+	if (GTK_IS_PICTURE(widget) && gtk_widget_has_css_class(widget, css_class) &&
+	    gtk_picture_get_paintable(GTK_PICTURE(widget)) == paintable)
+		return widget;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if ((found = find_picture(child, css_class, paintable)) != NULL)
+			return found;
+	return NULL;
+}
+
+static void
+test_game_icon(void)
+{
+	PurpleGroup *group = purple_group_new("pidgin4 r2 selftest game");
+	PurpleBuddy *buddy;
+	PidginBlistNodeItem *item;
+	GdkPaintable *icon = NULL;
+	GtkWidget *tip, *pic;
+	char *url;
+	int w = 0, h = 0;
+
+	if (server == NULL || !purple_prefs_get_bool(PIDGIN_PREFS_ROOT "/blist/show_buddy_icons")) {
+		g_print(R2 ": no server or no Buddy Details; game icon not checked\n");
+		return;
+	}
+	url = g_strconcat(server_base, "/r2/capsule_184x69.png", NULL);
+	pidgin_image_loader_allow_uri(pidgin_image_loader_get_default(), url);
+
+	purple_blist_add_group(group, NULL);
+	buddy = purple_buddy_new(r2_account, GAMER, "Gamer");
+	purple_blist_add_buddy(buddy, NULL, group, NULL);
+	purple_prpl_got_user_status(r2_account, GAMER, "available", NULL);
+	purple_prpl_got_user_status(r2_account, GAMER, "ingame", "game", "Portal 2",
+	                            "game_icon_url", url, NULL);
+	spin(100);
+
+	item = pidgin_blist_model_lookup(pidgin_blist_get_model(),
+	                                 (PurpleBlistNode *)purple_buddy_get_contact(buddy));
+	CHECK(item != NULL, "no row item for the gamer");
+	if (item == NULL)
+		goto out;
+	pidgin_selftest_wait(item_has_game_icon, item, 5000);
+	g_object_get(item, "game-icon", &icon, NULL);
+	CHECK(icon != NULL && gdk_paintable_get_intrinsic_width(icon) == 184,
+	      "no game icon on the row item");
+	{
+		char *secondary = NULL;
+
+		g_object_get(item, "secondary", &secondary, NULL);
+		CHECK(secondary != NULL && strstr(secondary, "Portal 2") != NULL,
+		      "no game on the second line: %s", secondary);
+		g_free(secondary);
+	}
+	if (icon == NULL)
+		goto out;
+
+	/* the row: a small picture, 18 px tall, the capsule's aspect */
+	scroll_to_item(item);
+	spin(300);
+	pic = find_picture(pidgin_blist_get_window(), "pidgin-blist-game-icon", icon);
+	CHECK(pic != NULL && gtk_widget_get_visible(pic), "no game picture on the row");
+	if (pic != NULL) {
+		gtk_widget_get_size_request(pic, &w, &h);
+		CHECK(h == 18 && w == 184 * 18 / 69, "row picture %dx%d", w, h);
+	}
+
+	/* the tooltip: larger */
+	tip = g_object_ref_sink(pidgin_blist_tooltip_widget_new(
+		(PurpleBlistNode *)purple_buddy_get_contact(buddy)));
+	pic = find_class(tip, "pidgin-blist-tooltip-game-icon", NULL);
+	CHECK(pic != NULL && gtk_picture_get_paintable(GTK_PICTURE(pic)) != NULL,
+	      "no game picture in the tooltip");
+	if (pic != NULL) {
+		gtk_widget_get_size_request(pic, &w, &h);
+		CHECK(h == 46 && w == 184 * 46 / 69, "tooltip picture %dx%d", w, h);
+		CHECK(purple_strequal(gtk_widget_get_tooltip_text(pic), "Portal 2"), "picture tip");
+	}
+	g_object_unref(tip);
+
+	/* the game ends: no picture */
+	purple_prpl_got_user_status_deactive(r2_account, GAMER, "ingame");
+	spin(100);
+	CHECK(!item_has_game_icon(item), "a game icon after the game");
+	g_clear_object(&icon);
+
+out:
+	purple_blist_remove_buddy(buddy);
+	purple_blist_remove_group(group);
+	g_free(url);
+}
+
+/**************************************************************************
  * Driver
  **************************************************************************/
 
@@ -1369,6 +1521,7 @@ selftest_run(gpointer data)
 	test_report_spam();
 	g_print(R2 ": invisible\n");
 	test_invisible();
+	server_start();
 	g_print(R2 ": file shares\n");
 	test_file_shares();
 	g_print(R2 ": encryption hint\n");
@@ -1377,6 +1530,8 @@ selftest_run(gpointer data)
 	test_account_editor();
 	g_print(R2 ": idle\n");
 	test_idle();
+	g_print(R2 ": game icon\n");
+	test_game_icon();
 
 done:
 	while (purple_get_conversations() != NULL)
@@ -1389,6 +1544,7 @@ done:
 		unpatch_protocol(r2_plugin);
 	pidgin_selftest_prpl_unregister();
 	pidgin_server_features_reset_cache();
+	server_stop();
 	g_clear_pointer(&ipc_last_report, g_free);
 
 	if (failures == 0)
