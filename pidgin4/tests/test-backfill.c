@@ -483,10 +483,16 @@ typedef struct {
 	guint files_total;
 } AsyncState;
 
+/* The thread that runs the tests: signals must be emitted there. */
+static GThread *test_thread = NULL;
+
 static void
 progress_cb(PidginBackfill *bf, guint files_done, guint files_total,
 		guint64 bytes_done, guint64 bytes_total, AsyncState *s)
 {
+	/* Owning the context is not enough: a worker that acquires the idle
+	 * context owns it too. */
+	g_assert_true(g_thread_self() == test_thread);
 	g_assert_true(g_main_context_is_owner(g_main_context_default()));
 	g_assert_cmpuint(files_done, <=, files_total);
 	g_assert_cmpuint(bytes_done, <=, bytes_total);
@@ -497,6 +503,7 @@ progress_cb(PidginBackfill *bf, guint files_done, guint files_total,
 static void
 finished_cb(PidginBackfill *bf, gboolean completed, AsyncState *s)
 {
+	g_assert_true(g_thread_self() == test_thread);
 	s->finished = TRUE;
 	s->completed = completed;
 	g_main_loop_quit(s->loop);
@@ -572,6 +579,38 @@ test_async(Fixture *f, gconstpointer cancel)
 	g_main_loop_unref(s.loop);
 }
 
+/* Progress while the main context is free between iterations, as it is
+ * under g_application_run() or a selftest's spin loop: it must still
+ * reach the main thread, not run on the worker that acquired the
+ * context (g_main_context_invoke() did that). */
+static void
+test_async_idle_context(Fixture *f, gconstpointer data)
+{
+	AsyncState s = { 0 };
+	gint64 until = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+
+	s.loop = g_main_loop_new(NULL, FALSE);
+	g_signal_connect(f->bf, "progress", G_CALLBACK(progress_cb), &s);
+	g_signal_connect(f->bf, "finished", G_CALLBACK(finished_cb), &s);
+
+	pidgin_backfill_start(f->bf);
+	while (!s.finished && g_get_monotonic_time() < until) {
+		g_main_context_iteration(NULL, FALSE);
+		g_usleep(1000);
+	}
+	/* Progress is idle priority; "finished" can overtake it. */
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+
+	g_assert_true(s.finished);
+	g_assert_true(s.completed);
+	g_assert_cmpuint(s.progress, >=, 1);
+	g_assert_cmpint(pidgin_message_index_count(f->idx), ==, FIXTURE_ROWS);
+
+	g_signal_handlers_disconnect_by_data(f->bf, &s);
+	g_main_loop_unref(s.loop);
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -580,6 +619,7 @@ main(int argc, char *argv[])
 	tzset();
 
 	g_test_init(&argc, &argv, NULL);
+	test_thread = g_thread_self();
 
 #define ADD(name, func, data) \
 	g_test_add(name, Fixture, data, fixture_setup, func, fixture_teardown)
@@ -590,6 +630,7 @@ main(int argc, char *argv[])
 	ADD("/backfill/live-rows-linked", test_live_rows_linked, NULL);
 	ADD("/backfill/async-resume", test_async, GINT_TO_POINTER(FALSE));
 	ADD("/backfill/async-cancel", test_async, GINT_TO_POINTER(TRUE));
+	ADD("/backfill/async-idle-context", test_async_idle_context, NULL);
 
 	return g_test_run();
 }
