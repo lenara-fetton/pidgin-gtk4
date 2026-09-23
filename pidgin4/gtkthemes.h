@@ -44,4 +44,12 @@ void pidgin_themes_reload_user_css(void);
 /** The last parse error of gtk4.css, or NULL. */
 const char *pidgin_themes_get_user_css_error(void);
 
+/**
+ * The CSS currently generated from the conversation font prefs
+ * (/pidgin/conversations/use_theme_font and custom_font) for the classes
+ * .pidgin-compose-entry and .pidgin-conversation-font (M4b: add the
+ * latter to the message view). Valid until the next call.
+ */
+const char *pidgin_themes_get_conversation_font_css(void);
+
 #endif /* _PIDGINTHEMES_H_ */
