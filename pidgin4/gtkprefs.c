@@ -166,6 +166,12 @@ prefs_register_pidgin4(void)
 	purple_prefs_add_none(CONV4_PREFS);
 	purple_prefs_add_string(CONV4_PREFS "/placement", "last");
 	purple_prefs_add_bool(CONV4_PREFS "/show_send_button", FALSE);
+
+	/* Secondary windows (everything but the buddy list and the
+	 * conversation windows) are transient for the buddy list, so tiling
+	 * compositors float them: pidgin_window_set_secondary(). */
+	purple_prefs_add_none(PIDGIN4_PREFS_ROOT "/windows");
+	purple_prefs_add_bool(PIDGIN_PREF_SECONDARY_TRANSIENT, TRUE);
 }
 
 /*
@@ -359,6 +365,11 @@ interface_page(void)
 	note_label(vbox, _("Quit with Buddies \342\206\222 Quit or Ctrl+Q. Until "
 		"the system tray icon exists, a hidden buddy list comes back when "
 		"Pidgin is started again."));
+
+	vbox = pidgin_make_frame(ret, _("Windows"));
+	checkbox(vbox, _("Secondary windows are dialogs of the buddy list "
+		"(float on tiling compositors)"), PIDGIN_PREF_SECONDARY_TRANSIENT);
+	note_label(vbox, _("Applies to windows opened after the change."));
 
 	vbox = pidgin_make_frame(ret, _("Conversation Window"));
 	dropdown_string(vbox, _("_Hide new IM conversations:"),
@@ -1781,6 +1792,7 @@ pidgin_prefs_show(void)
 	add_page("status", _("Status / Idle"), away_page());
 	add_page("index", _("Message Index"), index_page());
 
+	pidgin_window_set_secondary(GTK_WINDOW(prefs_window));
 	gtk_window_present(GTK_WINDOW(prefs_window));
 }
 

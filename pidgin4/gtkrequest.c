@@ -48,6 +48,8 @@
 #include "prefs.h"
 #include "util.h"
 
+#include "gtkconv.h"
+#include "gtkconvwin.h"
 #include "gtkrequest.h"
 #include "gtkutils.h"
 #include "pidgincompletion.h"
@@ -135,6 +137,27 @@ decorate_account(GtkWidget *hbox, PurpleAccount *account)
 static gboolean request_window_close_cb(GtkWindow *window, PidginRequestData *data);
 
 /*
+ * The transient parent of a request: the window of the conversation it
+ * belongs to. NULL leaves it to pidgin_window_set_secondary(), i.e. the
+ * buddy list. (Not the active window: requests arrive asynchronously, and
+ * chaining them onto whatever dialog has the focus is surprising.)
+ */
+static GtkWindow *
+request_parent(PurpleConversation *conv)
+{
+	if (conv != NULL && g_list_find(purple_get_conversations(), conv) != NULL &&
+	    PIDGIN_IS_PIDGIN_CONVERSATION(conv) && PIDGIN_CONVERSATION(conv) != NULL) {
+		PidginWindow *win = pidgin_conv_get_window(PIDGIN_CONVERSATION(conv));
+		GtkWidget *w = win ? pidgin_conv_window_get_window(win) : NULL;
+
+		if (w != NULL && !pidgin_conv_window_is_hidden(win) &&
+		    gtk_widget_get_visible(w))
+			return GTK_WINDOW(w);
+	}
+	return NULL;
+}
+
+/*
  * Creates the request window with its header (icon, primary and secondary
  * text, account icon). Returns the header's horizontal box.
  */
@@ -142,12 +165,18 @@ static GtkWidget *
 request_window_new(PidginRequestData *data, const char *title,
                    const char *role, const char *icon_name,
                    const char *primary, const char *secondary,
-                   PurpleAccount *account, gboolean resizable)
+                   PurpleAccount *account, PurpleConversation *conv,
+                   gboolean resizable)
 {
 	GtkWidget *dialog, *hbox;
+	GtkWindow *parent = request_parent(conv);
 
 	dialog = pidgin_dialog_new(title ? title : PIDGIN_ALERT_TITLE,
-	                           pidgin_get_active_window(), role, resizable);
+	                           parent, role, resizable);
+	/* A conversation's request stays with its window; the others are
+	 * dialogs of the buddy list. */
+	if (parent == NULL)
+		pidgin_window_set_secondary(GTK_WINDOW(dialog));
 	data->dialog = dialog;
 	g_object_add_weak_pointer(G_OBJECT(dialog), (gpointer *)&data->dialog);
 
@@ -416,7 +445,7 @@ pidgin_request_input(const char *title, const char *primary,
 	data->u.input.hint = g_strdup(hint);
 
 	request_window_new(data, title, "input", ICON_QUESTION, primary, secondary,
-	                   account, multiline);
+	                   account, conv, multiline);
 	content = pidgin_dialog_get_content_area(data->dialog);
 
 	if (multiline) {
@@ -515,7 +544,7 @@ pidgin_request_choice(const char *title, const char *primary,
 	data->u.choice.radios = g_ptr_array_new();
 
 	request_window_new(data, title, "choice", ICON_QUESTION, primary, secondary,
-	                   account, FALSE);
+	                   account, conv, FALSE);
 	content = pidgin_dialog_get_content_area(data->dialog);
 
 	vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, PIDGIN_HIG_BOX_SPACE);
@@ -645,7 +674,7 @@ pidgin_request_action_with_icon(const char *title, const char *primary,
 
 	hbox = request_window_new(data, title, "action",
 	                          icon ? NULL : ICON_QUESTION,
-	                          primary, secondary, account, FALSE);
+	                          primary, secondary, account, conv, FALSE);
 	if (icon != NULL)
 		gtk_box_prepend(GTK_BOX(hbox), icon);
 
@@ -1207,7 +1236,7 @@ pidgin_request_fields(const char *title, const char *primary,
 	data->cbs[1] = cancel_cb;
 
 	request_window_new(data, title, "multifield", ICON_QUESTION, primary,
-	                   secondary, account, TRUE);
+	                   secondary, account, conv, TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(data->dialog), 460, -1);
 	content = pidgin_dialog_get_content_area(data->dialog);
 
@@ -1572,11 +1601,11 @@ pidgin_request_file(const char *title, const char *filename,
 	}
 
 	if (savedialog)
-		gtk_file_dialog_save(dialog, pidgin_get_active_window(),
+		gtk_file_dialog_save(dialog, pidgin_get_dialog_parent(),
 		                     data->u.file.cancellable, file_dialog_done_cb,
 		                     file_closure_new(data));
 	else
-		gtk_file_dialog_open(dialog, pidgin_get_active_window(),
+		gtk_file_dialog_open(dialog, pidgin_get_dialog_parent(),
 		                     data->u.file.cancellable, file_dialog_done_cb,
 		                     file_closure_new(data));
 	g_object_unref(dialog);
@@ -1615,7 +1644,7 @@ pidgin_request_folder(const char *title, const char *dirname,
 		g_object_unref(folder);
 	}
 
-	gtk_file_dialog_select_folder(dialog, pidgin_get_active_window(),
+	gtk_file_dialog_select_folder(dialog, pidgin_get_dialog_parent(),
 	                              data->u.file.cancellable, file_dialog_done_cb,
 	                              file_closure_new(data));
 	g_object_unref(dialog);

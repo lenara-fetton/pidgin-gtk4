@@ -498,6 +498,7 @@ pidgin_roomlist_dialog_new_with_account(PurpleAccount *account)
 
 	update_buttons(dialog);
 
+	pidgin_window_set_secondary(GTK_WINDOW(window));
 	gtk_window_present(GTK_WINDOW(window));
 	return dialog;
 }

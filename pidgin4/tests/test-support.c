@@ -11,6 +11,8 @@
 
 #include "util.h"
 
+#include "gtkblist.h"
+#include "gtkconvwin.h"
 #include "test-support.h"
 
 static char *profile_dir;
@@ -23,6 +25,26 @@ pidgin_application_get(void)
 	GApplication *app = g_application_get_default();
 
 	return GTK_IS_APPLICATION(app) ? GTK_APPLICATION(app) : NULL;
+}
+
+/* pidgin_window_set_secondary() (gtkutils.c) looks for the buddy list and
+ * the conversation windows; tests have neither. */
+GtkWidget *
+pidgin_blist_get_window(void)
+{
+	return NULL;
+}
+
+GList *
+pidgin_conv_windows_get_list(void)
+{
+	return NULL;
+}
+
+GtkWidget *
+pidgin_conv_window_get_window(PidginWindow *win)
+{
+	return NULL;
 }
 
 void

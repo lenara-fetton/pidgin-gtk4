@@ -1448,7 +1448,7 @@ pidgin_account_dialog_show(PidginAccountDialogType type,
 	if (accounts_window != NULL && gtk_widget_get_visible(accounts_window->window))
 		parent = GTK_WINDOW(accounts_window->window);
 	else
-		parent = pidgin_get_active_window();
+		parent = NULL;	/* pidgin_window_set_secondary() below */
 
 	dialog->window = win = pidgin_dialog_new(
 		(type == PIDGIN_ADD_ACCOUNT_DIALOG) ? _("Add Account") : _("Modify Account"),
@@ -1525,6 +1525,7 @@ pidgin_account_dialog_show(PidginAccountDialogType type,
 	}
 
 	/* Show the window. */
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 	if (!account)
 		gtk_widget_grab_focus(dialog->protocol_menu);
@@ -2092,6 +2093,7 @@ pidgin_accounts_window_show(void)
 	populate_accounts_list(dialog);
 	update_buttons_sensitivity();
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 
 	/* No-op unless PIDGIN4_ACCOUNT_SELFTEST is set. */

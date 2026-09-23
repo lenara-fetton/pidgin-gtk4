@@ -601,7 +601,7 @@ create_window(PurpleAccount *account)
 	GtkNoSelection *selection;
 
 	omemo_window = win = g_new0(OmemoWindow, 1);
-	win->window = pidgin_dialog_new(_("OMEMO Fingerprints"), pidgin_get_active_window(),
+	win->window = pidgin_dialog_new(_("OMEMO Fingerprints"), NULL,
 	                                "omemo", TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(win->window), 820, 480);
 	g_signal_connect(win->window, "destroy", G_CALLBACK(window_destroy_cb), NULL);
@@ -715,6 +715,7 @@ pidgin_omemo_show_fingerprints(PurpleAccount *account, const char *jid)
 		g_free(bare);
 	}
 	refresh();
+	pidgin_window_set_secondary(GTK_WINDOW(omemo_window->window));
 	gtk_window_present(GTK_WINDOW(omemo_window->window));
 }
 

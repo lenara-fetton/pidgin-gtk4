@@ -587,6 +587,7 @@ pidgin_status_window_show(void)
 
 	populate_saved_status_list(dialog);
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 
@@ -1014,7 +1015,7 @@ pidgin_status_editor_show(gboolean edit, PurpleSavedStatus *saved_status)
 	if (edit)
 		dialog->original_title = g_strdup(purple_savedstatus_get_title(saved_status));
 
-	dialog->window = win = pidgin_dialog_new(_("Status"), pidgin_get_active_window(),
+	dialog->window = win = pidgin_dialog_new(_("Status"), NULL,
 	                                         "status", TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(win), 480, -1);
 	g_signal_connect(win, "destroy", G_CALLBACK(status_editor_destroy_cb), dialog);
@@ -1105,6 +1106,7 @@ pidgin_status_editor_show(gboolean edit, PurpleSavedStatus *saved_status)
 	g_signal_connect(dialog->title, "changed", G_CALLBACK(editor_title_changed_cb), dialog);
 	editor_title_changed_cb(GTK_EDITABLE(dialog->title), dialog);
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 
@@ -1287,6 +1289,7 @@ edit_substatus(StatusEditor *status_editor, PurpleAccount *account)
 	                 G_CALLBACK(substatus_selection_changed_cb), dialog);
 	substatus_selection_changed_cb(G_OBJECT(dialog->box), NULL, dialog);
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 

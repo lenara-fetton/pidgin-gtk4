@@ -677,6 +677,7 @@ pidgin_debug_window_show_for_session(void)
 	if (debug_win == NULL)
 		debug_win = debug_window_new();
 
+	pidgin_window_set_secondary(GTK_WINDOW(debug_win->window));
 	gtk_window_present(GTK_WINDOW(debug_win->window));
 }
 

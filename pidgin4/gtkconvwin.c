@@ -43,6 +43,7 @@
 #include "gtkconv.h"
 #include "gtkconvwin.h"
 #include "gtkdialogs.h"
+#include "gtkutils.h"
 
 #define CONV_PREFS PIDGIN_PREFS_ROOT "/conversations"
 #define CONV4_PREFS PIDGIN4_PREFS_ROOT "/conversations"
@@ -782,6 +783,10 @@ window_new(gboolean hidden)
 		MAX(purple_prefs_get_int(CONV4_PREFS "/height"), 150));
 	gtk_widget_add_css_class(win->window, "pidgin-conv-window");
 	g_object_set_data(G_OBJECT(win->window), "PidginWindow", win);
+	/* Tiles; a parent for secondary windows while the buddy list is
+	 * hidden (gtkutils.c). */
+	if (!hidden)
+		pidgin_window_set_primary(GTK_WINDOW(win->window));
 
 	win->actions = g_simple_action_group_new();
 	g_action_map_add_action_entries(G_ACTION_MAP(win->actions), window_actions,

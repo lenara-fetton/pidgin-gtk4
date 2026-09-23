@@ -3103,8 +3103,8 @@ make_blist_request_dialog(BlistRequestData *data, PurpleAccount *account,
 	GtkWidget *vbox, *content;
 
 	data->account = account;
-	data->window = pidgin_dialog_new(title, GTK_WINDOW(gtkblist ? gtkblist->window : NULL),
-	                                 "blist-request", FALSE);
+	data->window = pidgin_dialog_new(title, NULL, "blist-request", FALSE);
+	pidgin_window_set_secondary(GTK_WINDOW(data->window));
 	g_object_set_data_full(G_OBJECT(data->window), "pidgin-blist-request", data,
 	                       (GDestroyNotify)blist_request_data_free);
 
@@ -4727,6 +4727,8 @@ build_window(void)
 
 	window = gtk_application_window_new(pidgin_application_get());
 	gtkblist->window = window;
+	/* Tiles; the parent of secondary windows (gtkutils.c). */
+	pidgin_window_set_primary(GTK_WINDOW(window));
 	gtk_window_set_title(GTK_WINDOW(window), _("Buddy List"));
 	gtk_window_set_default_size(GTK_WINDOW(window),
 		purple_prefs_get_int(BLIST4_PREFS "/width"),

@@ -1170,6 +1170,7 @@ display_log_viewer(PidginLogViewer *lv, const char *title, GtkWidget *icon, gint
 
 	populate_log_tree(lv);
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 	return lv;
 }

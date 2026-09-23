@@ -491,6 +491,7 @@ plugin_config_show(PurplePlugin *plug)
 
 	g_hash_table_insert(config_windows, plug, window);
 	g_signal_connect(window, "destroy", G_CALLBACK(config_window_destroy_cb), plug);
+	pidgin_window_set_secondary(GTK_WINDOW(window));
 	gtk_window_present(GTK_WINDOW(window));
 	return window;
 }
@@ -911,7 +912,7 @@ pidgin_plugin_dialog_show(void)
 	probe_new_plugins();
 
 	plugin_dialog = dialog = g_new0(PluginDialog, 1);
-	dialog->window = win = pidgin_dialog_new(_("Plugins"), pidgin_get_active_window(),
+	dialog->window = win = pidgin_dialog_new(_("Plugins"), NULL,
 	                                         "plugins", TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(win), 600, 560);
 	g_signal_connect(win, "destroy", G_CALLBACK(plugin_dialog_destroy_cb), NULL);
@@ -960,6 +961,7 @@ pidgin_plugin_dialog_show(void)
 	populate_store();
 	update_details();
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 

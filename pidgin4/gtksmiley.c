@@ -338,6 +338,7 @@ editor_open(GtkWindow *parent, PurpleSmiley *smiley)
 	if (parent == NULL && smiley_manager != NULL)
 		parent = GTK_WINDOW(smiley_manager->window);
 	ed = editor_new(parent, smiley);
+	pidgin_window_set_secondary(GTK_WINDOW(ed->window));
 	gtk_window_present(GTK_WINDOW(ed->window));
 	gtk_widget_grab_focus(ed->entry);
 	return ed;
@@ -581,7 +582,7 @@ pidgin_smiley_manager_show(void)
 
 	smiley_manager = mgr = g_new0(SmileyManager, 1);
 	mgr->window = win = pidgin_dialog_new(_("Custom Smiley Manager"),
-		pidgin_get_active_window(), "custom_smileys", TRUE);
+		NULL, "custom_smileys", TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(win), 360, 400);
 	g_signal_connect(win, "destroy", G_CALLBACK(manager_destroy_cb), NULL);
 	content = pidgin_dialog_get_content_area(win);
@@ -623,6 +624,7 @@ pidgin_smiley_manager_show(void)
 
 	refresh_list();
 	update_buttons();
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 

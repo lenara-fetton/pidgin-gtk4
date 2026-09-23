@@ -45,11 +45,12 @@ pidgin4_plugin_show_config(PurplePlugin *plugin)
 	}
 
 	window = pidgin_dialog_new(_(purple_plugin_get_name(plugin)),
-	                           pidgin_get_active_window(), "plugin_config", TRUE);
+	                           NULL, "plugin_config", TRUE);
 	content = pidgin_dialog_get_content_area(window);
 	gtk_widget_set_vexpand(frame, TRUE);
 	gtk_box_append(GTK_BOX(content), frame);
 	pidgin_dialog_add_button(window, _("_Close"), G_CALLBACK(config_close_cb), window);
+	pidgin_window_set_secondary(GTK_WINDOW(window));
 	gtk_window_present(GTK_WINDOW(window));
 	return window;
 }
