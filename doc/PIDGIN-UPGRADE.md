@@ -711,6 +711,52 @@ Prefs, pounces, saved statuses, log viewer, privacy, room list, certificate mana
 - Dialogs become async `GtkAlertDialog`/`GtkFileDialog`.
 - Whiteboard and media UIs are dropped.
 
+**Status: done, except the checks that need accounts signed in, which are left to the user** (the M5 section of `pidgin4/TESTING.md`).
+
+**What's in `pidgin4/`** (all lists are `GtkListView`/`GtkColumnView` over `GListModel`s, choices are `GtkDropDown`s, confirmations `GtkAlertDialog`, files `GtkFileDialog`/`GtkFileLauncher`; nothing deprecated):
+- **`gtkprefs.c`**: the preferences window, a `GtkStackSidebar` with the pages Interface, Conversations, Smiley Themes, Themes, Sounds, Network (with the global proxy), Browser, Logging, Status / Idle and Message Index. Widgets are bound to prefs both ways (no Apply). The font override uses `GtkFontDialogButton`, colours `GtkColorDialogButton`; the default-formatting preview is a `PidginRichLabel`, the conversation-font sample a `PidginComposeEntry`. The proxy type offers "Use System Proxy Settings" (libpurple's `envvar`, which is GProxyResolver since M1). The Message Index page shows the database size and row count, and starts, pauses, resumes and rebuilds (forget every log file, then backfill) the index. Sound Preview goes through `purple_sound_play_event()`, i.e. M6's sound UI ops, with the event/mute/status temporarily overridden as Pidgin 2's test did (not a new `pidgin_sound_play_file`: no such function is needed).
+- **`pidginprefbinding.[ch]`** (components library): `pidgin_pref_bind_bool/_int/_string/_path/_dropdown_string/_dropdown_int/_sensitive/_sensitive_string/_insensitive_string`, and the constructors `pidgin_pref_checkbox_new`, `_spin_new`, `_entry_new`, `_dropdown_string_new`, `_dropdown_int_new`. Bindings die with their widget.
+- **`gtkthemes.[ch]`**: `<profile>/pidgin4/gtk4.css` at `GTK_STYLE_PROVIDER_PRIORITY_USER`, watched with a `GFileMonitor` on its directory (reloads after a save, also by rename; parse errors are logged and shown on the Themes page, whose Open button creates the file with examples). It also turns the shared `use_theme_font`/`custom_font` prefs into CSS for `.pidgin-compose-entry` and `.pidgin-conversation-font`.
+- **`gtkpounce.c`**: manager (account, target, events, Recurring toggle) and editor (Pidgin 2's fields; message in a `PidginComposeEntry`); saving is Pidgin 2's `save_pounce_cb`, so `pounces.xml` is unchanged in format (byte-identical after edit+save without changes). The handler runs all five actions; popups use `purple_notify_info`. The registration moved here from `stubs.c`, which is gone.
+- **`gtksavedstatuses.c`**: the saved statuses window (Use, Add, Modify, Duplicate, Delete) and the editor with per-account substatuses; the status box's "New status…"/"Saved statuses…" open them. The status box's message is now a `PidginComposeEntry`.
+- **`gtklog.c`**: log viewer for buddies, contacts (all their buddies' logs), chats and the system log: a month tree (`GtkTreeListModel`), the log in a `PidginMessageView` (one row per line via the backfill line parsers), total size in the title, Delete (confirmed) and Browse folder. Search asks `PidginMessageIndex` for files it has indexed at their current size and scans the rest linearly in idle slices. Read-only otherwise.
+- **`gtkprivacy.c`**, **`gtkroomlist.c`**: Pidgin 2's behaviour and UI ops. The room list is a `GtkColumnView` over a `GtkTreeListModel` (categories expand lazily); XMPP rooms can be bookmarked through the jabber `bookmark-add` IPC.
+- **`gtkcertmgr.c`**: the `tls_peers` pool: view (subject, issuer, validity, SHA-1 and SHA-256), import, export, delete.
+- **`gtkft.c`**: the `PurpleXferUiOps` and the File Transfers window (progress bar per row, size, speed, remaining, status; Open File/Open Folder, Stop, Remove, Clear Finished). HTTP-upload transfers show as "Sending as <account>".
+- **`gtksmiley.c`**: custom smiley manager and editor.
+- **`gtkplugin.c`**, **`gtkpluginpref.c`** (components): the plugins dialog and the pref-frame converter; see below for the list and the GTK 2 guard.
+- **`pidginabout.c`**: About, Build Information (copyable) and Credits pages.
+- **`pidginomemo.c`**: OMEMO fingerprints window (own fingerprint, devices of our account, of every buddy and of a typed JID, with a trust drop-down), greyed out with a "Plugins…" button when `core-omemo` isn't loaded. Tools → OMEMO Fingerprints.
+- **`pidgincompletion.c`** (components): buddy-name completion popover; `gtkrequest.c` attaches it to "screenname" fields, which covers New IM, Get User Info and View User Log.
+- **`pidginselftest.[ch]`** and **`scripts/run-pidgin4-selftest.sh`**: `PIDGIN4_WINDOWS_SELFTEST=1|module,...`, `PIDGIN4_SELFTEST_SHOTS=DIR`.
+- The buddy list's Tools menu, the node menus' pounce and View Log items, the join-chat dialog's Room List button, the View User Log dialog and `gtkmain.c` (UI ops for xfers, privacy and room list; init/uninit) are wired to these windows. The join-chat dialog itself was already done in M3.
+
+**Helper APIs for other milestones:**
+- M4b: `pidgin_omemo_show_fingerprints(account, jid)` (conversation lock/toggle); `pidgin_smiley_add_from_image(parent, data, len, shortcut)` ("save as custom smiley"); `pidgin_log_show(type, name, account)` / `pidgin_log_show_contact()`; `pidgin_pounce_editor_show()`; `pidgin_xfer_dialog_show()`; `pidgin_roomlist_dialog_show_with_account()`; `pidgin_buddy_completion_attach(entry, account_dropdown, all_accounts)`. Please add the CSS class `pidgin-conversation-font` to the conversation's message view so the font override applies to it, and read `/pidgin4/conversations/placement` and `/pidgin4/conversations/show_send_button` (defined here; change the placement ids in `gtkprefs.c` if `pidgin_conv_placement_get_options()` uses others).
+- M6: the Sounds page writes `/pidgin4/sound/method` (`automatic` = GSound, `custom`, `none`) and `/pidgin4/sound/command` (`%s` = file); the shared `/pidgin/sound/enabled/*`, `/pidgin/sound/file/*`, `conv_focus`, `mute`, `volume` and `/purple/sound/while_status` keep Pidgin 2's meaning. Idle uses the shared `/purple/away/idle_reporting` (`system` = M6's Wayland/GNOME idle).
+- M7: `pidgin_plugin_pref_frame_to_widget(frame)` (alias `pidgin_plugin_pref_create_frame`), `PidginPluginUiInfo`/`PIDGIN_IS_PIDGIN_PLUGIN` in `gtkplugin.h` (Pidgin 2's layout), `pidgin_plugin_get_config_frame()`, the `pidgin_pref_bind_*` helpers.
+- Everyone: `pidgin_application_set_exit_status()`, `pidgin_selftest_*`.
+
+**Plugin list and GTK 2 plugins:** `pidgin_plugins_load_saved()` replaces `purple_plugins_load_saved()` and `pidgin_plugins_save()` writes `/pidgin4/plugins/loaded`; `/pidgin/plugins/loaded` is never read or written (the selftest checks it). Before probing or loading any file, `pidgin_plugin_file_is_foreign_toolkit()` reads its ELF `DT_NEEDED` entries (a bounds-checked parser, ELF32/64, no `dlopen`) and refuses `libgtk-x11-2.0`, `libgdk-x11-2.0`, `libgtk-3`, `libgdk-3` and similar; refused entries are dropped from the list. Tested: `/usr/lib64/pidgin/history.so` in `/pidgin4/plugins/loaded` is logged as refused, not loaded, and pidgin4 exits 0. Remaining risk: libpurple's own `purple_plugins_probe()` at startup dlopens every `.so` in the search paths before pidgin4 can check, so a GTK 2 plugin copied into `<profile>/pidgin4/plugins` by hand would still be mapped (the dialog then shows it greyed out). The system directories are not search paths (contract rule 3).
+
+**New `/pidgin4` prefs:** `sound/method`, `sound/command`, `browser/method`, `browser/command`, `conversations/placement`, `conversations/show_send_button`, `filetransfer/clear_finished`, `filetransfer/keep_open`, `pounces/width|height`, `status/width|height`. Shared keys newly registered (Pidgin 2's types and defaults, same meaning): the `/pidgin/conversations/*` keys the pages bind, `/pidgin/sound/{enabled,file}/*`, `conv_focus`, `volume`, `/pidgin/smileys/theme`, `/pidgin/pounces/default_actions/*`.
+
+**Verification:**
+- Build: 0 warnings (`-Wall -Wextra`); the M5 files also build warning-free with `GDK_VERSION_MIN_REQUIRED=4_22`/`GLIB_VERSION_2_88`.
+- `meson test`: 12 OK, 1 skipped (msgview-selftest without `PIDGIN4_TEST_DISPLAY`). New: `prefbinding`, `pluginpref` (every pref type both ways, destruction, the ELF check on history.so/psychic.so/garbage), `completion`. Widget tests start their own Xvfb (`tests/test-display.c`) and skip without it.
+- `PIDGIN4_WINDOWS_SELFTEST=1` passes with `G_DEBUG=fatal-criticals` on Xvfb, under Sway (Wayland), and once on `~/.purple-gtk4` itself: 10 prefs pages with 90 bound prefs unchanged by opening, pounce and status editors, the system log (48635 logs) and a buddy's logs with a search, 63 certificates viewed, psychic toggled on and off with `/pidgin/plugins/loaded` unchanged, the history.so refusal, About, OMEMO. No file under `logs/` changed.
+- `gtk4.css`: a parse error is reported, and an edit is picked up live (about 200 ms).
+- Profile round-trip: `scripts/check-profile-compat.sh --pidgin4 ~/.local/pidgin4-m5/bin/pidgin4` **PASSES** (no extra allowances).
+- No account was signed in.
+
+**Gaps:**
+- Not run with accounts online: privacy lists, room lists, transfers, pounces firing, OMEMO trust changes, the message-index progress (TESTING.md).
+- Not ported: Set Mood (the buddy list still has a `TODO(M5)`), account reordering by drag and drop in the accounts window, Pidgin 2's mail dialog grouping, the pounce list notification (popups are plain notify dialogs), name completion in the pounce editor, buddy/sound/blist themes (replaced by `gtk4.css`), the MSN-only xfer thumbnail op.
+- Log search: the index matches whole words (all of them), the linear scan substrings.
+- Async dialogs (confirmations, file choosers, launchers) can't be answered headless, so import/export/delete paths were tested by hand on scratch copies only.
+- OMEMO: asking for fingerprints makes the plugin create the account's identity in `omemo.db` even while offline (plugin behaviour).
+- The completion popover was tested on X11 only.
+
 ### M6: Desktop integration (Sway first, GNOME second)
 - **Tray.** An SNI tray replaces `gtkdocklet-gtk.c`. The `docklet_ui_ops` interface (`gtkdocklet.h:30`) and `gtkdocklet.c` logic are kept: status/pending icons and the "attention" status replace blinking; the tooltip keeps the unread list.
   - The menu is built from the existing docklet menu (`gtkdocklet.c:675`).

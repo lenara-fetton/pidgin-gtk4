@@ -28,6 +28,7 @@
 #include "debug.h"
 #include "notify.h"
 #include "plugin.h"
+#include "prefs.h"
 #include "prpl.h"
 #include "util.h"
 
@@ -957,12 +958,61 @@ uri_launch_cb(GObject *source, GAsyncResult *result, gpointer data)
 	}
 }
 
+/*
+ * M5: the Browser preference (/pidgin4/browser/method "custom" and
+ * /pidgin4/browser/command, "%s" for the URL or appended). Only web links
+ * go to a custom browser; returns FALSE to fall back to the launcher.
+ */
+static gboolean
+open_uri_custom_browser(const char *uri)
+{
+	const char *command;
+	char *quoted, *cmdline, **argv = NULL;
+	GError *error = NULL;
+	gboolean ok;
+
+	if (!purple_prefs_exists("/pidgin4/browser/method") ||
+	    !purple_strequal(purple_prefs_get_string("/pidgin4/browser/method"), "custom"))
+		return FALSE;
+	command = purple_prefs_get_string("/pidgin4/browser/command");
+	if (command == NULL || *command == '\0' ||
+	    !(g_str_has_prefix(uri, "http://") || g_str_has_prefix(uri, "https://") ||
+	      g_str_has_prefix(uri, "ftp://")))
+		return FALSE;
+
+	quoted = g_shell_quote(uri);
+	if (strstr(command, "%s") != NULL) {
+		char **parts = g_strsplit(command, "%s", -1);
+		cmdline = g_strjoinv(quoted, parts);
+		g_strfreev(parts);
+	} else {
+		cmdline = g_strdup_printf("%s %s", command, quoted);
+	}
+	g_free(quoted);
+
+	ok = g_shell_parse_argv(cmdline, NULL, &argv, &error) &&
+	     g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error);
+	if (!ok) {
+		purple_debug_error("gtkutils", "Could not run the browser command "
+		                   "'%s': %s\n", cmdline, error ? error->message : "");
+		purple_notify_error(NULL, NULL, _("Unable to open URL"),
+		                    error ? error->message : cmdline);
+		g_clear_error(&error);
+	}
+	g_strfreev(argv);
+	g_free(cmdline);
+	return TRUE;
+}
+
 void
 pidgin_open_uri(GtkWindow *parent, const char *uri)
 {
 	GtkUriLauncher *launcher;
 
 	g_return_if_fail(uri != NULL);
+
+	if (open_uri_custom_browser(uri))
+		return;
 
 	if (parent == NULL)
 		parent = pidgin_get_active_window();

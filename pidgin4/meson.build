@@ -153,10 +153,23 @@ pidgin4_sources = files(
 	'pidginblistmodel.c',
 	'pidginminidialog.c',
 	'pidginsingleui.c',
-	'stubs.c',
 	# M6
 	'pidginidle-wayland.c',
 	'pidginnotify.c',
+	# M5: the remaining windows
+	'gtkcertmgr.c',
+	'gtkft.c',
+	'gtklog.c',
+	'gtkplugin.c',
+	'gtkpounce.c',
+	'gtkprivacy.c',
+	'gtkroomlist.c',
+	'gtksavedstatuses.c',
+	'gtksmiley.c',
+	'gtkthemes.c',
+	'pidginabout.c',
+	'pidginomemo.c',
+	'pidginselftest.c',
 ) + idle_notify_sources
 
 pidgin4_deps = [glib_dep, gio_dep, gio_unix_dep, gobject_dep, gmodule_dep,
@@ -188,6 +201,10 @@ components_sources = files(
 	'pidgindbusmenu.c',
 	'pidginsni.c',
 	'pidginconvmeta.c',
+	# M5: pref bindings, plugin pref frames, buddy name completion
+	'pidginprefbinding.c',
+	'gtkpluginpref.c',
+	'pidgincompletion.c',
 )
 
 components_lib = static_library('pidgin4-components',
@@ -335,6 +352,23 @@ executable('fake-sni-watcher',
 	c_args : ['-DFAKE_WATCHER_MAIN'],
 	dependencies : [glib_dep, gio_dep, gobject_dep],
 	install : false)
+# M5: widget tests (pref bindings, plugin pref frames). They need a
+# display: each starts its own Xvfb (-displayfd) and never uses the
+# session's; without Xvfb they are skipped (77).
+widget_tests = [
+	'prefbinding',
+	'pluginpref',
+	'completion',
+]
+foreach name : widget_tests
+	test_exe = executable('test-' + name,
+		'tests/test-' + name + '.c', 'tests/test-display.c', test_support,
+		link_with : components_lib,
+		dependencies : pidgin4_deps,
+		build_rpath : purple_libdir,
+		install : false)
+	test(name, test_exe, env : test_env, timeout : 120)
+endforeach
 
 desktop_validate = find_program('desktop-file-validate', required : false)
 if desktop_validate.found()

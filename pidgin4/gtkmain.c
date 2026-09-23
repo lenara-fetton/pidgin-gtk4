@@ -42,6 +42,7 @@
 #include "plugin.h"
 #include "pounce.h"
 #include "prefs.h"
+#include "privacy.h"
 #include "prpl.h"
 #include "request.h"
 #include "savedstatuses.h"
@@ -58,14 +59,24 @@
 #include "gtkdocklet.h"
 #include "pidginnotify.h"
 #include "gtkeventloop.h"
+#include "gtkft.h"
 #include "gtkidle.h"
+#include "gtklog.h"
 #include "gtknotify.h"
+#include "gtkplugin.h"
+#include "gtkpounce.h"
 #include "gtkprefs.h"
+#include "gtkprivacy.h"
 #include "gtkrequest.h"
+#include "gtkroomlist.h"
+#include "gtksavedstatuses.h"
+#include "gtksmiley.h"
 #include "gtksound.h"
+#include "gtkthemes.h"
 #include "gtkutils.h"
+#include "pidginomemo.h"
+#include "pidginselftest.h"
 #include "pidginsingleui.h"
-#include "stubs.h"
 
 /* Command line options (parsed by GApplication in the local instance). */
 static struct {
@@ -151,7 +162,7 @@ pidgin_ui_init(void)
 	/*
 	 * Set the UI operation structures.
 	 *
-	 * Not set in M2, so libpurple runs without them (every call site
+	 * Not set, so libpurple runs without them (every call site
 	 * checks for NULL ops/functions):
 	 *   xfers, privacy, roomlist (TODO(M5)): transfers are neither offered
 	 *     nor shown, privacy and room list windows do not exist;
@@ -169,6 +180,9 @@ pidgin_ui_init(void)
 	purple_sound_set_ui_ops(pidgin_sound_get_ui_ops());
 	purple_connections_set_ui_ops(pidgin_connections_get_ui_ops());
 	purple_idle_set_ui_ops(pidgin_idle_get_ui_ops());
+	/* M5 */
+	purple_xfers_set_ui_ops(pidgin_xfers_get_ui_ops());
+	purple_privacy_set_ui_ops(pidgin_privacy_get_ui_ops());
 
 	pidgin_account_init();
 	pidgin_blist_init();
@@ -180,12 +194,31 @@ pidgin_ui_init(void)
 	pidgin_notify_init();
 	/* M4b: sets the conversation UI ops. */
 	pidgin_conversations_init();
+	/* M5 */
+	pidgin_themes_init();
+	pidgin_plugins_init();
+	pidgin_status_init();
+	pidgin_log_init();
+	pidgin_privacy_init();
+	pidgin_roomlist_init();
+	pidgin_xfers_init();
+	pidgin_smileys_init();
+	pidgin_omemo_init();
 }
 
 static void
 pidgin_quit(void)
 {
 	/* Uninit */
+	pidgin_omemo_uninit();
+	pidgin_smileys_uninit();
+	pidgin_xfers_uninit();
+	pidgin_roomlist_uninit();
+	pidgin_log_uninit();
+	pidgin_status_uninit();
+	pidgin_pounces_uninit();
+	pidgin_plugins_uninit();
+	pidgin_themes_uninit();
 	pidgin_conversations_uninit();
 	pidgin_utils_uninit();
 	pidgin_notify_uninit();
@@ -480,7 +513,7 @@ startup_cb(GApplication *app, gpointer data)
 	purple_blist_load();
 
 	/* load plugins we had when we quit (pidgin4's own list) */
-	purple_plugins_load_saved(PIDGIN4_PREFS_ROOT "/plugins/loaded");
+	pidgin_plugins_load_saved(PIDGIN4_PREFS_ROOT "/plugins/loaded");
 
 	/* TODO: Move pounces loading into purple_pounces_init() */
 	purple_pounces_load();
@@ -515,6 +548,9 @@ startup_cb(GApplication *app, gpointer data)
 	/* M6 developer aids (no-ops unless their variable is set). */
 	pidgin_docklet_selftest();
 	pidgin_notification_selftest();
+	/* M5: every window, then quit (pidginselftest.c). */
+	if (g_getenv("PIDGIN4_WINDOWS_SELFTEST") != NULL)
+		pidgin_windows_selftest_start();
 
 	if (opts.login) {
 		/* disable all accounts */

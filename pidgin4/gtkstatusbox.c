@@ -38,8 +38,10 @@
 #include "status.h"
 #include "util.h"
 
+#include "gtksavedstatuses.h"
 #include "gtkstatusbox.h"
 #include "gtkutils.h"
+#include "pidgincomposeentry.h"
 
 /* Seconds after the last keystroke before a status message is applied. */
 #define TYPING_TIMEOUT 4
@@ -116,44 +118,36 @@ primitive_has_message(PurpleStatusPrimitive primitive)
 	return found;
 }
 
-/* The message box text as purple HTML, or NULL.
- * TODO(M4): PidginComposeEntry (formatting); this is plain text. */
+/* The message box content as purple HTML (with its formatting), or NULL
+ * if it is empty. */
 static char *
 get_message(void)
 {
-	GtkTextBuffer *buffer;
-	GtkTextIter start, end;
-	char *text, *escaped, *html;
+	PidginComposeEntry *entry;
+	char *text;
 
 	if (statusbox == NULL || !primitive_has_message(statusbox->primitive))
 		return NULL;
 
-	buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(statusbox->message_view));
-	gtk_text_buffer_get_bounds(buffer, &start, &end);
-	text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+	entry = PIDGIN_COMPOSE_ENTRY(statusbox->message_view);
+	text = pidgin_compose_entry_get_text(entry);
 	g_strstrip(text);
 	if (*text == '\0') {
 		g_free(text);
 		return NULL;
 	}
-
-	escaped = g_markup_escape_text(text, -1);
-	html = purple_strreplace(escaped, "\n", "<br>");
-	g_free(escaped);
 	g_free(text);
-	return html;
+
+	return pidgin_compose_entry_get_markup(entry);
 }
 
 static void
 set_message_text(const char *html)
 {
-	GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(statusbox->message_view));
-	char *text = html ? purple_markup_strip_html(html) : NULL;
-
 	statusbox->updating = TRUE;
-	gtk_text_buffer_set_text(buffer, text ? text : "", -1);
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(statusbox->message_view),
+	                                html ? html : "");
 	statusbox->updating = FALSE;
-	g_free(text);
 }
 
 /* Pidgin 2's activate_currently_selected_status() for the global box. */
@@ -224,6 +218,16 @@ message_key_cb(GtkEventControllerKey *controller, guint keyval, guint keycode,
 		gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
 		return TRUE;
 	}
+	return FALSE;
+}
+
+/* pidgin_compose_entry_send() (e.g. the sendbutton plugin): apply, and
+ * keep the text (FALSE: the entry is not cleared). */
+static gboolean
+message_send_cb(PidginComposeEntry *entry, const char *markup, gpointer data)
+{
+	apply_selected();
+	gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
 	return FALSE;
 }
 
@@ -413,11 +417,12 @@ row_activated_cb(GtkListBox *list, GtkListBoxRow *row, gpointer data)
 		gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
 		break;
 	case ROW_NEW:
-	case ROW_MANAGE:
-		/* TODO(M5): the status editor and the saved status window. */
-		purple_debug_info("gtkstatusbox", "TODO(M5): %s is not ported yet\n",
-			type == ROW_NEW ? "the status editor" : "the saved statuses window");
 		gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
+		pidgin_status_editor_show(FALSE, NULL);
+		break;
+	case ROW_MANAGE:
+		gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
+		pidgin_status_window_show();
 		break;
 	}
 }
@@ -668,19 +673,27 @@ pidgin_status_box_new(void)
 	label = gtk_label_new_with_mnemonic(_("Status _message:"));
 	gtk_label_set_xalign(GTK_LABEL(label), 0.0);
 	gtk_box_append(GTK_BOX(statusbox->message_box), label);
-	/* TODO(M4): PidginComposeEntry instead of a plain text view. */
-	statusbox->message_view = gtk_text_view_new();
-	gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(statusbox->message_view), GTK_WRAP_WORD_CHAR);
-	gtk_text_view_set_accepts_tab(GTK_TEXT_VIEW(statusbox->message_view), FALSE);
+	/* Pidgin 2's status box message was an IMHtml with every format but
+	 * images (formatting through the keyboard shortcuts, no toolbar). */
+	statusbox->message_view = pidgin_compose_entry_new();
+	pidgin_compose_entry_set_caps(PIDGIN_COMPOSE_ENTRY(statusbox->message_view),
+	                              PIDGIN_FORMAT_HTML_ALL & ~PIDGIN_FORMAT_IMAGE);
+	pidgin_compose_entry_set_return_inserts_newline(
+		PIDGIN_COMPOSE_ENTRY(statusbox->message_view), FALSE);
 	gtk_widget_add_css_class(statusbox->message_view, "pidgin-status-message");
 	gtk_label_set_mnemonic_widget(GTK_LABEL(label), statusbox->message_view);
 	g_signal_connect(gtk_text_view_get_buffer(GTK_TEXT_VIEW(statusbox->message_view)),
 	                 "changed", G_CALLBACK(message_changed_cb), NULL);
-	key = gtk_event_controller_key_new();
-	g_signal_connect(key, "key-pressed", G_CALLBACK(message_key_cb), NULL);
-	gtk_widget_add_controller(statusbox->message_view, key);
+	g_signal_connect(statusbox->message_view, "message-send",
+	                 G_CALLBACK(message_send_cb), NULL);
 	scroll = pidgin_make_scrollable(statusbox->message_view, GTK_POLICY_NEVER,
 	                                GTK_POLICY_AUTOMATIC, 260, 60);
+	/* Enter applies, also with an empty message (the entry's own Enter
+	 * handling only sends non-empty text): catch it on the way down. */
+	key = gtk_event_controller_key_new();
+	gtk_event_controller_set_propagation_phase(key, GTK_PHASE_CAPTURE);
+	g_signal_connect(key, "key-pressed", G_CALLBACK(message_key_cb), NULL);
+	gtk_widget_add_controller(scroll, key);
 	gtk_box_append(GTK_BOX(statusbox->message_box), scroll);
 	gtk_box_append(GTK_BOX(vbox), statusbox->message_box);
 

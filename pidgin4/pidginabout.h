@@ -1,9 +1,5 @@
-/**
- * @file gtkprefs.h GTK 4 Preferences
- * @ingroup pidgin
- */
-
-/* pidgin
+/*
+ * pidgin4
  *
  * Pidgin is the legal property of its developers, whose names are too numerous
  * to list here.  Please refer to the COPYRIGHT file distributed with this
@@ -23,23 +19,22 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111-1301  USA
  */
-#ifndef _PIDGINPREFS_H_
-#define _PIDGINPREFS_H_
+#ifndef _PIDGINABOUT_H_
+#define _PIDGINABOUT_H_
 
-#include "prefs.h"
+#include "pidgin.h"
 
-/**
- * Registers the pidgin4 prefs (the /pidgin4 subtree). Called from
- * purple_core_init() through the core UI ops, after prefs.xml is loaded,
- * so only missing keys get their defaults.
+/*
+ * About (M5): version, libpurple/GTK/GLib versions, build information and
+ * the credits from Pidgin 2 (a custom window with PidginRichLabels).
  */
-void pidgin_prefs_init(void);
 
-/** Shows (or raises) the preferences window (M5). */
-void pidgin_prefs_show(void);
-void pidgin_prefs_hide(void);
+void pidgin_about_show(void);
 
-/** PIDGIN4_WINDOWS_SELFTEST: opens the window and visits every page. */
-void pidgin_prefs_selftest(void);
+/** The build information as HTML (for the About window and bug reports). */
+char *pidgin_about_get_build_info_html(void);
 
-#endif /* _PIDGINPREFS_H_ */
+/** PIDGIN4_WINDOWS_SELFTEST: opens every About page and closes it. */
+void pidgin_about_selftest(void);
+
+#endif /* _PIDGINABOUT_H_ */

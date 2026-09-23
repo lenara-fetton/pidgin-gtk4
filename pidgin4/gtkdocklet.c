@@ -36,7 +36,8 @@
 #include "gtkdialogs.h"
 #include "gtkdocklet.h"
 #include "pidginmenu.h"
-#include "stubs.h"
+#include "gtkconv.h"
+#include "gtksavedstatuses.h"
 
 /*
  * The logic of pidgin/gtkdocklet.c. What changed:

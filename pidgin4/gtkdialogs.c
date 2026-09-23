@@ -31,9 +31,9 @@
 #include "server.h"
 
 #include "gtkdialogs.h"
+#include "gtklog.h"
 #include "gtkutils.h"
-
-static GtkWidget *about_dialog = NULL;
+#include "pidginabout.h"
 
 /* Handle of the New IM / Get Info / View Log requests. */
 static int dialogs_handle;
@@ -50,36 +50,7 @@ pidgin_dialogs_destroy_all(void)
 void
 pidgin_dialogs_about(void)
 {
-	char *version, *comments;
-
-	if (about_dialog != NULL) {
-		gtk_window_present(GTK_WINDOW(about_dialog));
-		return;
-	}
-
-	version = g_strdup_printf("%s (%s), libpurple %s", VERSION, REVISION,
-	                          purple_core_get_version());
-	comments = g_strdup_printf(_("%s is a messaging client based on libpurple "
-		"which is capable of connecting to multiple messaging services at "
-		"once. This is a personal GTK 4 build of it."), PIDGIN_NAME);
-
-	about_dialog = gtk_about_dialog_new();
-	g_object_add_weak_pointer(G_OBJECT(about_dialog), (gpointer *)&about_dialog);
-	gtk_window_set_application(GTK_WINDOW(about_dialog), pidgin_application_get());
-	gtk_window_set_transient_for(GTK_WINDOW(about_dialog), pidgin_get_active_window());
-	g_object_set(about_dialog,
-		"program-name", "Pidgin 4",
-		"version", version,
-		"comments", comments,
-		"website", PURPLE_WEBSITE,
-		"logo-icon-name", PIDGIN4_APP_ID,
-		"license-type", GTK_LICENSE_GPL_2_0,
-		"copyright", "Pidgin is the legal property of its developers.",
-		NULL);
-	g_free(version);
-	g_free(comments);
-
-	gtk_window_present(GTK_WINDOW(about_dialog));
+	pidgin_about_show();
 }
 
 /**************************************************************************
@@ -204,12 +175,31 @@ static void
 pidgin_dialogs_log_cb(gpointer data, PurpleRequestFields *fields)
 {
 	PurpleAccount *account = purple_request_fields_get_account(fields, "account");
-	const char *username = purple_request_fields_get_string(fields, "screenname");
+	char *username;
+	GSList *buddies, *cur;
 
-	/* TODO(M5): pidgin_log_show() / pidgin_log_show_contact(). */
-	purple_debug_info("gtkdialogs", "TODO(M5): the log viewer (log of %s on %s)\n",
-	                  username ? username : "",
-	                  account ? purple_account_get_username(account) : "");
+	username = g_strdup(purple_normalize(account,
+		purple_request_fields_get_string(fields, "screenname")));
+
+	if (username != NULL && *username != '\0' && account != NULL) {
+		/* A buddy that is part of a bigger contact: the contact's logs. */
+		buddies = purple_find_buddies(account, username);
+		for (cur = buddies; cur != NULL; cur = cur->next) {
+			PurpleBlistNode *node = cur->data;
+
+			if (node != NULL && (node->prev != NULL || node->next != NULL)) {
+				pidgin_log_show_contact((PurpleContact *)node->parent);
+				g_slist_free(buddies);
+				g_free(username);
+				return;
+			}
+		}
+		g_slist_free(buddies);
+
+		pidgin_log_show(PURPLE_LOG_IM, username, account);
+	}
+
+	g_free(username);
 }
 
 void
