@@ -70,7 +70,12 @@ static GHashTable *pending_recv;     /* key -> Pending */
 static GHashTable *pending_send;     /* key -> Pending */
 static GHashTable *older_batches;    /* key -> OlderBatch */
 static guint pending_idle;
-static PurplePlugin *mam_plugin;     /* where mam-query-done is connected */
+/* Prpls that register mam-query-done on their plugin handle (jabber's MAM,
+ * and the Discord/Steam plugins' history fetch). Connected as they load. */
+static const char *const mam_prpl_ids[] = {
+	"prpl-jabber", "prpl-eionrobb-discord", "prpl-steam-mobile", NULL
+};
+static GSList *mam_plugins;          /* PurplePlugin* with mam-query-done connected */
 
 /* Where the last line libpurple is about to log was going to be written
  * (from "writing-*-msg", before the log write). */
@@ -495,31 +500,50 @@ conv_prpl(PurpleConversation *conv)
 	return account ? purple_find_prpl(purple_account_get_protocol_id(account)) : NULL;
 }
 
-static void
-connect_mam_signal(void)
+static gboolean
+is_mam_prpl(PurplePlugin *plugin)
 {
-	PurplePlugin *prpl = purple_plugins_find_with_id("prpl-jabber");
+	const char *id = plugin ? purple_plugin_get_id(plugin) : NULL;
+	guint i;
 
-	if (prpl == NULL || prpl == mam_plugin || !purple_plugin_is_loaded(prpl))
+	for (i = 0; id != NULL && mam_prpl_ids[i] != NULL; i++)
+		if (purple_strequal(id, mam_prpl_ids[i]))
+			return TRUE;
+	return FALSE;
+}
+
+static void
+connect_mam_plugin(PurplePlugin *prpl)
+{
+	if (prpl == NULL || !purple_plugin_is_loaded(prpl) ||
+	    g_slist_find(mam_plugins, prpl) != NULL)
 		return;
 	purple_signal_connect(prpl, "mam-query-done", &handle,
 	                      PURPLE_CALLBACK(mam_query_done_cb), NULL);
-	mam_plugin = prpl;
+	mam_plugins = g_slist_prepend(mam_plugins, prpl);
+}
+
+static void
+connect_mam_signal(void)
+{
+	guint i;
+
+	for (i = 0; mam_prpl_ids[i] != NULL; i++)
+		connect_mam_plugin(purple_plugins_find_with_id(mam_prpl_ids[i]));
 }
 
 static void
 plugin_load_cb(PurplePlugin *plugin, gpointer data)
 {
-	if (purple_strequal(purple_plugin_get_id(plugin), "prpl-jabber"))
-		connect_mam_signal();
+	if (is_mam_prpl(plugin))
+		connect_mam_plugin(plugin);
 }
 
 static void
 plugin_unload_cb(PurplePlugin *plugin, gpointer data)
 {
 	/* Unloading unregisters the plugin's signals and their handlers. */
-	if (plugin == mam_plugin)
-		mam_plugin = NULL;
+	mam_plugins = g_slist_remove(mam_plugins, plugin);
 }
 
 gboolean
@@ -1742,7 +1766,8 @@ pidgin_conv_meta_init(const PidginConvMetaUiOps *ops)
 	                      PURPLE_CALLBACK(plugin_load_cb), NULL);
 	purple_signal_connect(purple_plugins_get_handle(), "plugin-unload", &handle,
 	                      PURPLE_CALLBACK(plugin_unload_cb), NULL);
-	mam_plugin = NULL;
+	g_slist_free(mam_plugins);
+	mam_plugins = NULL;
 	connect_mam_signal();
 }
 
@@ -1753,7 +1778,8 @@ pidgin_conv_meta_uninit(void)
 		return;
 	initialized = FALSE;
 	purple_signals_disconnect_by_handle(&handle);
-	mam_plugin = NULL;
+	g_slist_free(mam_plugins);
+	mam_plugins = NULL;
 	if (pending_idle) {
 		g_source_remove(pending_idle);
 		pending_idle = 0;
