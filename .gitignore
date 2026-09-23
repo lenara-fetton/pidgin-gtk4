@@ -1,0 +1,31 @@
+# autotools build output
+Makefile
+!Makefile.am
+!Makefile.in
+!Makefile.mingw
+/config.h
+/config.log
+/config.status
+/libtool
+/stamp-h1
+/pidgin.pc
+/pidgin-2.pc
+/purple.pc
+/purple-2.pc
+/finch.pc
+.deps/
+.libs/
+*.o
+*.lo
+*.la
+*.so
+*.a
+autom4te.cache/
+
+# Meson build directories
+/build*/
+/pidgin4/build*/
+
+# editor noise
+*~
+*.swp
