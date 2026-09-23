@@ -38,6 +38,8 @@ ported_plugins = {
 	'iconaway' : [files('iconaway.c'), []],
 	'relnot' : [files('relnot.c'), []],
 	'timestamp' : [files('timestamp.c'), []],
+	'xmppconsole' : [files('xmppconsole.c'), []],
+	'xmppdisco' : [files('disco/xmppdisco.c', 'disco/gtkdisco.c'), []],
 }
 
 pidgin4_plugin_dir = libdir / 'pidgin4'
