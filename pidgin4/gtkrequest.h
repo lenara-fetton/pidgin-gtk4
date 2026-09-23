@@ -35,4 +35,14 @@
  */
 PurpleRequestUiOps *pidgin_request_get_ui_ops(void);
 
+/**
+ * Developer aid: opens one request of every kind (input, masked input,
+ * multi-line input, choice, action, action with icon, and a fields request
+ * with every field type) so the dialogs can be checked by hand or run
+ * headless. The callbacks only log what they receive (debug category
+ * "gtkrequest-selftest"). Not used in normal operation; gtkmain.c calls it
+ * when PIDGIN4_REQUEST_SELFTEST is set in the environment.
+ */
+void pidgin_request_selftest(void);
+
 #endif /* _PIDGINREQUEST_H_ */
