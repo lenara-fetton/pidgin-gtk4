@@ -925,14 +925,111 @@ host_on_account_domain(PurpleAccount *account, const char *host)
 	return ret;
 }
 
+/**************************************************************************
+ * XMPP file shares
+ *
+ * An XMPP message whose body is exactly one URL is a file share (XEP-0066
+ * jabber:x:oob, which the prpl passes through as the body, or a client
+ * that sends only the upload's GET URL): an attachment someone chose to
+ * send, not a link in text. With /pidgin4/images/inline_xmpp_shares (on
+ * by default) such a URL is allowed for the image loader whatever its
+ * host (only that URI; the size cap and the cache apply as usual) when it
+ * is an image: by its extension, or else by the Content-Type of a HEAD
+ * request (pidgin_image_loader_probe_async(), https only). An <img src>
+ * in HTML from an unknown host, or a URL among other text, stays a link.
+ **************************************************************************/
+
+static char *share_prpl_for_tests = NULL;
+
+/* Plain text, or text whose only markup is links and line breaks: what a
+ * lone URL looks like once purple_markup_linkify() has run on it. */
+static gboolean
+markup_is_text_or_links(const char *html)
+{
+	const char *c;
+
+	if (html == NULL || pidgin_markup_is_plain(html))
+		return TRUE;
+	for (c = html; (c = strchr(c, '<')) != NULL; c++) {
+		if (!g_ascii_strncasecmp(c, "<a ", 3) || !g_ascii_strncasecmp(c, "</a>", 4) ||
+		    !g_ascii_strncasecmp(c, "<br", 3))
+			continue;
+		if (g_ascii_isalpha(c[1]) || c[1] == '/')
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+account_has_shares(PurpleAccount *account)
+{
+	return account_is_jabber(account) ||
+	       (share_prpl_for_tests != NULL && account != NULL &&
+	        purple_strequal(purple_account_get_protocol_id(account), share_prpl_for_tests));
+}
+
+void
+pidgin_conv_meta_set_share_protocol_for_tests(const char *protocol_id)
+{
+	g_free(share_prpl_for_tests);
+	share_prpl_for_tests = g_strdup(protocol_id);
+}
+
+gboolean
+pidgin_conv_meta_inline_xmpp_shares(void)
+{
+	return !purple_prefs_exists(PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares") ||
+	       purple_prefs_get_bool(PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares");
+}
+
+char *
+pidgin_conv_meta_share_url(PurpleConversation *conv, const char *html)
+{
+	char *plain;
+	GUri *uri;
+	gboolean ok = FALSE;
+
+	if (conv == NULL || html == NULL || !markup_is_text_or_links(html) ||
+	    !account_has_shares(purple_conversation_get_account(conv)))
+		return NULL;
+	plain = g_strstrip(pidgin_markup_plain_from_html(html));
+	if (*plain != '\0' && strpbrk(plain, " \t\r\n") == NULL &&
+	    (g_str_has_prefix(plain, "https://") || g_str_has_prefix(plain, "http://") ||
+	     g_str_has_prefix(plain, "aesgcm://")) &&
+	    (uri = g_uri_parse(plain, G_URI_FLAGS_NONE, NULL)) != NULL) {
+		ok = g_uri_get_host(uri) != NULL && *g_uri_get_host(uri) != '\0' &&
+		     g_uri_get_userinfo(uri) == NULL;
+		g_uri_unref(uri);
+	}
+	if (!ok)
+		g_clear_pointer(&plain, g_free);
+	return plain;
+}
+
+char *
+pidgin_conv_meta_inline_image_html_for_url(const char *url)
+{
+	PidginImageLoader *loader = pidgin_image_loader_get_default();
+	char *esc, *ret;
+
+	if (url == NULL || loader == NULL || !pidgin_image_loader_is_allowed(loader, url))
+		return NULL;
+	esc = g_markup_escape_text(url, -1);
+	ret = g_strdup_printf("<a href=\"%s\">%s</a><br><img src=\"%s\" alt=\"%s\">",
+	                      esc, esc, esc, esc);
+	g_free(esc);
+	return ret;
+}
+
 char *
 pidgin_conv_meta_inline_image_html(PurpleConversation *conv, const char *html)
 {
 	PidginImageLoader *loader;
-	char *plain, *ret = NULL, *esc;
+	char *plain, *ret = NULL;
 	GUri *uri;
 
-	if (conv == NULL || html == NULL || !pidgin_markup_is_plain(html))
+	/* a lone URL, as typed or as linkified */
+	if (conv == NULL || html == NULL || !markup_is_text_or_links(html))
 		return NULL;
 	plain = g_strstrip(pidgin_markup_plain_from_html(html));
 	if (!pidgin_conv_meta_is_image_url(plain) ||
@@ -946,12 +1043,15 @@ pidgin_conv_meta_inline_image_html(PurpleConversation *conv, const char *html)
 			pidgin_image_loader_allow_host(loader, g_uri_get_host(uri));
 		g_uri_unref(uri);
 	}
-	if (pidgin_image_loader_is_allowed(loader, plain)) {
-		esc = g_markup_escape_text(plain, -1);
-		ret = g_strdup_printf("<a href=\"%s\">%s</a><br><img src=\"%s\" alt=\"%s\">",
-		                      esc, esc, esc, esc);
-		g_free(esc);
+	/* An XMPP file share: this URI only, whatever the host. */
+	if (!pidgin_image_loader_is_allowed(loader, plain) && pidgin_conv_meta_inline_xmpp_shares()) {
+		char *share = pidgin_conv_meta_share_url(conv, html);
+
+		if (share != NULL)
+			pidgin_image_loader_allow_uri(loader, share);
+		g_free(share);
 	}
+	ret = pidgin_conv_meta_inline_image_html_for_url(plain);
 	g_free(plain);
 	return ret;
 }

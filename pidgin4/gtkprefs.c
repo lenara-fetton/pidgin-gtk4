@@ -174,6 +174,10 @@ prefs_register_pidgin4(void)
 	purple_prefs_add_string(PIDGIN4_PREFS_ROOT "/images/paste_format", "auto");
 	purple_prefs_add_int(PIDGIN4_PREFS_ROOT "/images/paste_jpeg_quality",
 	                     PIDGIN_IMAGE_ENCODE_DEFAULT_QUALITY);
+	/* Images shown inline: XMPP file shares from any host (a message that
+	 * is one image URL), and received file transfers that are images. */
+	purple_prefs_add_bool(PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares", TRUE);
+	purple_prefs_add_bool(PIDGIN4_PREFS_ROOT "/images/inline_received_files", TRUE);
 }
 
 /*
@@ -656,6 +660,10 @@ conv_page(void)
 
 	spin(vbox, _("Minimum input area height in lines:"),
 	     CONV_PREFS "/minimum_entry_lines", 1, 8, sg);
+	checkbox(vbox, _("Show images shared over _XMPP inline (any server)"),
+	         PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares");
+	checkbox(vbox, _("Show _received image files inline"),
+	         PIDGIN4_PREFS_ROOT "/images/inline_received_files");
 	/* Pasted images (and dropped image data) */
 	dropdown_string(vbox, _("Send _pasted images as:"),
 	                PIDGIN4_PREFS_ROOT "/images/paste_format", sg,

@@ -196,6 +196,7 @@ components_sources = files(
 	'pidginbackfill.c',
 	'pidginimageloader.c',
 	'pidginimageencode.c',
+	'pidginattachment.c',
 	'pidginmessageview.c',
 	'pidgincomposeentry.c',
 	'pidginformattoolbar.c',

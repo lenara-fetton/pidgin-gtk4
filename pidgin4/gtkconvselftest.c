@@ -23,6 +23,7 @@
 #include "pidgin.h"
 
 #include <glib/gstdio.h>
+#include <libsoup/soup.h>
 
 #include "account.h"
 #include "blist.h"
@@ -44,6 +45,8 @@
 
 #include "gtkconv.h"
 #include "gtkconvwin.h"
+#include "pidginattachment.h"
+#include "pidginimageloader.h"
 #include "pidgincomposeentry.h"
 #include "pidginformattoolbar.h"
 #include "pidginconvmeta.h"
@@ -827,6 +830,313 @@ test_attach(PurpleConversation *conv)
 	CHECK(!gtk_widget_get_visible(button), "attach left shown");
 }
 
+/**************************************************************************
+ * Shared URLs and received files shown inline
+ **************************************************************************/
+
+/* A local http server for "shared" files (the loader and the HEAD probe
+ * accept http only in their test mode). */
+static SoupServer *share_server = NULL;
+static char *share_base = NULL;
+static GBytes *share_png = NULL;
+
+static void
+share_server_cb(SoupServer *server, SoupServerMessage *msg, const char *path,
+                GHashTable *query, gpointer data)
+{
+	if (g_str_has_prefix(path, "/share/pic")) {
+		/* pic.png, pic2.png, pic-noext: all a PNG */
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
+		                                 g_bytes_get_data(share_png, NULL),
+		                                 g_bytes_get_size(share_png));
+	} else if (g_str_has_prefix(path, "/share/doc")) {
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "text/plain", SOUP_MEMORY_STATIC,
+		                                 "hello", 5);
+	} else {
+		soup_server_message_set_status(msg, 404, NULL);
+	}
+}
+
+static gboolean
+share_server_start(void)
+{
+	GError *error = NULL;
+	GSList *uris;
+	gsize len;
+
+	if (share_server != NULL)
+		return TRUE;
+	{
+		gpointer data = make_png(24, 16, &len);
+
+		share_png = g_bytes_new_take(data, len);
+	}
+	share_server = soup_server_new(NULL, NULL);
+	soup_server_add_handler(share_server, NULL, share_server_cb, NULL, NULL);
+	if (!soup_server_listen_local(share_server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error)) {
+		g_printerr("PIDGIN4_CONV_SELFTEST: share server: %s\n", error->message);
+		g_clear_error(&error);
+		g_clear_object(&share_server);
+		return FALSE;
+	}
+	uris = soup_server_get_uris(share_server);
+	share_base = g_strdup_printf("http://127.0.0.1:%d", g_uri_get_port(uris->data));
+	g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+	pidgin_image_loader_set_allow_http_for_tests(pidgin_image_loader_get_default(), TRUE);
+	pidgin_conv_meta_set_share_protocol_for_tests(ST_PRPL_ID);
+	return TRUE;
+}
+
+static void
+share_server_stop(void)
+{
+	if (share_server != NULL) {
+		soup_server_disconnect(share_server);
+		g_clear_object(&share_server);
+	}
+	g_clear_pointer(&share_base, g_free);
+	g_clear_pointer(&share_png, g_bytes_unref);
+	pidgin_conv_meta_set_share_protocol_for_tests(NULL);
+	pidgin_image_loader_set_allow_http_for_tests(pidgin_image_loader_get_default(), FALSE);
+}
+
+/* The first descendant of @widget with @css_class (and, if @tooltip, that
+ * tooltip), depth first. */
+static GtkWidget *
+find_widget(GtkWidget *widget, const char *css_class, const char *tooltip)
+{
+	GtkWidget *child, *found;
+
+	if (widget == NULL)
+		return NULL;
+	if (gtk_widget_has_css_class(widget, css_class) &&
+	    (tooltip == NULL || purple_strequal(gtk_widget_get_tooltip_text(widget), tooltip)))
+		return widget;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if ((found = find_widget(child, css_class, tooltip)) != NULL)
+			return found;
+	return NULL;
+}
+
+/* Receives @body from the buddy and waits; returns the new last message. */
+static PidginMessage *
+receive(PurpleConversation *conv, const char *body, guint ms)
+{
+	serv_got_im(purple_conversation_get_gc(conv), ST_BUDDY, body, PURPLE_MESSAGE_RECV,
+	            time(NULL));
+	spin(ms);
+	return last_message(conv);
+}
+
+static char *launched = NULL;
+
+static void
+launch_hook(const char *action, const char *target)
+{
+	g_free(launched);
+	launched = g_strdup_printf("%s|%s", action, target);
+}
+
+/* (a) a one-URL XMPP body from a host that isn't allowed: an image (by
+ * extension, or by the HEAD Content-Type) is shown inline, anything else
+ * stays a link, and nothing with the pref off. */
+static void
+test_xmpp_shares(PurpleConversation *conv)
+{
+	GtkWidget *view = GTK_WIDGET(view_of(conv));
+	PidginMessage *msg;
+	char *url;
+
+	if (!share_server_start()) {
+		CHECK(FALSE, "no share server");
+		return;
+	}
+	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
+
+	/* by extension */
+	url = g_strconcat(share_base, "/share/pic.png", NULL);
+	CHECK(!pidgin_image_loader_is_allowed(pidgin_image_loader_get_default(), url),
+	      "127.0.0.1 already allowed");
+	msg = receive(conv, url, 800);
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "<img src=") != NULL,
+	      "share %s not inline: %s", url, msg ? pidgin_message_get_html(msg) : "-");
+	CHECK(find_widget(view, "pidgin-inline-image", url) != NULL, "no inline picture for %s", url);
+	{
+		/* only that URI, not its host */
+		char *other = g_strconcat(share_base, "/share/other.png", NULL);
+
+		CHECK(!pidgin_image_loader_is_allowed(pidgin_image_loader_get_default(), other),
+		      "the whole host was allowed");
+		g_free(other);
+	}
+	g_free(url);
+
+	/* no extension: HEAD says image/png */
+	url = g_strconcat(share_base, "/share/pic-noext", NULL);
+	msg = receive(conv, url, 1200);
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "<img src=") != NULL,
+	      "probed share %s not inline: %s", url, msg ? pidgin_message_get_html(msg) : "-");
+	CHECK(find_widget(view, "pidgin-inline-image", url) != NULL, "no inline picture for %s", url);
+	g_free(url);
+
+	/* not an image: a link */
+	url = g_strconcat(share_base, "/share/doc", NULL);
+	msg = receive(conv, url, 1000);
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "<img") == NULL,
+	      "a text share inlined: %s", msg ? pidgin_message_get_html(msg) : "-");
+	CHECK(!pidgin_image_loader_is_allowed(pidgin_image_loader_get_default(), url),
+	      "a text share was allowed");
+	g_free(url);
+
+	/* an image URL among other text: a link */
+	url = g_strconcat("look: ", share_base, "/share/pic3.png", NULL);
+	msg = receive(conv, url, 500);
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "<img") == NULL,
+	      "an image URL in text inlined: %s", msg ? pidgin_message_get_html(msg) : "-");
+	g_free(url);
+
+	/* the pref off: a link */
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares", FALSE);
+	url = g_strconcat(share_base, "/share/pic2.png", NULL);
+	msg = receive(conv, url, 500);
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "<img") == NULL,
+	      "share inlined with the pref off: %s", msg ? pidgin_message_get_html(msg) : "-");
+	g_free(url);
+	url = g_strconcat(share_base, "/share/pic-noext2", NULL);
+	msg = receive(conv, url, 1000);
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "<img") == NULL,
+	      "probed share inlined with the pref off: %s", msg ? pidgin_message_get_html(msg) : "-");
+	g_free(url);
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares", TRUE);
+	hold("xmpp shares");
+}
+
+/* A received file transfer, completed: libpurple writes its line (and the
+ * signal fires first). */
+static void
+receive_file(PurpleConversation *conv, const char *path)
+{
+	PurpleXfer *xfer = purple_xfer_new(st_account, PURPLE_XFER_RECEIVE, ST_BUDDY);
+	char *base = g_path_get_basename(path);
+
+	purple_xfer_set_filename(xfer, base);
+	purple_xfer_set_local_filename(xfer, path);
+	purple_xfer_set_completed(xfer, TRUE);
+	purple_xfer_end(xfer);
+	g_free(base);
+}
+
+/* The last message containing @needle (in the last 10), or NULL */
+static PidginMessage *
+find_message(PurpleConversation *conv, const char *needle)
+{
+	guint n = n_messages(conv), i;
+
+	for (i = n; i > 0 && i + 10 > n; i--) {
+		PidginMessage *m = nth_message(conv, i - 1);
+
+		if (strstr(pidgin_message_get_html(m), needle) != NULL)
+			return m;
+	}
+	return NULL;
+}
+
+/* (b) a received image file: shown under libpurple's line, which stays as
+ * written; a click opens it. Not for other files, nor with the pref off. */
+static void
+test_received_files(PurpleConversation *conv)
+{
+	GtkWidget *view = GTK_WIDGET(view_of(conv));
+	PidginMessage *msg;
+	PidginAttachment *att;
+	GtkWidget *picture;
+	char *dir = g_build_filename(purple_user_dir(), "selftest-received", NULL);
+	char *png = g_build_filename(dir, "received photo.png", NULL);
+	char *txt = g_build_filename(dir, "notes.txt", NULL);
+	char *png2 = g_build_filename(dir, "off.png", NULL);
+	char *esc;
+	gpointer data;
+	gsize len;
+
+	g_mkdir_with_parents(dir, 0700);
+	data = make_png(40, 30, &len);
+	g_file_set_contents(png, data, len, NULL);
+	g_file_set_contents(png2, data, len, NULL);
+	g_free(data);
+	g_file_set_contents(txt, "notes", -1, NULL);
+	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
+
+	receive_file(conv, png);
+	spin(800);
+	esc = g_markup_escape_text(png, -1);
+	msg = find_message(conv, esc);
+	g_free(esc);
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "Transfer of file") != NULL,
+	      "no libpurple line for the received file");
+	att = msg ? pidgin_message_get_attachment(msg) : NULL;
+	CHECK(att != NULL && pidgin_attachment_get_kind(att) == PIDGIN_ATTACHMENT_IMAGE &&
+	      purple_strequal(pidgin_attachment_get_path(att), png), "no image attachment");
+	CHECK(msg == NULL || strstr(pidgin_message_get_html(msg), "<img") == NULL,
+	      "libpurple's line was changed: %s", pidgin_message_get_html(msg));
+	picture = find_widget(view, "pidgin-attachment-image", "received photo.png");
+	CHECK(picture != NULL && gtk_picture_get_paintable(GTK_PICTURE(picture)) != NULL,
+	      "no received picture shown");
+	if (picture != NULL) {
+		pidgin_attachment_set_launch_hook(launch_hook);
+		g_clear_pointer(&launched, g_free);
+		{
+			/* what a click does */
+			GListModel *controllers = gtk_widget_observe_controllers(picture);
+			guint i;
+
+			for (i = 0; i < g_list_model_get_n_items(controllers); i++) {
+				GObject *c = g_list_model_get_item(controllers, i);
+
+				if (GTK_IS_GESTURE_CLICK(c))
+					g_signal_emit_by_name(c, "released", 1, 5.0, 5.0);
+				g_object_unref(c);
+			}
+			g_object_unref(controllers);
+		}
+		{
+			char *expect = g_strconcat("open|", png, NULL);
+
+			CHECK(purple_strequal(launched, expect), "click launched %s", launched);
+			g_free(expect);
+		}
+		pidgin_attachment_set_launch_hook(NULL);
+	}
+
+	/* not an image */
+	receive_file(conv, txt);
+	spin(500);
+	msg = find_message(conv, "notes.txt");
+	CHECK(msg != NULL && pidgin_message_get_attachment(msg) == NULL,
+	      "a text file got an attachment");
+
+	/* the pref off */
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/inline_received_files", FALSE);
+	receive_file(conv, png2);
+	spin(500);
+	msg = find_message(conv, "off.png");
+	CHECK(msg != NULL && pidgin_message_get_attachment(msg) == NULL,
+	      "an attachment with the pref off");
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/inline_received_files", TRUE);
+	hold("received files");
+
+	g_unlink(png);
+	g_unlink(png2);
+	g_unlink(txt);
+	g_rmdir(dir);
+	g_free(png);
+	g_free(png2);
+	g_free(txt);
+	g_free(dir);
+}
+
 static gboolean
 entry_has_anchor(PidginComposeEntry *entry)
 {
@@ -1281,6 +1591,9 @@ selftest_run(gpointer data)
 	test_attention(im);
 	test_paste_image(im);
 	test_attach(im);
+	test_xmpp_shares(im);
+	test_received_files(im);
+	share_server_stop();
 	test_send_to(im);
 	spin(200);
 

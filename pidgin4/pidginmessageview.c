@@ -262,6 +262,8 @@ struct _PidginMessageRow
 	GtkWidget *edited_label;
 	GtkWidget *receipt_label;
 	GtkWidget *reactions_box;
+	GtkWidget *attachment_box;
+	PidginAttachment *shown_attachment;
 	GtkWidget *marker;
 
 	GSimpleActionGroup *actions;
@@ -913,6 +915,23 @@ update_row_classes(PidginMessageRow *row)
 	}
 }
 
+/* The message's attachment under its text (rebuilt only when it changes). */
+static void
+update_attachment(PidginMessageRow *row)
+{
+	PidginAttachment *att = pidgin_message_get_attachment(row->msg);
+	GtkWidget *child;
+
+	if (att == row->shown_attachment)
+		return;
+	while ((child = gtk_widget_get_first_child(row->attachment_box)) != NULL)
+		gtk_box_remove(GTK_BOX(row->attachment_box), child);
+	g_set_object(&row->shown_attachment, att);
+	if (att != NULL)
+		gtk_box_append(GTK_BOX(row->attachment_box), pidgin_attachment_widget_new(att));
+	gtk_widget_set_visible(row->attachment_box, att != NULL);
+}
+
 static void
 row_update(PidginMessageRow *row)
 {
@@ -928,6 +947,7 @@ row_update(PidginMessageRow *row)
 	if (marker) {
 		gtk_widget_set_visible(row->reply_box, FALSE);
 		gtk_widget_set_visible(row->reactions_box, FALSE);
+		gtk_widget_set_visible(row->attachment_box, FALSE);
 		return;
 	}
 
@@ -938,6 +958,7 @@ row_update(PidginMessageRow *row)
 	update_receipt(row);
 	update_reply(row);
 	update_reactions(row);
+	update_attachment(row);
 	update_menu(row);
 }
 
@@ -992,6 +1013,7 @@ pidgin_message_row_dispose(GObject *obj)
 	g_clear_object(&row->plugin_section);
 	g_clear_object(&row->link_section);
 	g_clear_pointer(&row->extra_classes, g_strfreev);
+	g_clear_object(&row->shown_attachment);
 	g_clear_weak_pointer(&row->view);
 
 	G_OBJECT_CLASS(pidgin_message_row_parent_class)->dispose(obj);
@@ -1068,6 +1090,12 @@ pidgin_message_row_init(PidginMessageRow *row)
 	gtk_widget_set_valign(row->receipt_label, GTK_ALIGN_START);
 	gtk_box_append(GTK_BOX(row->main_box), row->receipt_label);
 	gtk_widget_set_parent(row->main_box, GTK_WIDGET(row));
+
+	/* an attachment (a received image, ...) */
+	row->attachment_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_widget_add_css_class(row->attachment_box, "attachment");
+	gtk_widget_set_visible(row->attachment_box, FALSE);
+	gtk_widget_set_parent(row->attachment_box, GTK_WIDGET(row));
 
 	/* reactions */
 	row->reactions_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);

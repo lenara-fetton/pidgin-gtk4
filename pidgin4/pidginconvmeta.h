@@ -111,6 +111,22 @@ void pidgin_conv_meta_message_displayed(PurpleConversation *conv, PidginMessage 
 char *pidgin_conv_meta_inline_image_html(PurpleConversation *conv, const char *html);
 
 /**
+ * If @conv is an XMPP conversation and @html (a displayed body) is exactly
+ * one http(s)/aesgcm URL, returns it (an XMPP file share), else NULL. With
+ * the /pidgin4/images/inline_xmpp_shares pref,
+ * pidgin_conv_meta_inline_image_html() allows such a URL for the image
+ * loader whatever its host when its extension says it is an image.
+ */
+char *pidgin_conv_meta_share_url(PurpleConversation *conv, const char *html);
+/** /pidgin4/images/inline_xmpp_shares (default TRUE). */
+gboolean pidgin_conv_meta_inline_xmpp_shares(void);
+/** The inline preview HTML (link + IMG) for @url if the loader allows it,
+ * else NULL. */
+char *pidgin_conv_meta_inline_image_html_for_url(const char *url);
+/** TEST ONLY: treat @protocol_id's conversations as XMPP for file shares. */
+void pidgin_conv_meta_set_share_protocol_for_tests(const char *protocol_id);
+
+/**
  * Writes @text (plain) as a system line into @conv's log without showing
  * it (profile contract rule 7). Nothing if the conversation isn't logged.
  */

@@ -58,11 +58,13 @@
 #include "gtkdialogs.h"
 #include "gtkutils.h"
 #include "pidginanimation.h"
+#include "pidginattachment.h"
 #include "pidginblistmodel.h"
 #include "pidgincomposeentry.h"
 #include "pidginimageencode.h"
 #include "pidginconvmeta.h"
 #include "pidginformattoolbar.h"
+#include "pidginimageloader.h"
 #include "pidginmarkup.h"
 #include "pidginmenu.h"
 #include "pidginmessageview.h"
@@ -1972,6 +1974,166 @@ offer_image_path(PidginConversation *gtkconv, const char *path)
 }
 
 /**************************************************************************
+ * Received files and shared URLs shown inline
+ *
+ * (a) XMPP file shares (see pidginconvmeta.c, "XMPP file shares"): a
+ *     one-URL body whose extension says image is inlined when written;
+ *     one without a known extension is probed (HEAD, https) and inlined
+ *     afterwards if its Content-Type is an image type.
+ * (b) A received file transfer that completes into an image file is
+ *     shown under libpurple's own "Transfer of file <a href=file://...>
+ *     complete" line (kept as libpurple wrote it, as in the log), as that
+ *     row's attachment; clicking the picture opens the file like the
+ *     link. /pidgin4/images/inline_received_files (default TRUE).
+ **************************************************************************/
+
+#define IMAGES4_PREFS PIDGIN4_PREFS_ROOT "/images"
+
+typedef struct
+{
+	GWeakRef msg;
+	char *url;
+} ShareProbe;
+
+static void
+share_probe_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	ShareProbe *probe = data;
+	PidginMessage *msg = g_weak_ref_get(&probe->msg);
+	GError *error = NULL;
+	char *type = pidgin_image_loader_probe_finish(PIDGIN_IMAGE_LOADER(source), res, NULL,
+	                                              &error);
+
+	if (type == NULL) {
+		purple_debug_info("gtkconv", "probing %s: %s\n", probe->url,
+		                  error ? error->message : "?");
+		g_clear_error(&error);
+	} else if (msg != NULL &&
+	           pidgin_attachment_classify(NULL, type) == PIDGIN_ATTACHMENT_IMAGE) {
+		char *html;
+
+		pidgin_image_loader_allow_uri(PIDGIN_IMAGE_LOADER(source), probe->url);
+		html = pidgin_conv_meta_inline_image_html_for_url(probe->url);
+		if (html != NULL)
+			pidgin_message_set_html(msg, html);
+		g_free(html);
+	}
+	g_free(type);
+	g_clear_object(&msg);
+	g_weak_ref_clear(&probe->msg);
+	g_free(probe->url);
+	g_free(probe);
+}
+
+/* A shared URL without a telling extension: ask the server what it is. */
+static void
+probe_share(PurpleConversation *conv, PidginMessage *msg, const char *displaying)
+{
+	PidginImageLoader *loader = pidgin_image_loader_get_default();
+	char *url;
+	ShareProbe *probe;
+
+	if (loader == NULL || !pidgin_conv_meta_inline_xmpp_shares() ||
+	    (url = pidgin_conv_meta_share_url(conv, displaying)) == NULL)
+		return;
+	if (g_str_has_prefix(url, "aesgcm://") ||
+	    pidgin_attachment_classify(url, NULL) != PIDGIN_ATTACHMENT_NONE) {
+		g_free(url);    /* encrypted (HEAD says nothing), or known by its name */
+		return;
+	}
+	probe = g_new0(ShareProbe, 1);
+	g_weak_ref_init(&probe->msg, msg);
+	probe->url = url;
+	pidgin_image_loader_probe_async(loader, url, NULL, share_probe_cb, probe);
+}
+
+typedef struct
+{
+	PurpleAccount *account;
+	char *who;
+	char *path;
+} ReceivedFile;
+
+static void
+received_file_free(ReceivedFile *rf)
+{
+	g_free(rf->who);
+	g_free(rf->path);
+	g_free(rf);
+}
+
+/* After libpurple wrote the "complete" line (the signal comes first). */
+static gboolean
+received_file_idle(gpointer data)
+{
+	ReceivedFile *rf = data;
+	PurpleConversation *conv = NULL;
+	PidginMessageView *view;
+	GListModel *model;
+	char *path_esc, *needle;
+	guint n, i;
+	GList *l;
+
+	for (l = purple_accounts_get_all(); l != NULL; l = l->next)
+		if (l->data == rf->account)
+			conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_ANY, rf->who,
+			                                             rf->account);
+	if (conv == NULL || PIDGIN_CONVERSATION(conv) == NULL ||
+	    (view = conv_view(PIDGIN_CONVERSATION(conv))) == NULL)
+		return G_SOURCE_REMOVE;
+
+	/* libpurple's line links "file://" + the escaped path */
+	path_esc = g_markup_escape_text(rf->path, -1);
+	needle = g_strconcat("file://", path_esc, NULL);
+	model = pidgin_message_view_get_model(view);
+	n = g_list_model_get_n_items(model);
+	for (i = n; i > 0 && i + 20 > n; i--) {
+		PidginMessage *msg = g_list_model_get_item(model, i - 1);
+		const char *html = pidgin_message_get_html(msg);
+
+		if (html != NULL && strstr(html, needle) != NULL &&
+		    pidgin_message_get_attachment(msg) == NULL) {
+			PidginAttachment *att = pidgin_attachment_new_for_file(rf->path,
+				PIDGIN_ATTACHMENT_IMAGE);
+
+			pidgin_message_set_attachment(msg, att);
+			g_object_unref(att);
+			g_object_unref(msg);
+			break;
+		}
+		g_object_unref(msg);
+	}
+	g_free(needle);
+	g_free(path_esc);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+file_recv_complete_cb(PurpleXfer *xfer, gpointer data)
+{
+	const char *path = purple_xfer_get_local_filename(xfer);
+	ReceivedFile *rf;
+	char *type;
+	gboolean image;
+
+	if (path == NULL || purple_xfer_get_type(xfer) != PURPLE_XFER_RECEIVE ||
+	    !purple_prefs_get_bool(IMAGES4_PREFS "/inline_received_files"))
+		return;
+	type = g_content_type_guess(path, NULL, 0, NULL);
+	image = type != NULL && g_content_type_is_a(type, "image/*");
+	g_free(type);
+	if (!image)
+		return;
+
+	rf = g_new0(ReceivedFile, 1);
+	rf->account = purple_xfer_get_account(xfer);
+	rf->who = g_strdup(purple_xfer_get_remote_user(xfer));
+	rf->path = g_strdup(path);
+	g_idle_add_full(G_PRIORITY_DEFAULT, received_file_idle, rf,
+	                (GDestroyNotify)received_file_free);
+}
+
+/**************************************************************************
  * Drag and drop
  **************************************************************************/
 
@@ -2664,6 +2826,8 @@ pidgin_conv_write_conv(PurpleConversation *conv, const char *name, const char *a
 		                         flags | (flags & PURPLE_MESSAGE_ERROR ? 0 : PURPLE_MESSAGE_SYSTEM),
 		                         mtime);
 	}
+	if (inline_html == NULL)
+		probe_share(conv, msg, displaying);
 	g_free(inline_html);
 
 	prpl_info = conv_prpl_info(conv);
@@ -3860,6 +4024,9 @@ pidgin_conversations_init(void)
 	                      PURPLE_CALLBACK(paste_xfer_done_cb), NULL);
 	purple_signal_connect(purple_xfers_get_handle(), "file-send-cancel", handle,
 	                      PURPLE_CALLBACK(paste_xfer_done_cb), NULL);
+	/* received images shown inline (see "Received files and shared URLs") */
+	purple_signal_connect(purple_xfers_get_handle(), "file-recv-complete", handle,
+	                      PURPLE_CALLBACK(file_recv_complete_cb), NULL);
 	paste_dir_cleanup();
 }
 

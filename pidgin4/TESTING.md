@@ -376,6 +376,15 @@ is best), another IRC client, the Discord web client.
       spreadsheet cells (text and an image on the clipboard): Ctrl+V
       pastes the text. A photo pastes as `.jpg` with Preferences →
       Conversations → "Send pasted images as" Automatic, `.png` with PNG.
+- [ ] From Conversations or Dino, share a photo whose upload host is not
+      your server's (a contact on another server): it shows inline under
+      its link, and clicking it opens the link. A shared non-image file
+      stays a link. Preferences → Conversations → "Show images shared
+      over XMPP inline" off: links only. Receive an image by file
+      transfer (Jingle/SI): libpurple's "Transfer of file … complete"
+      line keeps its blue link and the picture shows under it; clicking
+      the picture opens the file ("Show received image files inline"
+      turns it off).
 - [ ] The toolbar's paperclip (Send File) shows in XMPP IMs and MUCs
       (HTTP upload) and wherever the protocol can send a file, not on
       Steam; clicking it opens the file chooser and sends the file. It
