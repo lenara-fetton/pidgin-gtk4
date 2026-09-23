@@ -1569,11 +1569,11 @@ test_received_files(PurpleConversation *conv)
 }
 
 /* The media card of a row's attachment: shown in the view, Play and Open
- * Folder go to the launcher (test hook), and no player without a media
- * backend. */
+ * Folder go to the launcher (test hook), and a player only with
+ * @player (a media backend and inline playback on). */
 static void
 check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentKind kind,
-                 const char *target, gboolean local, const char *what)
+                 const char *target, gboolean local, gboolean player, const char *what)
 {
 	PidginAttachment *att = msg ? pidgin_message_get_attachment(msg) : NULL;
 	GtkWidget *card, *button;
@@ -1593,9 +1593,8 @@ check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentK
 	card = pidgin_attachment_widget_new(att);
 	g_object_ref_sink(card);
 	CHECK(find_widget(card, "pidgin-media-name", NULL) != NULL, "%s: no name", what);
-	CHECK((find_widget(card, "pidgin-media-player", NULL) != NULL) ==
-	      pidgin_media_backend_available(), "%s: a player without a backend, or none with",
-	      what);
+	CHECK((find_widget(card, "pidgin-media-player", NULL) != NULL) == player,
+	      "%s: %s", what, player ? "no player" : "a player");
 	pidgin_attachment_set_launch_hook(launch_hook);
 	button = find_widget(card, "pidgin-media-play", NULL);
 	g_clear_pointer(&launched, g_free);
@@ -1618,30 +1617,128 @@ check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentK
 	g_object_unref(card);
 }
 
+/* Whether @card still has its player after up to @ms (it goes when the
+ * file can't be opened or the backend reports an error) */
+static gboolean
+player_after(GtkWidget *card, guint ms, gboolean until_gone)
+{
+	guint waited;
+
+	for (waited = 0; waited < ms; waited += 50) {
+		gboolean has = find_widget(card, "pidgin-media-player", NULL) != NULL;
+
+		if (until_gone && !has)
+			return FALSE;
+		spin(50);
+	}
+	return find_widget(card, "pidgin-media-player", NULL) != NULL;
+}
+
+/* A card of its own for @att, with its player once the file is open or
+ * failed (the caller unrefs it) */
+static GtkWidget *
+own_card(PidginAttachment *att)
+{
+	GtkWidget *card = pidgin_attachment_widget_new(att);
+
+	g_object_ref_sink(card);
+	g_object_unref(att);
+	return card;
+}
+
+/* The inline player (a media backend, detected at run time, and
+ * /pidgin4/media/inline_playback on): a real (bundled) WAV keeps it; a
+ * file that isn't media, a missing file and a URL GTK can't read lose it
+ * (no critical from GTK's GStreamer backend) and keep the card. */
+static void
+test_media_player(PurpleConversation *conv, const char *dir, const char *fake_mp4)
+{
+	gboolean backend = pidgin_media_backend_available();
+	char *wav = g_build_filename(dir, "silence.wav", NULL);
+	char *missing = g_build_filename(dir, "gone.ogg", NULL);
+	char *url, *esc;
+	GBytes *bytes = g_resources_lookup_data("/com/minowick/Pidgin4/media/silence.wav", 0, NULL);
+	PidginMessage *msg;
+	GtkWidget *card;
+
+	CHECK(bytes != NULL && g_file_set_contents(wav, g_bytes_get_data(bytes, NULL),
+	                                           g_bytes_get_size(bytes), NULL),
+	      "writing %s", wav);
+	g_clear_pointer(&bytes, g_bytes_unref);
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", TRUE);
+
+	/* a received WAV: the card, with the player if there is a backend */
+	receive_file(conv, wav);
+	spin(600);
+	esc = g_markup_escape_text(wav, -1);
+	msg = find_message(conv, esc);
+	g_free(esc);
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, wav, TRUE, backend, "received wav");
+	card = own_card(pidgin_attachment_new_for_file(wav, PIDGIN_ATTACHMENT_AUDIO));
+	CHECK(player_after(card, 1500, FALSE) == backend, "wav: %s after it was opened",
+	      backend ? "no player" : "a player");
+	g_object_unref(card);
+
+	if (backend) {
+		/* not media: the backend's error removes the player */
+		card = own_card(pidgin_attachment_new_for_file(fake_mp4, PIDGIN_ATTACHMENT_VIDEO));
+		CHECK(find_widget(card, "pidgin-media-player", NULL) != NULL, "fake mp4: no player");
+		CHECK(!player_after(card, 5000, TRUE), "fake mp4: the player stayed");
+		CHECK(find_widget(card, "pidgin-media-name", NULL) != NULL, "fake mp4: no card");
+		g_object_unref(card);
+
+		/* a file that isn't there */
+		card = own_card(pidgin_attachment_new_for_file(missing, PIDGIN_ATTACHMENT_AUDIO));
+		CHECK(!player_after(card, 2000, TRUE), "missing file: the player stayed");
+		CHECK(find_widget(card, "pidgin-media-play", NULL) != NULL, "missing file: no card");
+		g_object_unref(card);
+
+		/* a URL (no gvfs: not readable; with it: not media) */
+		url = g_strconcat(share_base, "/share/clip", NULL);
+		card = own_card(pidgin_attachment_new_for_uri(url, PIDGIN_ATTACHMENT_VIDEO, 10));
+		CHECK(!player_after(card, 5000, TRUE), "URL: the player stayed");
+		CHECK(find_widget(card, "pidgin-media-play", NULL) != NULL, "URL: no card");
+		g_object_unref(card);
+		g_free(url);
+
+		/* a card going away before its file is open */
+		card = own_card(pidgin_attachment_new_for_file(wav, PIDGIN_ATTACHMENT_AUDIO));
+		g_object_unref(card);
+		spin(300);
+	}
+	g_unlink(wav);
+	g_free(missing);
+	g_free(wav);
+}
+
 /* Audio and video: received transfers, an XMPP share (by its HEAD
- * Content-Type), a lone URL on an allowlisted host (as Discord's). */
+ * Content-Type), a lone URL on an allowlisted host (as Discord's). The
+ * media backend is detected at run time (GTK with or without GStreamer);
+ * PIDGIN4_SELFTEST_MEDIA_BACKEND=1 requires one, =0 turns it off for the
+ * run (selftest_run()). The cards of files that aren't media are checked
+ * with inline playback off; test_media_player() does the player. */
 static void
 test_media(PurpleConversation *conv)
 {
 	char *dir = g_build_filename(purple_user_dir(), "selftest-media", NULL);
 	char *mp4 = g_build_filename(dir, "clip.mp4", NULL);
 	char *ogg = g_build_filename(dir, "voice.ogg", NULL);
+	const char *env = g_getenv("PIDGIN4_SELFTEST_MEDIA_BACKEND");
 	char *url, *esc;
 	PidginMessage *msg;
 
-	/* This machine's GTK is built without GStreamer (USE=-gstreamer):
-	 * no inline player. PIDGIN4_SELFTEST_MEDIA_BACKEND=1 after rebuilding
-	 * GTK with it. */
 	g_print("PIDGIN4_CONV_SELFTEST: media backend: %s\n",
 	        pidgin_media_backend_available() ? "yes" : "no");
-	CHECK(pidgin_media_backend_available() ==
-	      purple_strequal(g_getenv("PIDGIN4_SELFTEST_MEDIA_BACKEND"), "1"),
-	      "media backend check: %d", pidgin_media_backend_available());
+	if (env != NULL && *env != '\0')
+		CHECK(pidgin_media_backend_available() == purple_strequal(env, "1"),
+		      "media backend check: %d (PIDGIN4_SELFTEST_MEDIA_BACKEND=%s)",
+		      pidgin_media_backend_available(), env);
 
 	g_mkdir_with_parents(dir, 0700);
 	g_file_set_contents(mp4, "not really a video", -1, NULL);
 	g_file_set_contents(ogg, "not really audio", -1, NULL);
 	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", FALSE);
 
 	receive_file(conv, mp4);
 	spin(600);
@@ -1649,7 +1746,7 @@ test_media(PurpleConversation *conv)
 	msg = find_message(conv, esc);
 	g_free(esc);
 	CHECK(msg != NULL, "no line for the received video");
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, mp4, TRUE, "received mp4");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, mp4, TRUE, FALSE, "received mp4");
 	CHECK(msg == NULL || pidgin_attachment_get_size(pidgin_message_get_attachment(msg)) == 18,
 	      "received mp4 size");
 
@@ -1658,12 +1755,12 @@ test_media(PurpleConversation *conv)
 	esc = g_markup_escape_text(ogg, -1);
 	msg = find_message(conv, esc);
 	g_free(esc);
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, ogg, TRUE, "received ogg");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, ogg, TRUE, FALSE, "received ogg");
 
 	/* an XMPP share without an extension: video/mp4 by HEAD */
 	url = g_strconcat(share_base, "/share/clip", NULL);
 	msg = receive(conv, url, 1200);
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, url, FALSE, "shared clip");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_VIDEO, url, FALSE, FALSE, "shared clip");
 	CHECK(msg == NULL || pidgin_message_get_attachment(msg) == NULL ||
 	      pidgin_attachment_get_size(pidgin_message_get_attachment(msg)) == 10,
 	      "shared clip size");
@@ -1679,8 +1776,11 @@ test_media(PurpleConversation *conv)
 	pidgin_image_loader_allow_host(pidgin_image_loader_get_default(), "127.0.0.1");
 	url = g_strconcat(share_base, "/share/voice-message2.ogg", NULL);
 	msg = receive(conv, url, 300);
-	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, url, FALSE, "allowlisted ogg");
+	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, url, FALSE, FALSE, "allowlisted ogg");
 	g_free(url);
+
+	test_media_player(conv, dir, mp4);
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", TRUE);
 	hold("media");
 
 	g_unlink(mp4);
@@ -2359,6 +2459,11 @@ selftest_run(gpointer data)
 	PidginConversation *gtkim, *gtkchat;
 	PidginWindow *win;
 	int before;
+
+	/* PIDGIN4_SELFTEST_MEDIA_BACKEND=0: the path of a GTK without a media
+	 * backend, whatever this one has (test_media()) */
+	if (purple_strequal(g_getenv("PIDGIN4_SELFTEST_MEDIA_BACKEND"), "0"))
+		pidgin_media_backend_disable_for_tests();
 
 	/* The protocol (tests/selftest-prpl.c) and a throwaway account */
 	CHECK(pidgin_selftest_prpl_register() != NULL, "selftest prpl didn't load");
