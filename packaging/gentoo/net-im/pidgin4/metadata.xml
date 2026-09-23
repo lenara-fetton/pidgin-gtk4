@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="person">
+		<email>lenara@minowick.com</email>
+		<name>Lenara Fetton</name>
+	</maintainer>
+	<longdescription>
+		The GTK 4 user interface for libpurple (net-im/pidgin from the
+		pidgin-gtk4 tree), for Wayland. It shares ~/.purple with Pidgin 2.14.14:
+		existing files keep their formats and its own settings go under
+		/pidgin4 and ~/.purple/pidgin4.
+	</longdescription>
+	<upstream>
+		<remote-id type="github">lenara-fetton/pidgin-gtk4</remote-id>
+	</upstream>
+</pkgmetadata>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE pkgmetadata SYSTEM "https://www.gentoo.org/dtd/metadata.dtd">
+<pkgmetadata>
+	<maintainer type="person">
+		<email>lenara@minowick.com</email>
+		<name>Lenara Fetton</name>
+	</maintainer>
+	<longdescription>
+		libpurple 2.14 from the pidgin-gtk4 tree: an ABI-compatible superset
+		of the stock 2.14.14 library with modern XMPP (carbons, MAM, HTTP
+		upload, receipts and markers, corrections, reactions, replies, OMEMO)
+		and IRCv3 support. The GTK 2 Pidgin is not built; the user interface
+		is net-im/pidgin4. Profiles in ~/.purple stay readable by the stock
+		Pidgin 2.14.14.
+	</longdescription>
+	<use>
+		<flag name="gui">Pull in the GTK 4 user interface, <pkg>net-im/pidgin4</pkg></flag>
+		<flag name="omemo">Build the OMEMO end-to-end encryption plugin for XMPP (<pkg>net-libs/libomemo-c</pkg>)</flag>
+	</use>
+	<upstream>
+		<remote-id type="github">lenara-fetton/pidgin-gtk4</remote-id>
+	</upstream>
+</pkgmetadata>
