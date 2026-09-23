@@ -4216,6 +4216,7 @@ jabber_do_init(void)
 
 	/* initialize jabber_features list */
 	jabber_add_feature(NS_LAST_ACTIVITY, 0);
+	jabber_add_feature(NS_IDLE, 0); /* XEP-0319 */
 	jabber_add_feature(NS_OOB_IQ_DATA, 0);
 	jabber_add_feature(NS_ENTITY_TIME, 0);
 	jabber_add_feature("jabber:iq:version", 0);

@@ -360,6 +360,9 @@ xmlnode *jabber_presence_create_js(JabberStream *js, JabberBuddyState state, con
 
 		xmlnode_set_namespace(query, NS_LAST_ACTIVITY);
 		xmlnode_set_attrib(query, "seconds", seconds);
+
+		/* XEP-0319, which modern clients read instead */
+		xmlnode_insert_child(presence, jabber_idle_build(js->idle));
 	}
 
 	/* JEP-0115 */
@@ -1042,7 +1045,13 @@ void jabber_presence_parse(JabberStream *js, xmlnode *packet)
 			pih(js, &presence, child);
 	}
 
-	if (presence.delayed && presence.idle) {
+	if (presence.idle_since) {
+		/* XEP-0319 is absolute: no correction for a delay needed */
+		presence.idle = MAX(0, time(NULL) - presence.idle_since);
+		/* 0 would mean "not idle" to the code below */
+		if (presence.idle == 0)
+			presence.idle = 1;
+	} else if (presence.delayed && presence.idle) {
 		/* Delayed and idle, so update idle time */
 		presence.idle = presence.idle + (time(NULL) - presence.sent);
 	}
@@ -1213,6 +1222,45 @@ parse_idle(JabberStream *js, JabberPresence *presence, xmlnode *query)
 	}
 }
 
+xmlnode *
+jabber_idle_build(time_t since)
+{
+	xmlnode *idle = xmlnode_new("idle");
+	struct tm *tm = gmtime(&since);
+	char stamp[32];
+
+	xmlnode_set_namespace(idle, NS_IDLE);
+	if (tm && strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", tm) > 0)
+		xmlnode_set_attrib(idle, "since", stamp);
+	return idle;
+}
+
+time_t
+jabber_idle_parse(xmlnode *idle)
+{
+	const char *since = idle ? xmlnode_get_attrib(idle, "since") : NULL;
+	time_t t;
+
+	if (since == NULL || *since == '\0')
+		return 0;
+	t = purple_str_to_time(since, TRUE, NULL, NULL, NULL);
+	/* A future since is clock skew: idle from now. */
+	if (t > time(NULL))
+		t = time(NULL);
+	return t > 0 ? t : 0;
+}
+
+/* XEP-0319: takes precedence over the XEP-0256 seconds (see below). */
+static void
+parse_idle_since(JabberStream *js, JabberPresence *presence, xmlnode *idle)
+{
+	presence->idle_since = jabber_idle_parse(idle);
+	if (presence->idle_since)
+		purple_debug_info("jabber", "XEP-0319: %s idle since %s\n",
+		                  presence->from ? presence->from : "?",
+		                  xmlnode_get_attrib(idle, "since"));
+}
+
 static void
 parse_caps(JabberStream *js, JabberPresence *presence, xmlnode *c)
 {
@@ -1302,6 +1350,7 @@ void jabber_presence_init(void)
 	jabber_presence_register_handler("delay", NS_DELAYED_DELIVERY, parse_delay);
 	jabber_presence_register_handler("nick", "http://jabber.org/protocol/nick", parse_nickname);
 	jabber_presence_register_handler("query", NS_LAST_ACTIVITY, parse_idle);
+	jabber_presence_register_handler("idle", NS_IDLE, parse_idle_since);
 	jabber_presence_register_handler("x", NS_DELAYED_DELIVERY_LEGACY, parse_delay);
 	jabber_presence_register_handler("x", "http://jabber.org/protocol/muc#user", parse_muc_user);
 	jabber_presence_register_handler("x", "vcard-temp:x:update", parse_vcard_avatar);

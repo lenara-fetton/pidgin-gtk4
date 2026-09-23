@@ -71,6 +71,7 @@ struct _JabberPresence {
 	gboolean delayed;
 	time_t sent;
 	int idle;
+	time_t idle_since;  /**< XEP-0319 <idle since=''/>, 0 if absent */
 };
 
 typedef void (JabberPresenceHandler)(JabberStream *js, JabberPresence *presence,
@@ -99,5 +100,10 @@ void jabber_presence_subscription_set(JabberStream *js, const char *who,
 		const char *type);
 void jabber_presence_fake_to_self(JabberStream *js, PurpleStatus *status);
 void purple_status_to_jabber(const PurpleStatus *status, JabberBuddyState *state, char **msg, int *priority);
+
+/** XEP-0319: <idle xmlns='urn:xmpp:idle:1' since='…'/> for @a since. */
+xmlnode *jabber_idle_build(time_t since);
+/** XEP-0319: the since time of an <idle/> element, or 0 if unusable. */
+time_t jabber_idle_parse(xmlnode *idle);
 
 #endif /* PURPLE_JABBER_PRESENCE_H_ */
