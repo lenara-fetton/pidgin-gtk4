@@ -62,6 +62,12 @@ struct _PidginMessageView
 	gboolean stick;                 /* keep the bottom in view */
 	guint stick_frames;
 	guint tick_id;
+
+	/* M4b: reply/react/edit/retract are offered (the conversation's prpl
+	 * implements the M8 IPC), and retract on others' messages
+	 * (moderation). */
+	gboolean message_actions;
+	gboolean can_moderate;
 };
 
 enum {
@@ -70,6 +76,7 @@ enum {
 	SIG_EDIT_REQUESTED,
 	SIG_RETRACT_REQUESTED,
 	SIG_POPULATE_MENU,
+	SIG_TOP_REACHED,
 	N_SIGNALS
 };
 
@@ -838,10 +845,21 @@ update_menu(PidginMessageRow *row)
 	                 pidgin_markup_result_has_object(pidgin_message_get_markup(row->msg),
 	                                                 PIDGIN_MARKUP_OBJECT_REMOTE_IMAGE);
 
-	set_action_enabled(row, "edit", own && !retracted);
-	set_action_enabled(row, "retract", own && !retracted);
-	set_action_enabled(row, "react", !retracted);
-	set_action_enabled(row, "reply", !retracted);
+	gboolean meta = row->view == NULL || row->view->message_actions;
+	gboolean has_id = pidgin_message_get_stanza_id(row->msg) != NULL ||
+	                  pidgin_message_get_origin_id(row->msg) != NULL ||
+	                  pidgin_message_get_server_id(row->msg) != NULL;
+	gboolean moderate = row->view != NULL && row->view->can_moderate &&
+	                    pidgin_message_get_server_id(row->msg) != NULL;
+
+	/* Without the M8 actions (or ids to address the message by) only
+	 * the demo offers them, for its own tests. */
+	if (row->view != NULL && row->view->message_actions && !has_id)
+		meta = FALSE;
+	set_action_enabled(row, "edit", meta && own && !retracted);
+	set_action_enabled(row, "retract", meta && (own || moderate) && !retracted);
+	set_action_enabled(row, "react", meta && !retracted);
+	set_action_enabled(row, "reply", meta && !retracted);
 	set_action_enabled(row, "save-image", image && !retracted);
 
 	g_menu_remove_all(row->plugin_section);
@@ -1452,6 +1470,42 @@ pidgin_message_view_get_model(PidginMessageView *view)
 }
 
 void
+pidgin_message_view_set_message_actions(PidginMessageView *view, gboolean enabled,
+                                        gboolean can_moderate)
+{
+	GHashTableIter iter;
+	gpointer row;
+
+	g_return_if_fail(PIDGIN_IS_MESSAGE_VIEW(view));
+	view->message_actions = enabled;
+	view->can_moderate = can_moderate;
+	g_hash_table_iter_init(&iter, view->rows);
+	while (g_hash_table_iter_next(&iter, &row, NULL))
+		if (PIDGIN_MESSAGE_ROW(row)->msg != NULL)
+			update_menu(row);
+}
+
+void
+pidgin_message_view_refresh(PidginMessageView *view)
+{
+	GHashTableIter iter;
+	gpointer row;
+
+	g_return_if_fail(PIDGIN_IS_MESSAGE_VIEW(view));
+	g_hash_table_iter_init(&iter, view->rows);
+	while (g_hash_table_iter_next(&iter, &row, NULL))
+		if (PIDGIN_MESSAGE_ROW(row)->msg != NULL)
+			row_update(row);
+}
+
+static void
+edge_reached_cb(GtkScrolledWindow *sw, GtkPositionType pos, PidginMessageView *view)
+{
+	if (pos == GTK_POS_TOP)
+		g_signal_emit(view, signals[SIG_TOP_REACHED], 0);
+}
+
+void
 pidgin_message_view_set_scrollback(PidginMessageView *view, guint max)
 {
 	g_return_if_fail(PIDGIN_IS_MESSAGE_VIEW(view));
@@ -1519,6 +1573,9 @@ pidgin_message_view_class_init(PidginMessageViewClass *klass)
 	signals[SIG_POPULATE_MENU] = g_signal_new("populate-menu",
 		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
 		G_TYPE_NONE, 2, PIDGIN_TYPE_MESSAGE, G_TYPE_MENU);
+	signals[SIG_TOP_REACHED] = g_signal_new("top-reached",
+		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
+		G_TYPE_NONE, 0);
 }
 
 static void
@@ -1569,6 +1626,8 @@ pidgin_message_view_init(PidginMessageView *view)
 	gtk_widget_set_vexpand(view->scrolled, TRUE);
 	gtk_widget_set_hexpand(view->scrolled, TRUE);
 	gtk_widget_set_parent(view->scrolled, GTK_WIDGET(view));
+	g_signal_connect(view->scrolled, "edge-reached", G_CALLBACK(edge_reached_cb), view);
+	view->message_actions = TRUE;
 }
 
 GtkWidget *
