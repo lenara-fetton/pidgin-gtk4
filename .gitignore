@@ -1,4 +1,8 @@
-# autotools build output
+# ---------------------------------------------------------------------------
+# autotools build output (in-tree build by scripts/build-libpurple.sh)
+# ---------------------------------------------------------------------------
+# Generated Makefiles; the sources (Makefile.am, Makefile.in, Makefile.mingw)
+# are tracked and must stay visible.
 Makefile
 !Makefile.am
 !Makefile.in
@@ -6,26 +10,92 @@ Makefile
 /config.h
 /config.log
 /config.status
+/configure~
 /libtool
 /stamp-h1
-/pidgin.pc
-/pidgin-2.pc
-/purple.pc
-/purple-2.pc
-/finch.pc
+/Doxyfile
+/pidgin.apspec
+/*.pc
+autom4te.cache/
 .deps/
 .libs/
 *.o
 *.lo
 *.la
-*.so
 *.a
-autom4te.cache/
+*.so
+*.gmo
+*.trs
+*.log
 
-# Meson build directories
+# generated pkg-config files, man pages, desktop data
+/libpurple/data/*.pc
+/pidgin/data/*.pc
+/finch/*.pc
+/doc/finch.1
+/doc/pidgin.1
+/pidgin/data/pidgin.desktop
+/pidgin/data/pidgin.appdata.xml
+
+# generated D-Bus bindings
+/libpurple/dbus-bindings.c
+/libpurple/dbus-signals.c
+/libpurple/dbus-types.c
+/libpurple/purple-client-bindings.c
+/libpurple/purple-client-bindings.h
+/libpurple/plugins/dbus-example-bindings.c
+/pidgin/plugins/musicmessaging/music-messaging-bindings.c
+
+# generated Perl glue (perl is disabled, but configure still writes these)
+/libpurple/plugins/perl/common/Makefile.PL
+/pidgin/plugins/perl/common/Makefile.PL
+
+# built executables
+/pidgin/pidgin
+/finch/finch
+/libpurple/example/nullclient
+/libpurple/purple-client-example
+/libpurple/tests/check_libpurple
+
+# intltool / gettext
+/po/Makefile.in
+/po/POTFILES
+/po/stamp-it
+/po/.intltool-merge-cache
+/po/*.pot
+/intltool-extract
+/intltool-merge
+/intltool-update
+
+# state and logs written by scripts/
+/.pidgin4-configure-args
+/build-logs/
+
+# ---------------------------------------------------------------------------
+# Meson build directories (pidgin4/)
+# ---------------------------------------------------------------------------
 /build*/
+/builddir/
 /pidgin4/build*/
+/pidgin4/builddir/
+/pidgin4/subprojects/packagecache/
 
-# editor noise
+# ---------------------------------------------------------------------------
+# editor and tool noise
+# ---------------------------------------------------------------------------
 *~
 *.swp
+*.swo
+*.orig
+*.rej
+.#*
+\#*#
+.vscode/
+.idea/
+.cache/
+compile_commands.json
+tags
+TAGS
+GPATH
+GRTAGS
+GTAGS
