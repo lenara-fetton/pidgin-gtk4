@@ -41,7 +41,10 @@ PurpleRequestUiOps *pidgin_request_get_ui_ops(void);
  * with every field type) so the dialogs can be checked by hand or run
  * headless. The callbacks only log what they receive (debug category
  * "gtkrequest-selftest"). Not used in normal operation; gtkmain.c calls it
- * when PIDGIN4_REQUEST_SELFTEST is set in the environment.
+ * when PIDGIN4_REQUEST_SELFTEST is set in the environment. With
+ * PIDGIN4_REQUEST_FILE_SELFTEST it instead accepts a file-transfer-style
+ * action whose callback opens a save dialog, checks the dialog is not
+ * parented to the closing action window, and quits (status 1 on failure).
  */
 void pidgin_request_selftest(void);
 

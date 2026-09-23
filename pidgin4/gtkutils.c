@@ -623,6 +623,7 @@ pidgin_get_active_window(void)
 #define WAITING_KEY  "pidgin-window-waiting"   /* GPtrArray of GWeakRef * */
 #define SECONDARY_KEY "pidgin-secondary-window"
 #define AUTO_PARENT_KEY "pidgin-secondary-auto-parent"
+#define CLOSING_KEY  "pidgin-window-closing"
 
 static gboolean
 secondary_pref(void)
@@ -834,16 +835,43 @@ pidgin_window_set_secondary(GtkWindow *win)
 	wait_for_parent(win, parent);
 }
 
+void
+pidgin_window_set_closing(GtkWindow *win)
+{
+	g_return_if_fail(GTK_IS_WINDOW(win));
+
+	g_object_set_data(G_OBJECT(win), CLOSING_KEY, GINT_TO_POINTER(1));
+}
+
+static gboolean
+window_closing(GtkWindow *win)
+{
+	return win != NULL && g_object_get_data(G_OBJECT(win), CLOSING_KEY) != NULL;
+}
+
 GtkWindow *
 pidgin_get_dialog_parent(void)
 {
+	GtkApplication *app = pidgin_application_get();
 	GtkWindow *active = pidgin_get_active_window();
+	GtkWindow *parent;
+	GList *l;
 
-	if (active != NULL)
+	if (active != NULL && !window_closing(active))
 		return active;
+
+	/* The active window is going away (a request window whose button
+	 * opened this dialog): the next most recently focused one. */
+	for (l = app ? gtk_application_get_windows(app) : NULL; l != NULL; l = l->next) {
+		GtkWindow *w = l->data;
+
+		if (!window_closing(w) && gtk_widget_get_mapped(GTK_WIDGET(w)))
+			return w;
+	}
 	if (!secondary_pref())
 		return NULL;
-	return secondary_parent(NULL);
+	parent = secondary_parent(active);
+	return window_closing(parent) ? NULL : parent;
 }
 
 gboolean

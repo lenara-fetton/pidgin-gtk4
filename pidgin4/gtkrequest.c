@@ -307,6 +307,18 @@ texture_scale_nearest(GdkTexture *texture, int factor)
 	return texture;
 }
 
+/*
+ * A button's callback may open a file request (accepting a file transfer
+ * asks where to save it) while this window is still the active one; it is
+ * destroyed right after, so it must not become the file dialog's parent.
+ */
+static void
+request_closing(PidginRequestData *data)
+{
+	if (data->dialog != NULL)
+		pidgin_window_set_closing(GTK_WINDOW(data->dialog));
+}
+
 /**************************************************************************
  * Closing
  **************************************************************************/
@@ -396,6 +408,7 @@ input_respond(PidginRequestData *data, int which)
 {
 	char *value = input_get_value(data);
 
+	request_closing(data);
 	if (data->cbs[which] != NULL)
 		((PurpleRequestInputCb)data->cbs[which])(data->user_data, value);
 	g_free(value);
@@ -502,6 +515,7 @@ choice_respond(PidginRequestData *data, int which)
 		}
 	}
 
+	request_closing(data);
 	if (choice != -1 && data->cbs[which] != NULL)
 		((PurpleRequestChoiceCb)data->cbs[which])(data->user_data, choice);
 
@@ -608,6 +622,7 @@ action_clicked_cb(GtkButton *button, PidginRequestData *data)
 {
 	int id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "action_id"));
 
+	request_closing(data);
 	if (id >= 0 && (gsize)id < data->cb_count && data->cbs[id] != NULL)
 		((PurpleRequestActionCb)data->cbs[id])(data->user_data, id);
 
@@ -1162,6 +1177,7 @@ create_account_field(PidginRequestData *data, PurpleRequestField *field)
 static void
 multifield_respond(PidginRequestData *data, int which)
 {
+	request_closing(data);
 	if (data->cbs[which] != NULL)
 		((PurpleRequestFieldsCb)data->cbs[which])(data->user_data,
 		                                          data->u.multifield.fields);
@@ -1459,6 +1475,7 @@ file_dialog_done_cb(GObject *source, GAsyncResult *result, gpointer user_data)
 {
 	FileDialogClosure *closure = user_data;
 	PidginRequestData *data;
+	PurpleRequestType type;
 	GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
 	GError *error = NULL;
 	GFile *file = NULL;
@@ -1486,6 +1503,10 @@ file_dialog_done_cb(GObject *source, GAsyncResult *result, gpointer user_data)
 	}
 
 	data = closure->data;
+	/* The callbacks may close the request (a transfer cancelled from its
+	 * ok callback closes its requests by handle), which frees @data: read
+	 * nothing from it after them. */
+	type = data->type;
 
 	switch (GPOINTER_TO_INT(g_object_get_data(source, "pidgin-kind"))) {
 	case 2:
@@ -1535,7 +1556,8 @@ file_dialog_done_cb(GObject *source, GAsyncResult *result, gpointer user_data)
 	g_clear_object(&file);
 	g_free(path);
 
-	purple_request_close(data->type, data);
+	/* Only compares the handle: a no-op if the callback closed it. */
+	purple_request_close(type, data);
 }
 
 static FileDialogClosure *
@@ -1758,6 +1780,112 @@ selftest_fields_cb(void *user_data, PurpleRequestFields *fields)
 		account ? purple_account_get_username(account) : "(none)");
 }
 
+/*
+ * PIDGIN4_REQUEST_FILE_SELFTEST: accepting a file transfer. The Accept
+ * button's callback opens a save dialog (as libpurple's xfer accept does)
+ * while the action window is still active; that window is destroyed right
+ * after. The save dialog must not be parented to it: GTK finished setting
+ * the dialog up against the dead parent and crashed. Checks the parent,
+ * lets GTK finish, cancels the dialog and quits (status 1 on failure).
+ */
+static PidginRequestData *file_selftest_action = NULL;
+static void *file_selftest_file = NULL;
+static gboolean file_selftest_failed = FALSE;
+
+static void
+file_selftest_file_cb(void *user_data, const char *filename)
+{
+	purple_debug_info(SELFTEST, "file request finished (%s)\n", filename ? filename : "cancelled");
+}
+
+static void
+file_selftest_accept_cb(void *user_data, int id)
+{
+	GtkWindow *action_window = GTK_WINDOW(file_selftest_action->dialog);
+	GtkWindow *parent = pidgin_get_dialog_parent();
+
+	if (parent == action_window) {
+		g_printerr(SELFTEST ": FAIL: the save dialog's parent is the closing Accept window\n");
+		file_selftest_failed = TRUE;
+	}
+	file_selftest_file = purple_request_file(NULL, "Self-test: save file", "received.png",
+		TRUE, G_CALLBACK(file_selftest_file_cb), G_CALLBACK(file_selftest_file_cb),
+		NULL, NULL, NULL, NULL);
+}
+
+static GtkWidget *
+find_action_button(GtkWidget *widget, int id)
+{
+	GtkWidget *child;
+
+	if (GTK_IS_BUTTON(widget) &&
+	    g_object_get_data(G_OBJECT(widget), "action_id") == GINT_TO_POINTER(id))
+		return widget;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child)) {
+		GtkWidget *found = find_action_button(child, id);
+
+		if (found != NULL)
+			return found;
+	}
+	return NULL;
+}
+
+static gboolean
+file_selftest_finish(gpointer unused)
+{
+	if (file_selftest_file != NULL)
+		purple_request_close(PURPLE_REQUEST_FILE, file_selftest_file);
+	g_print(SELFTEST ": file request %s\n", file_selftest_failed ? "FAILED" : "PASS");
+	if (file_selftest_failed)
+		pidgin_application_set_exit_status(1);
+	pidgin_application_quit();
+	return G_SOURCE_REMOVE;
+}
+
+static gboolean
+file_selftest_click(gpointer unused)
+{
+	static int tries = 0;
+	GtkWindow *action_window = GTK_WINDOW(file_selftest_action->dialog);
+	GtkWidget *accept = find_action_button(file_selftest_action->dialog, 0);
+
+	/* As when the user clicks it, the action window must be the active
+	 * one (a new profile's Accounts window may have taken the focus):
+	 * map it again, which Sway focuses. */
+	if (pidgin_get_active_window() != action_window && ++tries < 10) {
+		gtk_widget_set_visible(GTK_WIDGET(action_window), FALSE);
+		gtk_window_present(action_window);
+		return G_SOURCE_CONTINUE;
+	}
+	if (pidgin_get_active_window() != action_window) {
+		g_printerr(SELFTEST ": FAIL: the action window never became active\n");
+		file_selftest_failed = TRUE;
+	}
+	if (accept == NULL) {
+		g_printerr(SELFTEST ": FAIL: no Accept button\n");
+		file_selftest_failed = TRUE;
+	} else {
+		g_signal_emit_by_name(accept, "clicked");
+	}
+	/* Long enough for GTK to finish opening the dialog (the portal). */
+	g_timeout_add(3000, file_selftest_finish, NULL);
+	return G_SOURCE_REMOVE;
+}
+
+static void
+pidgin_request_file_selftest(void)
+{
+	/* Pidgin 2's action ids count from the last action: Accept is 0 here
+	 * because it is the only one. */
+	file_selftest_action = purple_request_action(NULL, "Self-test: file transfer",
+		"Accept file transfer request from lavis?", "received.png (106 KB)", 0,
+		NULL, NULL, NULL, NULL, 1,
+		_("_Accept"), G_CALLBACK(file_selftest_accept_cb));
+	/* After the window has drawn; retried until it is active. */
+	g_timeout_add(1000, file_selftest_click, NULL);
+}
+
 void
 pidgin_request_selftest(void)
 {
@@ -1766,6 +1894,11 @@ pidgin_request_selftest(void)
 	PurpleRequestField *field;
 	GBytes *png = selftest_png();
 	int i;
+
+	if (g_getenv("PIDGIN4_REQUEST_FILE_SELFTEST") != NULL) {
+		pidgin_request_file_selftest();
+		return;
+	}
 
 	purple_debug_info(SELFTEST, "opening one request of every kind\n");
 

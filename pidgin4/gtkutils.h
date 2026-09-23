@@ -160,8 +160,19 @@ void pidgin_window_set_secondary(GtkWindow *win);
  * The parent for a GtkAlertDialog or GtkFileDialog (their windows cannot
  * be passed to pidgin_window_set_secondary()): the active window, else the
  * buddy list (or active conversation window) while the pref is TRUE.
+ * Windows marked with pidgin_window_set_closing() are never returned.
  */
 GtkWindow *pidgin_get_dialog_parent(void);
+
+/**
+ * Marks @win as about to be destroyed, so that pidgin_get_dialog_parent()
+ * passes it over. Call it before running callbacks that may open a
+ * GtkFileDialog or GtkAlertDialog (a request window's buttons): GTK
+ * finishes setting such a dialog up asynchronously against its parent
+ * (on Wayland, the portal exports the parent's surface) and crashes if
+ * the parent is gone by then.
+ */
+void pidgin_window_set_closing(GtkWindow *win);
 
 /**
  * Marks the buddy list or a conversation window (they stay plain

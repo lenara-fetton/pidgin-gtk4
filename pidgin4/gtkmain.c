@@ -541,7 +541,8 @@ startup_cb(GApplication *app, gpointer data)
 	/* Developer aids for headless testing: open one request of every
 	 * kind (gtkrequest.c). PIDGIN4_ACCOUNT_SELFTEST is handled when the
 	 * accounts window opens (gtkaccount.c). */
-	if (g_getenv("PIDGIN4_REQUEST_SELFTEST") != NULL)
+	if (g_getenv("PIDGIN4_REQUEST_SELFTEST") != NULL ||
+	    g_getenv("PIDGIN4_REQUEST_FILE_SELFTEST") != NULL)
 		pidgin_request_selftest();
 	/* No-op unless PIDGIN4_CONV_SELFTEST is set (gtkconvselftest.c). */
 	pidgin_conversations_selftest();
