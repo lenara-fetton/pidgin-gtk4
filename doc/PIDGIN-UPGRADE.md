@@ -426,6 +426,24 @@ Features in `libpurple/protocols/irc/` (testable with the GTK 2 UI):
 - **Built-in SASL** PLAIN and EXTERNAL, independent of cyrus-sasl. When `HAVE_CYRUS_SASL` is set, cyrus is still used for other mechanisms.
 - **CAP 302 negotiation** with `server-time` (message timestamps), `echo-message` (sent messages confirmed by the server), `away-notify`, `account-notify`, `multi-prefix` and `message-tags`. `msgid` tags feed `receiving-message-meta`.
 
+**Landed (HTTP upload), 2026-09-22:**
+- New `protocols/jabber/httpupload.[ch]` (XEP-0363 over libsoup 3). `configure.ac` requires `libsoup-3.0` whenever the jabber prpl is built, with a clear error otherwise. Only `libjabber.so` links libsoup; `libpurple.so` doesn't, and the ABI gate passes unchanged (no new libpurple symbols).
+- **Discovery** on `signed-on`: disco#info on the server domain and on each disco#items entry (without a node) finds `urn:xmpp:http:upload:0`; the JID and the XEP-0128 `max-file-size` are kept per connection. `disco.c` is untouched: httpupload sends its own queries. prpls are probed before `purple_connections_init()`, so the connection signals are connected from a 0 ms timeout.
+- **Sending:** `jabber_si_xfer_init()` offers the transfer to `jabber_http_upload_send_xfer()` first (when the service is known, the file fits, and the account setting `http_upload` isn't FALSE). It requests a slot (filename, size, `g_content_type_guess` type), then PUTs the file with `soup_session_send_and_read_async`, streaming a `GFileInputStream`. Only the slot's `Authorization`/`Cookie`/`Expires` headers are sent, with CR/LF removed. Progress goes through `purple_xfer_set_bytes_sent`/`update_progress` (throttled to 10/s), and cancel through a `GCancellable`. On success the GET URL goes out as the body plus `<x xmlns='jabber:x:oob'><url>` (1:1 with a local echo into the IM conversation; MUC as groupchat, echoed by the room). A failure before the PUT hands 1:1 transfers back to SI; after it, or for MUCs, the transfer fails with `purple_xfer_error()`. Proxy: the account's proxy, else the default `GProxyResolver` for GNOME/environment settings, or the explicit global HTTP/SOCKS proxy (Tor → socks5), mapped onto the `SoupSession`.
+- **MUC:** `chat_can_receive_file`/`chat_send_file` implemented; `can_receive_file` is TRUE for everyone while an upload service is available.
+- **Receiving:** `jm_body_with_oob()` (message.c) calls the new `jabber_oob_x_append_to_body()` (oob.c). A body that already is or contains the OOB URL (0363 uploads, OMEMO `aesgcm://`) passes through unchanged. Before, the prpl rewrote it into an `<a href='…'>` with an unescaped attribute and duplicated URLs containing `&`. Nothing is downloaded by the prpl. There's no `oob-url` meta yet, because `receiving-message-meta` doesn't exist in this tree: the UI should detect "body is a single URL".
+- `libxmpp.c` changes: 3 prpl-table entries and a one-line `http_upload` account option (bool, default TRUE; a new additive account setting).
+- **Verified:**
+  - unit tests for slot/error/disco parsing, the request element, content types, OOB folding and the PUT against a `SoupServer` (headers, body SHA-256 on 3 MiB, 403, cancel mid-PUT, missing file);
+  - an end-to-end run of a throwaway libpurple client against a fake XMPP server with an upload service (discovery, 1:1 and MUC uploads with the GET URL serving identical bytes, SI fallback on a refused slot, the MUC quota error, upload through an account HTTP proxy, the `http_upload=FALSE` switch, cancel mid-PUT, disconnect with a pending slot request, an incoming body+OOB URL passing through), also under ASan;
+  - the GTK 2 pidgin from the prefix loads `libxmpp.so` cleanly headless with `-n`.
+  - Not tested against a real Prosody or ejabberd: neither is installed.
+- **Open:**
+  - OMEMO: a 1:1 upload's URL message goes through `jabber_send`, so `jabber-sending-xmlnode` hooks (the OMEMO plugin) see it. The plugin should either skip it or do aesgcm uploads itself; plain uploads are unencrypted on the server.
+  - The URL message bypasses `jabber_message_send`, so it gets none of the send-path extras (receipt request, origin-id, `sending-message-meta`) that the message agent adds.
+  - `retry` errors aren't retried automatically.
+  - pidgin4's transfer UI should show upload progress, and it can offer "send file" for MUCs.
+
 ### M9: Discord and Steam plugin integration (patches to the user's forks; needs M4 + M8)
 Constraint: every change must keep `libdiscord.so` and `libsteam.so` loadable and fully working in the stock Pidgin 2.14.14. They use only symbols from the original ABI, gate new behaviour on the `message-meta` ui_info key, and emit signals only when it's present. Anything that can't be done that way is dropped.
 

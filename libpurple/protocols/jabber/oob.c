@@ -249,4 +249,58 @@ void jabber_oob_parse(JabberStream *js, const char *from, JabberIqType type,
 	}
 }
 
+void
+jabber_oob_x_append_to_body(GString *body, xmlnode *x)
+{
+	xmlnode *url, *desc;
+	char *urltxt, *desctxt, *escaped_url, *escaped_desc, *trimmed;
 
+	url = xmlnode_get_child(x, "url");
+	if (url == NULL)
+		return;
+
+	urltxt = xmlnode_get_data(url);
+	if (urltxt == NULL)
+		return;
+	g_strstrip(urltxt);
+	if (*urltxt == '\0') {
+		g_free(urltxt);
+		return;
+	}
+
+	escaped_url = purple_markup_escape_text(urltxt, -1);
+	trimmed = g_strstrip(g_strdup(body->str));
+
+	if (purple_strequal(trimmed, escaped_url) ||
+	    purple_strequal(trimmed, urltxt) ||
+	    (*trimmed && (strstr(trimmed, escaped_url) || strstr(trimmed, urltxt)))) {
+		/* Already there, e.g. an XEP-0363 upload: body == URL. */
+		g_free(trimmed);
+		g_free(escaped_url);
+		g_free(urltxt);
+		return;
+	}
+
+	desc = xmlnode_get_child(x, "desc");
+	desctxt = desc ? xmlnode_get_data(desc) : NULL;
+	escaped_desc = (desctxt && *desctxt) ?
+			purple_markup_escape_text(desctxt, -1) : g_strdup(escaped_url);
+
+	if (*trimmed)
+		g_string_append(body, "<br/>");
+	else
+		g_string_truncate(body, 0);
+
+	if (*escaped_desc && purple_strequal(escaped_desc, escaped_url))
+		/* A bare URL; the UI linkifies it. */
+		g_string_append(body, escaped_url);
+	else
+		g_string_append_printf(body, "<a href=\"%s\">%s</a>",
+				escaped_url, escaped_desc);
+
+	g_free(trimmed);
+	g_free(escaped_desc);
+	g_free(desctxt);
+	g_free(escaped_url);
+	g_free(urltxt);
+}

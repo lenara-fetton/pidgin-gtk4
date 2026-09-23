@@ -113,4 +113,7 @@
 #define NS_GOOGLE_SESSION_PHONE "http://www.google.com/session/phone"
 #define NS_GOOGLE_SESSION_VIDEO "http://www.google.com/session/video"
 
+/* M8: XEP-0363 HTTP File Upload (httpupload.c) */
+#define NS_HTTP_UPLOAD "urn:xmpp:http:upload:0"
+
 #endif /* PURPLE_JABBER_NAMESPACES_H_ */

@@ -27,6 +27,7 @@
 #include "ft.h"
 
 #include "jabber.h"
+#include "httpupload.h"
 
 void jabber_bytestreams_parse(JabberStream *js, const char *from,
                               JabberIqType type, const char *id, xmlnode *query);
@@ -34,6 +35,7 @@ void jabber_si_parse(JabberStream *js, const char *from, JabberIqType type,
                      const char *id, xmlnode *si);
 PurpleXfer *jabber_si_new_xfer(PurpleConnection *gc, const char *who);
 void jabber_si_xfer_send(PurpleConnection *gc, const char *who, const char *file);
+gboolean jabber_si_can_receive_file(PurpleConnection *gc, const char *who);
 void jabber_si_init(void);
 void jabber_si_uninit(void);
 

@@ -136,6 +136,7 @@ am__DEPENDENCIES_1 =
 @STATIC_JABBER_FALSE@	$(am__DEPENDENCIES_1) \
 @STATIC_JABBER_FALSE@	$(am__DEPENDENCIES_1) \
 @STATIC_JABBER_FALSE@	$(am__DEPENDENCIES_1) \
+@STATIC_JABBER_FALSE@	$(am__DEPENDENCIES_1) \
 @STATIC_JABBER_FALSE@	$(am__DEPENDENCIES_1)
 am__libjabber_la_SOURCES_DIST = adhoccommands.c adhoccommands.h auth.c \
 	auth.h auth_digest_md5.c auth_digest_md5.h auth_plain.c \
@@ -156,8 +157,8 @@ am__libjabber_la_SOURCES_DIST = adhoccommands.c adhoccommands.h auth.c \
 	pep.c pep.h ping.c ping.h presence.c presence.h roster.c \
 	roster.h si.c si.h stream_management.c stream_management.h \
 	useravatar.c useravatar.h usermood.c usermood.h usernick.c \
-	usernick.h usertune.c usertune.h xdata.c xdata.h auth_cyrus.c \
-	libxmpp.c
+	usernick.h usertune.c usertune.h xdata.c xdata.h httpupload.c \
+	httpupload.h auth_cyrus.c libxmpp.c
 @USE_CYRUS_SASL_TRUE@am__objects_1 = libjabber_la-auth_cyrus.lo
 am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
 	libjabber_la-auth_digest_md5.lo libjabber_la-auth_plain.lo \
@@ -180,7 +181,7 @@ am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
 	libjabber_la-stream_management.lo libjabber_la-useravatar.lo \
 	libjabber_la-usermood.lo libjabber_la-usernick.lo \
 	libjabber_la-usertune.lo libjabber_la-xdata.lo \
-	$(am__objects_1)
+	libjabber_la-httpupload.lo $(am__objects_1)
 @STATIC_JABBER_FALSE@am_libjabber_la_OBJECTS = $(am__objects_2)
 @STATIC_JABBER_TRUE@am_libjabber_la_OBJECTS = $(am__objects_2) \
 @STATIC_JABBER_TRUE@	libjabber_la-libxmpp.lo
@@ -235,6 +236,7 @@ am__depfiles_remade = ./$(DEPDIR)/libjabber_la-adhoccommands.Plo \
 	./$(DEPDIR)/libjabber_la-google_presence.Plo \
 	./$(DEPDIR)/libjabber_la-google_roster.Plo \
 	./$(DEPDIR)/libjabber_la-google_session.Plo \
+	./$(DEPDIR)/libjabber_la-httpupload.Plo \
 	./$(DEPDIR)/libjabber_la-ibb.Plo \
 	./$(DEPDIR)/libjabber_la-iceudp.Plo \
 	./$(DEPDIR)/libjabber_la-iq.Plo \
@@ -483,6 +485,8 @@ SHELL = @SHELL@
 SILC_CFLAGS = @SILC_CFLAGS@
 SILC_LIBS = @SILC_LIBS@
 SM_LIBS = @SM_LIBS@
+SOUP_CFLAGS = @SOUP_CFLAGS@
+SOUP_LIBS = @SOUP_LIBS@
 SQLITE3_CFLAGS = @SQLITE3_CFLAGS@
 SQLITE3_LIBS = @SQLITE3_LIBS@
 SSL_CERTIFICATES_DIR = @SSL_CERTIFICATES_DIR@
@@ -599,8 +603,8 @@ JABBERSOURCES = adhoccommands.c adhoccommands.h auth.c auth.h \
 	pep.c pep.h ping.c ping.h presence.c presence.h roster.c \
 	roster.h si.c si.h stream_management.c stream_management.h \
 	useravatar.c useravatar.h usermood.c usermood.h usernick.c \
-	usernick.h usertune.c usertune.h xdata.c xdata.h \
-	$(am__append_1)
+	usernick.h usertune.c usertune.h xdata.c xdata.h httpupload.c \
+	httpupload.h $(am__append_1)
 AM_CFLAGS = $(st)
 libxmpp_la_LDFLAGS = -module -avoid-version
 @STATIC_JABBER_FALSE@st = 
@@ -611,6 +615,7 @@ libxmpp_la_LDFLAGS = -module -avoid-version
 @STATIC_JABBER_TRUE@libjabber_la_CFLAGS = $(AM_CFLAGS)
 @STATIC_JABBER_FALSE@pkg_LTLIBRARIES = libjabber.la libxmpp.la
 @STATIC_JABBER_FALSE@libjabber_la_LIBADD = $(GLIB_LIBS) $(SASL_LIBS) $(LIBXML_LIBS) \
+@STATIC_JABBER_FALSE@	$(SOUP_LIBS) \
 @STATIC_JABBER_FALSE@	$(FARSIGHT_LIBS) \
 @STATIC_JABBER_FALSE@	$(GSTREAMER_LIBS) \
 @STATIC_JABBER_FALSE@	$(GSTINTERFACES_LIBS)
@@ -625,7 +630,8 @@ AM_CPPFLAGS = \
 	$(LIBXML_CFLAGS) \
 	$(FARSIGHT_CFLAGS) \
 	$(GSTREAMER_CFLAGS) \
-	$(GSTINTERFACES_CFLAGS)
+	$(GSTINTERFACES_CFLAGS) \
+	$(SOUP_CFLAGS)
 
 all: all-am
 
@@ -733,6 +739,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-google_presence.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-google_roster.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-google_session.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-httpupload.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-ibb.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-iceudp.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-iq.Plo@am__quote@ # am--include-marker
@@ -1098,6 +1105,13 @@ libjabber_la-xdata.lo: xdata.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-xdata.lo `test -f 'xdata.c' || echo '$(srcdir)/'`xdata.c
 
+libjabber_la-httpupload.lo: httpupload.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-httpupload.lo -MD -MP -MF $(DEPDIR)/libjabber_la-httpupload.Tpo -c -o libjabber_la-httpupload.lo `test -f 'httpupload.c' || echo '$(srcdir)/'`httpupload.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-httpupload.Tpo $(DEPDIR)/libjabber_la-httpupload.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='httpupload.c' object='libjabber_la-httpupload.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-httpupload.lo `test -f 'httpupload.c' || echo '$(srcdir)/'`httpupload.c
+
 libjabber_la-auth_cyrus.lo: auth_cyrus.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-auth_cyrus.lo -MD -MP -MF $(DEPDIR)/libjabber_la-auth_cyrus.Tpo -c -o libjabber_la-auth_cyrus.lo `test -f 'auth_cyrus.c' || echo '$(srcdir)/'`auth_cyrus.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-auth_cyrus.Tpo $(DEPDIR)/libjabber_la-auth_cyrus.Plo
@@ -1264,6 +1278,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-google_presence.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_roster.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_session.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-httpupload.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-ibb.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iceudp.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iq.Plo
@@ -1356,6 +1371,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-google_presence.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_roster.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_session.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-httpupload.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-ibb.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iceudp.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-iq.Plo

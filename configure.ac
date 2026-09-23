@@ -1252,6 +1252,20 @@ for i in $DYNAMIC_PRPLS ; do
 	esac
 done
 
+dnl # libsoup 3: XEP-0363 HTTP File Upload in the jabber prpl. Only libjabber
+dnl # links it; libpurple itself does not (see doc/PIDGIN-UPGRADE.md, M8).
+if test "x$static_jabber" = "xyes" -o "x$dynamic_jabber" = "xyes" ; then
+	PKG_CHECK_MODULES([SOUP], [libsoup-3.0 >= 3.0], [], [
+		AC_MSG_ERROR([
+libsoup 3 (libsoup-3.0.pc) development headers not found.
+The XMPP (jabber) protocol needs it for HTTP File Upload (XEP-0363).
+Install net-libs/libsoup:3.0, or build without the jabber protocol.
+])
+	])
+fi
+AC_SUBST(SOUP_CFLAGS)
+AC_SUBST(SOUP_LIBS)
+
 AC_ARG_ENABLE(plugins, [AC_HELP_STRING([--disable-plugins], [compile without plugin support])], , enable_plugins=yes)
 AC_ARG_WITH(krb4, [AC_HELP_STRING([--with-krb4=PREFIX], [compile Zephyr plugin with Kerberos 4 support])], kerberos="$withval", kerberos="no")
 AC_ARG_WITH(zephyr, [AC_HELP_STRING([--with-zephyr=PREFIX], [compile Zephyr plugin against external libzephyr])], zephyr="$withval", zephyr="no")

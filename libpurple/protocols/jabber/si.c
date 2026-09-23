@@ -34,6 +34,7 @@
 #include "buddy.h"
 #include "data.h"
 #include "disco.h"
+#include "httpupload.h"
 #include "jabber.h"
 #include "ibb.h"
 #include "iq.h"
@@ -72,6 +73,9 @@ typedef struct _JabberSIXfer {
 	JabberIBBSession *ibb_session;
 	guint ibb_timeout_handle;
 	PurpleCircBuffer *ibb_buffer;
+
+	/* XEP-0363 was tried first; now it's SI's turn. */
+	gboolean http_upload_tried;
 } JabberSIXfer;
 
 /* some forward declarations */
@@ -1516,6 +1520,15 @@ static void jabber_si_xfer_init(PurpleXfer *xfer)
 		char *resource;
 		GList *resources = NULL;
 
+		/* Prefer the server's HTTP upload service (XEP-0363) when it has
+		 * one and the file fits; it comes back here if it fails before
+		 * the PUT starts. */
+		if (!jsx->http_upload_tried) {
+			jsx->http_upload_tried = TRUE;
+			if (jabber_http_upload_send_xfer(jsx->js, xfer, jabber_si_xfer_init))
+				return;
+		}
+
 		if(NULL != (resource = jabber_get_resource(xfer->who))) {
 			/* they've specified a resource, no need to ask or
 			 * default or anything, just do it */
@@ -1812,17 +1825,30 @@ void jabber_si_parse(JabberStream *js, const char *from, JabberIqType type,
 	purple_xfer_request(xfer);
 }
 
+gboolean
+jabber_si_can_receive_file(PurpleConnection *gc, const char *who)
+{
+	/* With an HTTP upload service anyone can be sent a link. */
+	if (jabber_http_upload_available(gc))
+		return TRUE;
+	return jabber_can_receive_file(gc, who);
+}
+
 void
 jabber_si_init(void)
 {
 	jabber_iq_register_handler("si", "http://jabber.org/protocol/si", jabber_si_parse);
 
 	jabber_ibb_register_open_handler(jabber_si_xfer_ibb_open_cb);
+
+	jabber_http_upload_init();
 }
 
 void
 jabber_si_uninit(void)
 {
+	jabber_http_upload_uninit();
+
 	jabber_ibb_unregister_open_handler(jabber_si_xfer_ibb_open_cb);
 }
 

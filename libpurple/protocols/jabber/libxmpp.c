@@ -112,7 +112,7 @@ static PurplePluginProtocolInfo prpl_info =
 	jabber_roomlist_get_list,		/* roomlist_get_list */
 	jabber_roomlist_cancel,			/* roomlist_cancel */
 	NULL,							/* roomlist_expand_category */
-	jabber_can_receive_file,		/* can_receive_file */
+	jabber_si_can_receive_file,		/* can_receive_file */
 	jabber_si_xfer_send,			/* send_file */
 	jabber_si_new_xfer,				/* new_xfer */
 	jabber_offline_message,			/* offline_message */
@@ -133,8 +133,8 @@ static PurplePluginProtocolInfo prpl_info =
 	NULL, /* add_buddy_with_invite */
 	NULL, /* add_buddies_with_invite */
 	NULL, /* get_cb_alias */
-	NULL, /* chat_can_receive_file */
-	NULL, /* chat_send_file */
+	jabber_http_upload_chat_can_receive_file, /* chat_can_receive_file */
+	jabber_http_upload_chat_send_file, /* chat_send_file */
 };
 
 static gboolean load_plugin(PurplePlugin *plugin)
@@ -309,6 +309,8 @@ init_plugin(PurplePlugin *plugin)
 						  "ft_proxies", NULL);
 	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options,
 						  option);
+
+	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, purple_account_option_bool_new(_("Send files by HTTP upload (XEP-0363)"), "http_upload", TRUE));
 
 	option = purple_account_option_string_new(_("BOSH URL"),
 						  "bosh_url", NULL);
