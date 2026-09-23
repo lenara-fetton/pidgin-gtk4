@@ -63,6 +63,11 @@ G_DECLARE_FINAL_TYPE(PidginMessageView, pidgin_message_view, PIDGIN, MESSAGE_VIE
  *   "retract-requested" (PidginMessage *msg)    own messages only
  *   "top-reached"       ()
  *       The view was scrolled to its top (M4b loads older history).
+ *   "focus-entry-requested" ()
+ *       A message action (reply, react, edit, delete, from the row menu or
+ *       the hover action bar) is done: the compose entry should take the
+ *       keyboard focus back. Emitted from an idle, after the menu or
+ *       emoji chooser has closed.
  *   "populate-menu"     (PidginMessage *msg, GMenu *section)
  *       Emitted when a row is bound, to let plugins add items to the
  *       row's context menu (replaces GtkTextView "populate-popup" hooks,
@@ -146,6 +151,17 @@ guint pidgin_message_view_get_n_visible(PidginMessageView *view);
  */
 void pidgin_message_view_set_message_actions(PidginMessageView *view, gboolean enabled,
                                              gboolean can_moderate);
+
+/**
+ * Test hook: hovers the row showing @msg as the pointer would (without
+ * the delay) and moves the hover off every other row; @msg NULL moves it
+ * off all. Returns FALSE if no row shows @msg (it is not bound: scroll to
+ * it first). *@bar is set to the hover action bar if it is shown, else
+ * NULL. Its buttons are named react, reply, edit, delete and more
+ * (gtk_widget_get_name()); hidden ones don't apply to the message.
+ */
+gboolean pidgin_message_view_test_hover(PidginMessageView *view, PidginMessage *msg,
+                                        GtkWidget **bar);
 
 /** Updates every visible row (e.g. after the show_timestamps pref changed). */
 void pidgin_message_view_refresh(PidginMessageView *view);

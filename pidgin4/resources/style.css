@@ -142,6 +142,40 @@ pidgin-message-row .reactions button {
 	border-radius: 10px;
 }
 
+/* The hover action bar (React, Reply, Edit, Delete, More) over the top
+ * right corner of the row under the pointer. The theme's view colours,
+ * so it follows the light or dark variant however it is chosen. */
+pidgin-message-row .pidgin-row-actions {
+	margin-right: 4px;
+	padding: 1px;
+	border-radius: 6px;
+	border: 1px solid @borders;
+	background-color: @theme_base_color;
+	color: @theme_text_color;
+	box-shadow: 0 1px 3px alpha(black, 0.25);
+}
+
+pidgin-message-row .pidgin-row-actions button {
+	min-width: 22px;
+	min-height: 22px;
+	padding: 0;
+	border-radius: 4px;
+	color: inherit;
+	-gtk-icon-size: 16px;
+}
+
+pidgin-message-row .pidgin-row-actions button:hover {
+	background-color: alpha(currentColor, 0.12);
+}
+
+pidgin-message-row .pidgin-row-actions button:active {
+	background-color: alpha(currentColor, 0.22);
+}
+
+pidgin-message-row .pidgin-row-actions button#delete:hover {
+	color: @error_color;
+}
+
 pidgin-message-row .receipt { font-size: smaller; opacity: 0.6; }
 pidgin-message-row .receipt.displayed { color: #3584e4; opacity: 1; }
 

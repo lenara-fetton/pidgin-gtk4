@@ -1876,6 +1876,233 @@ test_chat(PurpleConversation **chat_out)
 	}
 }
 
+/**************************************************************************
+ * The hover action bar on message rows (pidginmessageview.c)
+ **************************************************************************/
+
+#define HOVER_BUDDY "hover@example.invalid"
+
+/* The shown buttons of a hover action bar, e.g. "react,reply,more"; ""
+ * for no bar. */
+static char *
+bar_buttons(GtkWidget *bar)
+{
+	GString *s = g_string_new(NULL);
+	GtkWidget *child;
+
+	for (child = bar ? gtk_widget_get_first_child(bar) : NULL; child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if (gtk_widget_get_visible(child))
+			g_string_append_printf(s, "%s%s", s->len ? "," : "", gtk_widget_get_name(child));
+	return g_string_free(s, FALSE);
+}
+
+static GtkWidget *
+bar_button(GtkWidget *bar, const char *name)
+{
+	GtkWidget *child;
+
+	for (child = bar ? gtk_widget_get_first_child(bar) : NULL; child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if (purple_strequal(gtk_widget_get_name(child), name))
+			return child;
+	return NULL;
+}
+
+/* Hovers @msg's row (scrolled into view first) and checks the bar shows
+ * exactly @expected ("" for none). Returns the bar. */
+static GtkWidget *
+hover_check(PurpleConversation *conv, PidginMessage *msg, const char *expected,
+            const char *what)
+{
+	PidginMessageView *view = view_of(conv);
+	GtkWidget *bar = NULL;
+	gboolean bound;
+	char *buttons;
+
+	pidgin_message_view_scroll_to_message(view, msg);
+	spin(150);
+	bound = pidgin_message_view_test_hover(view, msg, &bar);
+	CHECK(bound, "%s: the row isn't bound", what);
+	buttons = bar_buttons(bar);
+	CHECK(purple_strequal(buttons, expected), "%s: bar \"%s\", expected \"%s\"", what,
+	      buttons, expected);
+	g_free(buttons);
+	return bar;
+}
+
+static GtkWidget *
+first_of_type(GtkWidget *widget, GType type)
+{
+	GtkWidget *child, *found;
+
+	if (widget == NULL || G_TYPE_CHECK_INSTANCE_TYPE(widget, type))
+		return widget;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if ((found = first_of_type(child, type)) != NULL)
+			return found;
+	return NULL;
+}
+
+static gboolean
+entry_has_focus(PidginConversation *gtkconv)
+{
+	GtkRoot *root = gtk_widget_get_root(gtkconv->entry);
+
+	return root != NULL && gtk_root_get_focus(root) == gtkconv->entry;
+}
+
+static void
+count_signal_cb(PidginMessageView *view, PidginMessage *msg, int *count)
+{
+	(*count)++;
+}
+
+static void
+cancel_banner_button(PidginConversation *gtkconv)
+{
+	GtkWidget *button = first_of_type(gtkconv->banner, GTK_TYPE_BUTTON);
+
+	if (button != NULL && gtk_widget_get_visible(gtkconv->banner))
+		g_signal_emit_by_name(button, "clicked");
+}
+
+static void
+test_hover_bar(PurpleConversation *chat)
+{
+	PurpleConversation *conv;
+	PidginConversation *gtkconv;
+	PidginMessage *received, *sent, *plain, *system_row;
+	GtkWidget *bar, *row, *chooser, *body;
+	GHashTable *meta;
+	gulong id;
+	int replies = 0;
+	time_t now = time(NULL);
+
+	/* Its own IM, closed at the end (later steps count the tabs). */
+	conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, st_account, HOVER_BUDDY);
+	gtkconv = PIDGIN_CONVERSATION(conv);
+	CHECK(gtkconv != NULL && gtkconv->win != NULL, "hover: no conversation");
+	if (gtkconv == NULL || gtkconv->win == NULL)
+		return;
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+
+	meta = meta_new("conv-type", "im", "sender", HOVER_BUDDY, "stanza-id", "hv1",
+	                "server-id", "hvsrv1", NULL);
+	emit_meta(HOVER_BUDDY, meta);
+	g_hash_table_destroy(meta);
+	purple_conv_im_write(PURPLE_CONV_IM(conv), HOVER_BUDDY, "hover over me",
+	                     PURPLE_MESSAGE_RECV, now - 30);
+	received = last_message(conv);
+	purple_conv_im_write(PURPLE_CONV_IM(conv), HOVER_BUDDY, "no ids here",
+	                     PURPLE_MESSAGE_RECV, now - 20);
+	plain = last_message(conv);
+	purple_conversation_write(conv, NULL, "a system row", PURPLE_MESSAGE_SYSTEM, now - 10);
+	system_row = last_message(conv);
+	purple_conv_im_send(PURPLE_CONV_IM(conv), "my own message");
+	sent = last_message(conv);
+	CHECK(pidgin_message_get_stanza_id(sent) != NULL, "hover: the sent message has no id");
+	spin(200);
+
+	/* Which buttons, per message */
+	hover_check(conv, received, "react,reply,more", "received");
+	hover_check(conv, plain, "", "no ids");
+	hover_check(conv, system_row, "", "system row");
+	bar = hover_check(conv, sent, "react,reply,edit,delete,more", "own message");
+	if (bar == NULL)
+		goto out;
+	row = gtk_widget_get_parent(bar);
+	/* one bar per row, made once */
+	{
+		GtkWidget *again = NULL;
+
+		pidgin_message_view_test_hover(view_of(conv), NULL, NULL);
+		CHECK(!gtk_widget_get_visible(bar), "hover: the bar stays after leaving");
+		pidgin_message_view_test_hover(view_of(conv), sent, &again);
+		CHECK(again == bar, "hover: a second bar was made");
+	}
+
+	/* React opens the emoji chooser (the row menu's), from the button */
+	g_signal_emit_by_name(bar_button(bar, "react"), "clicked");
+	spin(100);
+	chooser = first_of_type(row, GTK_TYPE_EMOJI_CHOOSER);
+	CHECK(chooser != NULL && gtk_widget_get_visible(chooser), "hover: no emoji chooser");
+	CHECK(gtk_widget_get_visible(bar), "hover: the bar hid under its popover");
+	if (chooser != NULL)
+		gtk_popover_popdown(GTK_POPOVER(chooser));
+	spin(100);
+	CHECK(entry_has_focus(gtkconv), "hover: focus not back in the entry after React");
+
+	/* Reply emits reply-requested; the entry has the focus */
+	id = g_signal_connect(view_of(conv), "reply-requested", G_CALLBACK(count_signal_cb),
+	                      &replies);
+	g_signal_emit_by_name(bar_button(bar, "reply"), "clicked");
+	spin(100);
+	g_signal_handler_disconnect(view_of(conv), id);
+	CHECK(replies == 1, "hover: reply-requested fired %d times", replies);
+	CHECK(gtkconv->replying != NULL, "hover: not replying");
+	CHECK(entry_has_focus(gtkconv), "hover: focus not in the entry after Reply");
+	cancel_banner_button(gtkconv);
+
+	/* Edit with the keyboard on the message: the entry gets the focus */
+	body = find_widget(row, "body", NULL);
+	if (body == NULL || !gtk_widget_grab_focus(body))
+		gtk_widget_grab_focus(bar_button(bar, "more"));
+	CHECK(!entry_has_focus(gtkconv), "hover: couldn't move the focus off the entry");
+	g_signal_emit_by_name(bar_button(bar, "edit"), "clicked");
+	spin(100);
+	CHECK(gtkconv->editing != NULL, "hover: Edit didn't start editing");
+	CHECK(entry_has_focus(gtkconv), "hover: focus not in the entry after Edit");
+	cancel_banner_button(gtkconv);
+	CHECK(gtkconv->editing == NULL, "hover: still editing");
+
+	/* The row menu from More: an action, then the menu closes (and gives
+	 * the focus to the row); the entry still ends up with it. */
+	g_signal_emit_by_name(bar_button(bar, "more"), "clicked");
+	spin(100);
+	{
+		GtkWidget *menu = first_of_type(row, GTK_TYPE_POPOVER_MENU);
+
+		CHECK(menu != NULL && gtk_widget_get_visible(menu), "hover: More opened no menu");
+		CHECK(!entry_has_focus(gtkconv), "hover: the menu didn't take the focus");
+		gtk_widget_activate_action(row, "msg.edit", NULL);
+		if (menu != NULL)
+			gtk_popover_popdown(GTK_POPOVER(menu));
+	}
+	spin(100);
+	CHECK(gtkconv->editing != NULL, "hover: menu Edit didn't start editing");
+	CHECK(entry_has_focus(gtkconv), "hover: focus not in the entry after the menu's Edit");
+	cancel_banner_button(gtkconv);
+
+	/* The actions follow set_message_actions(): none, no bar at all */
+	pidgin_message_view_set_message_actions(view_of(conv), FALSE, FALSE);
+	CHECK(!gtk_widget_get_visible(bar), "hover: the bar stayed without actions");
+	pidgin_conv_update_buttons_by_protocol(conv);
+
+out:
+	pidgin_message_view_test_hover(view_of(conv), NULL, NULL);
+	purple_conversation_destroy(conv);
+	spin(100);
+
+	/* A chat on a prpl without send-reaction (as gtkconv.c sets it for
+	 * IRC or Steam): nothing, not even on our own messages with ids. */
+	if (chat != NULL) {
+		PidginConversation *gtkchat = PIDGIN_CONVERSATION(chat);
+		PidginMessage *mine = pidgin_message_view_get_last_sent(view_of(chat));
+
+		CHECK(mine != NULL && pidgin_message_get_stanza_id(mine) != NULL, "hover: chat message");
+		if (mine == NULL)
+			return;
+		pidgin_conv_window_switch_gtkconv(gtkchat->win, gtkchat);
+		hover_check(chat, mine, "react,reply,edit,delete,more", "own chat message");
+		pidgin_message_view_set_message_actions(view_of(chat), FALSE, FALSE);
+		hover_check(chat, mine, "", "chat without send-reaction");
+		pidgin_conv_update_buttons_by_protocol(chat);
+		pidgin_message_view_test_hover(view_of(chat), NULL, NULL);
+	}
+}
+
 static gboolean
 selftest_run(gpointer data)
 {
@@ -1894,6 +2121,7 @@ selftest_run(gpointer data)
 
 	test_im(&im);
 	test_chat(&chat);
+	test_hover_bar(chat);
 	test_attention(im);
 	test_paste_image(im);
 	test_attach(im);
