@@ -102,7 +102,8 @@ typedef enum {
 	SM_DISABLED,
 	SM_PLANNED,
 	SM_REQUESTED,
-	SM_ENABLED
+	SM_ENABLED,
+	SM_RESUMING    /* <resume/> sent, waiting for <resumed/> or <failed/> */
 } JabberStreamManagementState;
 
 struct _JabberStream
@@ -297,6 +298,51 @@ struct _JabberStream
 	guint32 sm_inbound_count;
 	guint32 sm_outbound_confirmed;
 	JabberStreamManagementState sm_state;
+
+	/* ---- M8 authentication and connection ---- */
+
+	/* XEP-0440: channel-binding types the server advertised (char *),
+	 * NULL if it didn't advertise any. */
+	GSList *server_cb_types;
+	/* A SCRAM-*-PLUS attempt failed on this stream: retry, and stay,
+	 * without channel binding (servers that don't support our binding
+	 * type and don't say so with XEP-0440). */
+	gboolean auth_plus_failed;
+	xmlnode *legacy_sasl_features; /* for that retry */
+
+	/* XEP-0388 SASL2 / XEP-0386 Bind2 / XEP-0484 FAST, see sasl2.c */
+	gboolean sasl2;                /* authenticating with SASL2 */
+	xmlnode *sasl2_features;       /* copy of <authentication/>, for retry */
+	gboolean sasl2_bind2_carbons;  /* Bind2 offers inline carbons */
+	gboolean sasl2_bind2_sm;       /* Bind2 offers inline SM enable */
+	gboolean sasl2_bind2_csi;      /* Bind2 offers inline CSI */
+	gboolean sasl2_inline_sm;      /* <authentication><inline><sm/> (resume) */
+	gboolean sasl2_sm_resume_sent; /* <resume/> went into <authenticate/> */
+	GSList *fast_mechs;            /* HT-* mechanisms the server offers */
+	gboolean fast_attempt;         /* this attempt uses a FAST token */
+	gboolean fast_failed;          /* don't try FAST again on this stream */
+	gchar *fast_request_mech;      /* HT-* mechanism asked for a token */
+	/* Set when carbons were enabled inline through Bind2, so carbons.c
+	 * can skip its own enable IQ. */
+	gboolean carbons_enabled_inline;
+
+	/* XEP-0368 direct TLS */
+	PurpleSrvTxtQueryData *srvs_query_data;
+	GList *connect_targets;        /* JabberConnectTarget queue */
+	gboolean srv_pending, srvs_pending;
+	/* _xmpp-client results go in srv_rec/max_srv_rec_idx above */
+	PurpleSrvResponse *srvs_resp;  /* _xmpps-client results */
+	int srvs_resp_count;
+	gboolean direct_tls;           /* current attempt is direct TLS */
+
+	/* XEP-0198: the connection dropped (non-fatal error), keep the
+	 * session resumable instead of closing the stream. */
+	gboolean sm_network_drop;
+
+	/* XEP-0352 Client State Indication, see csi.c */
+	gboolean csi_supported;
+	gboolean csi_sent_inactive;    /* last state sent was <inactive/> */
+	gboolean csi_ui_inactive;      /* UI said it isn't being looked at */
 };
 
 typedef gboolean (JabberFeatureEnabled)(JabberStream *js, const gchar *namespace);
@@ -339,6 +385,13 @@ void jabber_send_signal_cb(PurpleConnection *pc, xmlnode **packet,
                            gpointer unused);
 
 void jabber_stream_set_state(JabberStream *js, JabberStreamState state);
+
+/** RFC 6120 resource binding (the IQ). */
+void jabber_bind_start(JabberStream *js);
+/** Makes @a full_jid the stream's JID once bound (RFC 6120, Bind2 or an
+ *  XEP-0198 resumption).  Raises a connection error and returns FALSE if
+ *  it isn't valid. */
+gboolean jabber_stream_set_bound_jid(JabberStream *js, const char *full_jid);
 
 void jabber_register_parse(JabberStream *js, const char *from,
                            JabberIqType type, const char *id, xmlnode *query);

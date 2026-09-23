@@ -41,6 +41,101 @@
 
 static GSList *auth_mechs = NULL;
 
+guchar *
+jabber_auth_get_channel_binding(JabberStream *js, const char *type,
+                                const char **type_out, gsize *len)
+{
+	/* RFC 9266 says tls-exporter is the one to use with TLS 1.3; ssl-nss
+	 * only gives it for TLS 1.3 and has no tls-unique at all. */
+	static const char *const preferred[] = {
+		"tls-exporter",
+		"tls-server-end-point",
+	};
+	gsize i;
+
+	g_return_val_if_fail(len != NULL, NULL);
+	*len = 0;
+	if (type_out)
+		*type_out = NULL;
+
+	if (js->gsc == NULL)
+		return NULL;
+
+	for (i = 0; i < G_N_ELEMENTS(preferred); i++) {
+		const char *t = preferred[i];
+		guchar *data;
+
+		if (type != NULL) {
+			if (!purple_strequal(type, t))
+				continue;
+		} else if (js->server_cb_types != NULL &&
+		           !g_slist_find_custom(js->server_cb_types, t,
+		                                (GCompareFunc)strcmp)) {
+			/* XEP-0440: the server listed what it supports. */
+			continue;
+		}
+
+		data = purple_ssl_get_channel_binding(js->gsc, t, len);
+		if (data != NULL && *len > 0) {
+			if (type_out)
+				*type_out = t;
+			return data;
+		}
+		g_free(data);
+		*len = 0;
+	}
+
+	return NULL;
+}
+
+static gboolean
+mech_usable_in_sasl2(const JabberSaslMech *mech)
+{
+	/* Only the mechanisms whose start/challenge/success handlers don't send
+	 * anything behind our back (PLAIN's cleartext prompt excepted: SASL2 is
+	 * only used over TLS). */
+	return g_str_has_prefix(mech->name, "SCRAM-") ||
+	       purple_strequal(mech->name, "PLAIN");
+}
+
+JabberSaslMech *
+jabber_auth_pick_mech(JabberStream *js, GSList *server_mechs, gboolean sasl2)
+{
+	GSList *l;
+	gboolean have_cb;
+	gsize cb_len;
+	guchar *cb;
+
+	cb = jabber_auth_get_channel_binding(js, NULL, NULL, &cb_len);
+	have_cb = (cb != NULL);
+	g_free(cb);
+
+	for (l = auth_mechs; l; l = l->next) {
+		JabberSaslMech *possible = l->data;
+
+		/* Is this the Cyrus SASL mechanism? */
+		if (purple_strequal(possible->name, "*")) {
+			if (sasl2)
+				continue;
+			return possible;
+		}
+
+		if (sasl2 && !mech_usable_in_sasl2(possible))
+			continue;
+
+		/* SCRAM-*-PLUS needs channel binding data for this connection. */
+		if (g_str_has_suffix(possible->name, "-PLUS") &&
+				(!have_cb || js->auth_plus_failed))
+			continue;
+
+		/* Can we find this mechanism in the server's list? */
+		if (g_slist_find_custom(server_mechs, possible->name, (GCompareFunc)strcmp))
+			return possible;
+	}
+
+	return NULL;
+}
+
 static void auth_old_result_cb(JabberStream *js, const char *from,
                                JabberIqType type, const char *id,
                                xmlnode *packet, gpointer data);
@@ -132,7 +227,6 @@ void
 jabber_auth_start(JabberStream *js, xmlnode *packet)
 {
 	GSList *mechanisms = NULL;
-	GSList *l;
 	xmlnode *response = NULL;
 	xmlnode *mechs, *mechnode;
 	JabberSaslState state;
@@ -144,6 +238,12 @@ jabber_auth_start(JabberStream *js, xmlnode *packet)
 	}
 
 	mechs = xmlnode_get_child(packet, "mechanisms");
+	if (mechs && js->legacy_sasl_features != packet) {
+		/* Kept for a retry without channel binding. */
+		if (js->legacy_sasl_features)
+			xmlnode_free(js->legacy_sasl_features);
+		js->legacy_sasl_features = xmlnode_copy(packet);
+	}
 	if(!mechs) {
 		purple_connection_error_reason(js->gc,
 			PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
@@ -163,21 +263,7 @@ jabber_auth_start(JabberStream *js, xmlnode *packet)
 
 	}
 
-	for (l = auth_mechs; l; l = l->next) {
-		JabberSaslMech *possible = l->data;
-
-		/* Is this the Cyrus SASL mechanism? */
-		if (purple_strequal(possible->name, "*")) {
-			js->auth_mech = possible;
-			break;
-		}
-
-		/* Can we find this mechanism in the server's list? */
-		if (g_slist_find_custom(mechanisms, possible->name, (GCompareFunc)strcmp)) {
-			js->auth_mech = possible;
-			break;
-		}
-	}
+	js->auth_mech = jabber_auth_pick_mech(js, mechanisms, FALSE);
 
 	while (mechanisms) {
 		g_free(mechanisms->data);
@@ -460,6 +546,24 @@ void jabber_auth_handle_failure(JabberStream *js, xmlnode *packet)
 {
 	PurpleConnectionError reason = PURPLE_CONNECTION_ERROR_NETWORK_ERROR;
 	char *msg = NULL;
+
+	/*
+	 * A server that doesn't support our channel binding type (and doesn't
+	 * say which it does, XEP-0440) rejects SCRAM-*-PLUS.  Try once more
+	 * without binding, as the client did before -PLUS support; a wrong
+	 * password then fails the second attempt too.
+	 */
+	if (js->auth_mech && g_str_has_suffix(js->auth_mech->name, "-PLUS") &&
+			!js->auth_plus_failed && js->legacy_sasl_features) {
+		purple_debug_warning("jabber", "%s failed; retrying without channel binding\n",
+		                     js->auth_mech->name);
+		js->auth_plus_failed = TRUE;
+		if (js->auth_mech->dispose)
+			js->auth_mech->dispose(js);
+		js->auth_mech = NULL;
+		jabber_auth_start(js, js->legacy_sasl_features);
+		return;
+	}
 
 	if (js->auth_mech && js->auth_mech->handle_failure) {
 		xmlnode *stanza = NULL;

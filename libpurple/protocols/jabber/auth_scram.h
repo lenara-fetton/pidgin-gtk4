@@ -34,7 +34,7 @@
  */
 typedef struct {
 	const char *mech_substr;
-	const char *name;
+	const char *name;   /* "sha1", "sha256" or "sha512" */
 	guint size;
 } JabberScramHash;
 
@@ -49,6 +49,16 @@ typedef struct {
 	gchar *password;
 	gboolean channel_binding;
 	int step;
+
+	/*
+	 * RFC 5802 section 6 channel binding.  gs2_header is the GS2 header
+	 * sent in the client-first message: "n,," (no channel binding, the
+	 * default when NULL), "y,," (client supports it but the server does
+	 * not seem to) or "p=<cb-name>,," (SCRAM-*-PLUS).  cb_data holds the
+	 * binding data for "p=" (NULL otherwise).
+	 */
+	gchar *gs2_header;
+	GString *cb_data;
 } JabberScramData;
 
 #include "auth.h"
@@ -86,6 +96,18 @@ gboolean jabber_scram_calc_proofs(JabberScramData *data, GString *salt,
  * Feed the algorithm with the data from the server.
  */
 gboolean jabber_scram_feed_parser(JabberScramData *data, gchar *in, gchar **out);
+
+/**
+ * Returns the value of the c= attribute of the client-final message:
+ * base64(gs2_header || cb_data).  "biws" for the plain "n,," header.
+ */
+gchar *jabber_scram_channel_binding_attr(const JabberScramData *data);
+
+/**
+ * Looks up the JabberScramHash for a mechanism name such as
+ * "SCRAM-SHA-256-PLUS".  Returns NULL for unknown hashes.
+ */
+const JabberScramHash *jabber_scram_hash_for_mech(const char *mech);
 
 /**
  * Clean up and destroy the data struct
