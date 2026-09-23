@@ -736,8 +736,6 @@ pidgin_status_box_new(void)
 	                      &statusbox_handle, PURPLE_CALLBACK(account_status_changed_cb), NULL);
 	purple_signal_connect(purple_accounts_get_handle(), "account-connecting",
 	                      &statusbox_handle, PURPLE_CALLBACK(connecting_changed_cb), NULL);
-	purple_signal_connect(purple_accounts_get_handle(), "account-disconnected",
-	                      &statusbox_handle, PURPLE_CALLBACK(connecting_changed_cb), NULL);
 	purple_signal_connect(purple_connections_get_handle(), "signed-on",
 	                      &statusbox_handle, PURPLE_CALLBACK(connecting_changed_cb), NULL);
 	purple_signal_connect(purple_connections_get_handle(), "signed-off",
