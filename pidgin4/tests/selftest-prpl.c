@@ -173,6 +173,13 @@ ipc_mds_publish(PurpleAccount *account, const char *conv, const char *id)
 	return TRUE;
 }
 
+static gboolean
+st_send_attention(PurpleConnection *gc, const char *who, guint type)
+{
+	record("send-attention", who, NULL, NULL);
+	return TRUE;
+}
+
 static PurpleCmdId st_cmd_id;
 
 static gboolean
@@ -235,6 +242,7 @@ static PurplePluginProtocolInfo st_prpl_info = {
 	.chat_info = st_chat_info,
 	.join_chat = st_join_chat,
 	.chat_send = st_send_chat,
+	.send_attention = st_send_attention,
 	.struct_size = sizeof(PurplePluginProtocolInfo),
 };
 

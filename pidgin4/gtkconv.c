@@ -1010,8 +1010,12 @@ update_features(PidginConversation *gtkconv)
 		(prpl_info && (prpl_info->options & OPT_PROTO_USE_POINTSIZE))
 			? PIDGIN_MARKUP_USE_POINTSIZE : 0);
 	pidgin_compose_entry_set_smiley_category(entry, purple_account_get_protocol_name(account));
-	if (gtkconv->toolbar != NULL)
+	if (gtkconv->toolbar != NULL) {
 		pidgin_format_toolbar_update(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar));
+		/* Pidgin 2's toolbar "Attention!" button, for IMs */
+		pidgin_format_toolbar_set_show_attention(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar),
+			!is_chat(gtkconv) && prpl_info != NULL && prpl_info->send_attention != NULL);
+	}
 
 	pidgin_message_view_set_nick_color_scheme(view, account_is_jabber(account)
 		? PIDGIN_NICK_COLOR_XEP0392 : PIDGIN_NICK_COLOR_PIDGIN);

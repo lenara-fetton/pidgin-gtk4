@@ -45,6 +45,7 @@
 #include "gtkconv.h"
 #include "gtkconvwin.h"
 #include "pidgincomposeentry.h"
+#include "pidginformattoolbar.h"
 #include "pidginconvmeta.h"
 #include "pidginmessage.h"
 #include "pidginmessageindex.h"
@@ -425,6 +426,51 @@ test_buddy_icon(PurpleConversation *conv)
 	purple_buddy_icons_set_for_user(st_account, ST_BUDDY, NULL, 0, NULL);
 	pidgin_conv_update_buddy_icon(conv);
 	purple_prefs_set_bool(PIDGIN_PREFS_ROOT "/conversations/im/show_buddy_icons", show);
+}
+
+/* The toolbar's "Attention!" button: shown for a prpl with
+ * send_attention, sends it; hidden without. */
+static void
+test_attention(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PurplePluginProtocolInfo *prpl_info =
+		PURPLE_PLUGIN_PROTOCOL_INFO(purple_account_get_connection(st_account)->prpl);
+	GtkWidget *button;
+	gboolean (*send_attention)(PurpleConnection *, const char *, guint);
+
+	CHECK(gtkconv->toolbar != NULL, "no toolbar");
+	if (gtkconv->toolbar == NULL)
+		return;
+	button = pidgin_format_toolbar_get_attention_button(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar));
+	/* the button acts on its window's active conversation, its own tab */
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(gtk_widget_get_visible(button), "no attention button with send_attention");
+	CHECK(gtk_widget_activate(button), "attention button not activatable");
+	spin(400);      /* a button emits clicked after its activate animation */
+	CHECK(purple_strequal(call("send-attention"), ST_BUDDY "||"), "send-attention: %s",
+	      call("send-attention"));
+
+	send_attention = prpl_info->send_attention;
+	prpl_info->send_attention = NULL;
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(!gtk_widget_get_visible(button), "attention button without send_attention");
+	prpl_info->send_attention = send_attention;
+	pidgin_conv_update_buttons_by_protocol(conv);
+
+	/* never in a chat */
+	{
+		GList *l;
+
+		for (l = purple_get_chats(); l != NULL; l = l->next) {
+			PidginConversation *gtkchat = PIDGIN_CONVERSATION((PurpleConversation *)l->data);
+
+			if (gtkchat != NULL && gtkchat->toolbar != NULL)
+				CHECK(!gtk_widget_get_visible(pidgin_format_toolbar_get_attention_button(
+				          PIDGIN_FORMAT_TOOLBAR(gtkchat->toolbar))), "attention in a chat");
+		}
+	}
 }
 
 static gboolean
@@ -878,6 +924,7 @@ selftest_run(gpointer data)
 
 	test_im(&im);
 	test_chat(&chat);
+	test_attention(im);
 	spin(200);
 
 	/* Tabs: both in one window (placement "last" unless the pref says

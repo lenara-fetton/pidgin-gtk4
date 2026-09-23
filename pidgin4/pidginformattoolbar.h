@@ -53,6 +53,15 @@ PidginComposeEntry *pidgin_format_toolbar_get_entry(PidginFormatToolbar *toolbar
 /** Re-reads the entry's capabilities (call after pidgin_compose_entry_set_caps()). */
 void pidgin_format_toolbar_update(PidginFormatToolbar *toolbar);
 
+/**
+ * Shows or hides the "Attention!" button, which activates the
+ * conversation window's conv.get-attention action (hidden by default).
+ */
+void pidgin_format_toolbar_set_show_attention(PidginFormatToolbar *toolbar, gboolean show);
+
+/** The "Attention!" button, for tests. */
+GtkWidget *pidgin_format_toolbar_get_attention_button(PidginFormatToolbar *toolbar);
+
 /** The smiley picker's content (built when first shown), for tests. */
 GtkWidget *pidgin_format_toolbar_get_smiley_grid(PidginFormatToolbar *toolbar);
 

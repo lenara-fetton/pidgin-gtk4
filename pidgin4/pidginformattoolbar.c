@@ -42,6 +42,7 @@ struct _PidginFormatToolbar
 	GtkWidget *bold, *italic, *underline, *strike, *code;
 	GtkWidget *smaller, *larger, *font, *fore, *back;
 	GtkWidget *link, *image, *smiley, *reset;
+	GtkWidget *attention;
 	GtkWidget *smiley_popover;
 	GtkWidget *smiley_grid;
 	GtkWidget *link_popover;
@@ -489,6 +490,20 @@ pidgin_format_toolbar_get_entry(PidginFormatToolbar *tb)
 	return tb->entry;
 }
 
+void
+pidgin_format_toolbar_set_show_attention(PidginFormatToolbar *tb, gboolean show)
+{
+	g_return_if_fail(PIDGIN_IS_FORMAT_TOOLBAR(tb));
+	gtk_widget_set_visible(tb->attention, show);
+}
+
+GtkWidget *
+pidgin_format_toolbar_get_attention_button(PidginFormatToolbar *tb)
+{
+	g_return_val_if_fail(PIDGIN_IS_FORMAT_TOOLBAR(tb), NULL);
+	return tb->attention;
+}
+
 GtkWidget *
 pidgin_format_toolbar_get_smiley_grid(PidginFormatToolbar *tb)
 {
@@ -574,6 +589,22 @@ pidgin_format_toolbar_init(PidginFormatToolbar *tb)
 
 	tb->reset = make_button(tb, "edit-clear-all-symbolic", NULL, _("Reset formatting"),
 	                        G_CALLBACK(reset_cb));
+
+	/* Pidgin 2's "Attention!" button: the conversation window's
+	 * conv.get-attention action; shown by the conversation for prpls
+	 * with send_attention. */
+	tb->attention = make_button(tb, "preferences-system-notifications-symbolic", NULL,
+	                            _("Get Attention"), NULL);
+	{
+		GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+
+		gtk_box_append(GTK_BOX(box), gtk_image_new_from_icon_name(
+			"preferences-system-notifications-symbolic"));
+		gtk_box_append(GTK_BOX(box), gtk_label_new(_("Attention!")));
+		gtk_button_set_child(GTK_BUTTON(tb->attention), box);
+	}
+	gtk_actionable_set_action_name(GTK_ACTIONABLE(tb->attention), "conv.get-attention");
+	gtk_widget_set_visible(tb->attention, FALSE);
 }
 
 GtkWidget *
