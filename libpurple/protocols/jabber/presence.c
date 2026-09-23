@@ -652,6 +652,11 @@ handle_presence_chat(JabberStream *js, JabberPresence *presence, xmlnode *packet
 		if (is_our_resource && chat->joined == 0)
 			chat->joined = time(NULL);
 
+		/* M8: room MAM catch-up and XEP-0410 self-ping start here, on the
+		 * first join and after a self-ping rejoin. */
+		if (is_our_resource && !chat->self_joined)
+			jabber_chat_self_joined(chat);
+
 	} else if (presence->type == JABBER_PRESENCE_UNAVAILABLE) {
 		gboolean nick_change = FALSE;
 		gboolean kick = FALSE;

@@ -14,6 +14,16 @@ version 2.14.14-gtk4 (additive):
 		  above. It takes the former _purple_reserved2 padding slot, so
 		  the struct's size and layout are unchanged; backends built
 		  against the old header leave it NULL ("not supported").
+		* Conversation signals "receiving-message-meta" and
+		  "sending-message-meta" (account, conversation name,
+		  GHashTable of string metadata: ids, correction/reply targets,
+		  fallback ranges, archive flags; see
+		  doc/conversation-signals.dox).
+		* Conversation signals "message-corrected", "message-reaction",
+		  "message-receipt" and "message-retracted" for native message
+		  events. All six are emitted by prpls only when the UI sets
+		  "message-meta" = "1" in purple_core_get_ui_info(), so prpls
+		  built against stock 2.14 headers can use them safely.
 
 version 2.14.10:
 	* no changes

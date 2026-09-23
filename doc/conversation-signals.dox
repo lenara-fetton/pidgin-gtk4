@@ -36,6 +36,12 @@
   @signal conversation-extended-menu
   @signal sent-attention
   @signal got-attention
+  @signal receiving-message-meta
+  @signal sending-message-meta
+  @signal message-corrected
+  @signal message-reaction
+  @signal message-receipt
+  @signal message-retracted
  @endsignals
 
  @see conversation.h
@@ -517,5 +523,157 @@ void (*got_attention)(PurpleAccount *account, const char *who,
   @param type     The attention type (an index starting at 0)
   @since 2.7.0
  @endsignaldef
+
+ @signaldef receiving-message-meta
+  @signalproto
+void (*receiving_message_meta)(PurpleAccount *account, const char *conv_name,
+                               GHashTable *meta);
+  @endsignalproto
+  @signaldesc
+   Emitted by a prpl immediately before it hands a message to
+   serv_got_im(), serv_got_chat_in() or purple_conv_im_write() (for
+   messages sent from another device), carrying the structured metadata
+   of that message.  The UI associates it with the next message written
+   to that conversation.
+
+   Prpls emit this (and the other message-* signals below) only when the
+   UI has set "message-meta" to "1" in purple_core_get_ui_info(); a UI
+   that does not advertise it never sees them.
+
+   @a meta maps strings to strings (both owned by the table; handlers
+   may read them, and may insert new keys with g_strdup()ed key and value).
+   All keys are optional.  Defined keys:
+   - "conv-type": "im" or "chat".
+   - "sender": the sender as it appears in the conversation (full JID
+     for IMs, the nick in chats; the own account for sent messages).
+   - "outgoing": "1" when the message was sent by this account from
+     another device (a carbon or an archived message).  It is written
+     with PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_REMOTE_SEND.
+   - "timestamp": the message time, decimal seconds since the epoch.
+   - "stanza-id": the protocol message id (XMPP: the id attribute of
+     the message; what receipts, markers and 1:1 corrections refer to).
+   - "origin-id": the sender-assigned unique id (XMPP XEP-0359
+     origin-id).
+   - "server-id": the id the archive assigned (XMPP XEP-0359 stanza-id,
+     equal to the MAM archive id); "server-id-by" is the archive's JID.
+   - "occupant-id": the stable anonymous occupant id in a chat (XEP-0421).
+   - "correction-of": the id of the message this one replaces.
+   - "reply-to", "reply-to-sender": the id and sender of the message this
+     one replies to.
+   - "fallback-ranges": the fallback parts of the body, "for:start-end"
+     entries separated by ";" (code point offsets, end exclusive; "for"
+     is the feature's namespace, and "for:" alone means the whole body).
+   - "fallback-stripped": "1" when the prpl already removed the fallback
+     text of features the UI renders natively.
+   - "carbon": "received" or "sent" for XEP-0280 carbon copies.
+   - "mam": "1" for messages that come from a message archive; "mam-query"
+     is "catchup" or "older" (the latter from an explicit scroll-back
+     request; such messages are older than what the UI shows).
+   A handler may insert "discard" = "1" to make the prpl drop the
+   message (for example because it is a duplicate of an indexed one);
+   it is then neither displayed nor logged.
+  @param account   The account.
+  @param conv_name The conversation name (as passed to serv_got_im() or
+                   the chat's name).
+  @param meta      The metadata table (string to string).
+  @since 2.14.14-gtk4
+ @endsignaldef
+
+ @signaldef sending-message-meta
+  @signalproto
+void (*sending_message_meta)(PurpleAccount *account, const char *conv_name,
+                             GHashTable *meta);
+  @endsignalproto
+  @signaldesc
+   Emitted by a prpl while it sends a message, reporting the ids it
+   assigned, so the UI can associate them with the message it shows.
+   The keys are those of receiving-message-meta ("stanza-id",
+   "origin-id", "conv-type", "correction-of", "reply-to", ...).  Only
+   emitted when the UI advertises "message-meta".
+  @param account   The account.
+  @param conv_name The conversation name.
+  @param meta      The metadata table (string to string).
+  @since 2.14.14-gtk4
+ @endsignaldef
+
+ @signaldef message-corrected
+  @signalproto
+gboolean (*message_corrected)(PurpleAccount *account, const char *conv_name,
+                              const char *target_id, const char *new_id,
+                              const char *new_body, const char *sender);
+  @endsignalproto
+  @signaldesc
+   Emitted when a message is replaced by a corrected version (XMPP
+   XEP-0308, a Discord edit).  Only emitted when the UI advertises
+   "message-meta".
+  @param account   The account.
+  @param conv_name The conversation name.
+  @param target_id The id of the message being corrected.
+  @param new_id    The id of the correction itself (may be NULL).
+  @param new_body  The new body, in the same markup as serv_got_im().
+  @param sender    Who corrected it.
+  @return @c TRUE if a handler rendered the correction.  When no handler
+          does, the emitter should fall back to its text output.
+  @since 2.14.14-gtk4
+ @endsignaldef
+
+ @signaldef message-reaction
+  @signalproto
+gboolean (*message_reaction)(PurpleAccount *account, const char *conv_name,
+                             const char *target_id, const char *emoji,
+                             const char *sender, gboolean add);
+  @endsignalproto
+  @signaldesc
+   Emitted when a reaction is added to or removed from a message.  The
+   signal is marshalled as six pointers, so emitters pass @a add as
+   GINT_TO_POINTER(add).  Only emitted when the UI advertises
+   "message-meta".
+  @param account   The account.
+  @param conv_name The conversation name.
+  @param target_id The id of the message reacted to.
+  @param emoji     The reaction (a UTF-8 emoji or a short text).
+  @param sender    Who reacted.
+  @param add       @c TRUE if the reaction was added, @c FALSE if removed.
+  @return @c TRUE if a handler rendered the reaction.
+  @since 2.14.14-gtk4
+ @endsignaldef
+
+ @signaldef message-receipt
+  @signalproto
+gboolean (*message_receipt)(PurpleAccount *account, const char *conv_name,
+                            const char *id, const char *state,
+                            const char *sender);
+  @endsignalproto
+  @signaldesc
+   Emitted when a delivery receipt or read marker arrives for a sent
+   message.  Only emitted when the UI advertises "message-meta".
+  @param account   The account.
+  @param conv_name The conversation name.
+  @param id        The id of the message concerned.  A "displayed" state
+                   implies all earlier messages were displayed too.
+  @param state     "delivered" or "displayed".
+  @param sender    Who sent the receipt.
+  @return @c TRUE if a handler rendered it.
+  @since 2.14.14-gtk4
+ @endsignaldef
+
+ @signaldef message-retracted
+  @signalproto
+gboolean (*message_retracted)(PurpleAccount *account, const char *conv_name,
+                              const char *target_id, const char *sender,
+                              const char *reason);
+  @endsignalproto
+  @signaldesc
+   Emitted when a message is retracted by its sender or removed by a
+   moderator.  Only emitted when the UI advertises "message-meta".
+  @param account   The account.
+  @param conv_name The conversation name.
+  @param target_id The id of the retracted message.
+  @param sender    Who retracted it (the moderator for moderation).
+  @param reason    The reason, or @c NULL.
+  @return @c TRUE if a handler rendered it.
+  @since 2.14.14-gtk4
+ @endsignaldef
 */
+
 // vim: syntax=c.doxygen tw=75 et

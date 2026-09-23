@@ -65,6 +65,12 @@ JABBERSOURCES = \
 			  jutil.h \
 			  kvstore.c \
 			  kvstore.h \
+			  bookmarks.c \
+			  bookmarks.h \
+			  carbons.c \
+			  carbons.h \
+			  mam.c \
+			  mam.h \
 			  message.c \
 			  message.h \
 			  namespaces.h \

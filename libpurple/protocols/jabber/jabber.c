@@ -59,6 +59,8 @@
 #include "iq.h"
 #include "jutil.h"
 #include "kvstore.h"
+#include "bookmarks.h"
+#include "mam.h"
 #include "message.h"
 #include "parser.h"
 #include "presence.h"
@@ -1716,6 +1718,11 @@ void jabber_close(PurpleConnection *gc)
 
 	if (js->vcard_timer != 0)
 		purple_timeout_remove(js->vcard_timer);
+
+	/* M8 */
+	jabber_mam_close(js);
+	jabber_bookmarks_close(js);
+	jabber_chat_selfping_stop(js);
 
 	if (js->keepalive_timeout != 0)
 		purple_timeout_remove(js->keepalive_timeout);
@@ -3891,6 +3898,7 @@ jabber_do_init(void)
 	jabber_add_feature(NS_SI_FILE_TRANSFER, 0);
 	jabber_add_feature(NS_XHTML_IM, 0);
 	jabber_add_feature(NS_PING, 0);
+	jabber_add_feature(NS_SID, 0); /* XEP-0359 */
 
 	/* Buzz/Attention */
 	jabber_add_feature(NS_ATTENTION, jabber_buzz_isenabled);
@@ -3956,6 +3964,7 @@ jabber_do_uninit(void)
 #endif
 
 	jabber_auth_uninit();
+	jabber_mam_uninit();
 	jabber_features_destroy();
 	jabber_identities_destroy();
 
@@ -4052,6 +4061,12 @@ void jabber_plugin_init(PurplePlugin *plugin)
 
 	jabber_kv_init(plugin);
 
+	/* M8: mam-fetch-older / bookmark-add / bookmark-remove IPC,
+	 * mam-query-done signal, MUC self-ping on network changes */
+	jabber_mam_init(plugin);
+	jabber_bookmarks_init(plugin);
+	jabber_chat_selfping_init(plugin);
+
 	purple_signal_register(plugin, "jabber-receiving-iq",
 			purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
 			purple_value_new(PURPLE_TYPE_BOOLEAN), 5,
@@ -4083,6 +4098,7 @@ void jabber_plugin_uninit(PurplePlugin *plugin)
 {
 	g_return_if_fail(plugin_ref > 0);
 
+	jabber_chat_selfping_uninit(plugin);
 	purple_signals_unregister_by_instance(plugin);
 	purple_plugin_ipc_unregister_all(plugin);
 

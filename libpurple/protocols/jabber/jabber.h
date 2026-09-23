@@ -238,6 +238,15 @@ struct _JabberStream
 	/* does the local server support PEP? */
 	gboolean pep;
 
+	/* M8 protocol core: carbons.c, mam.c, bookmarks.c, chat.c (self-ping) */
+	gboolean carbons_enabled;
+	gboolean mam_supported;     /* the own archive speaks urn:xmpp:mam:2 */
+	gboolean mam_catchup_done;
+	GHashTable *mam_queries;    /* queryid -> JabberMamQuery */
+	gpointer bookmarks;         /* JabberBookmarks */
+	guint selfping_timer;
+	guint selfping_soon_timer;
+
 	/* Is Buzz enabled? */
 	gboolean allowBuzz;
 

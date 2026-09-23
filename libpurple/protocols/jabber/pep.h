@@ -88,4 +88,15 @@ void jabber_pep_delete_node(JabberStream *js, const gchar *node);
  */
 void jabber_pep_publish(JabberStream *js, xmlnode *publish);
 
+/**
+ * Like jabber_pep_publish(), with XEP-0060 publish-options.
+ *
+ * @param publish  The <publish/> node (consumed).
+ * @param options  A submitted jabber:x:data form with FORM_TYPE
+ *                 http://jabber.org/protocol/pubsub#publish-options
+ *                 (consumed), or NULL.
+ */
+void jabber_pep_publish_with_options(JabberStream *js, xmlnode *publish,
+                                     xmlnode *options);
+
 #endif /* PURPLE_JABBER_PEP_H_ */
