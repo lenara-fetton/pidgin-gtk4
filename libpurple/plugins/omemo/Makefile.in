@@ -90,7 +90,7 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
-subdir = pidgin/plugins/gestures
+subdir = libpurple/plugins/omemo
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/acinclude.m4 \
 	$(top_srcdir)/configure.ac
@@ -130,20 +130,21 @@ am__uninstall_files_from_dir = { \
 am__installdirs = "$(DESTDIR)$(plugindir)"
 LTLIBRARIES = $(plugin_LTLIBRARIES)
 am__DEPENDENCIES_1 =
-@PLUGINS_TRUE@gestures_la_DEPENDENCIES = $(am__DEPENDENCIES_1)
-am__gestures_la_SOURCES_DIST = gestures.c gstroke.h gstroke-internal.h \
-	stroke.c stroke-draw.c
-@PLUGINS_TRUE@am_gestures_la_OBJECTS = gestures.lo stroke.lo \
-@PLUGINS_TRUE@	stroke-draw.lo
-gestures_la_OBJECTS = $(am_gestures_la_OBJECTS)
+@PLUGINS_TRUE@omemo_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+@PLUGINS_TRUE@	$(am__DEPENDENCIES_1)
+am__omemo_la_SOURCES_DIST = omemo.c omemo.h omemo-crypto.c \
+	omemo-store.c omemo-xmpp.c
+@PLUGINS_TRUE@am_omemo_la_OBJECTS = omemo.lo omemo-crypto.lo \
+@PLUGINS_TRUE@	omemo-store.lo omemo-xmpp.lo
+omemo_la_OBJECTS = $(am_omemo_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
 am__v_lt_0 = --silent
 am__v_lt_1 = 
-gestures_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
+omemo_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
-	$(gestures_la_LDFLAGS) $(LDFLAGS) -o $@
-@PLUGINS_TRUE@am_gestures_la_rpath = -rpath $(plugindir)
+	$(omemo_la_LDFLAGS) $(LDFLAGS) -o $@
+@PLUGINS_TRUE@am_omemo_la_rpath = -rpath $(plugindir)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -159,8 +160,9 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/gestures.Plo \
-	./$(DEPDIR)/stroke-draw.Plo ./$(DEPDIR)/stroke.Plo
+am__depfiles_remade = ./$(DEPDIR)/omemo-crypto.Plo \
+	./$(DEPDIR)/omemo-store.Plo ./$(DEPDIR)/omemo-xmpp.Plo \
+	./$(DEPDIR)/omemo.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -180,8 +182,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(gestures_la_SOURCES)
-DIST_SOURCES = $(am__gestures_la_SOURCES_DIST)
+SOURCES = $(omemo_la_SOURCES)
+DIST_SOURCES = $(am__omemo_la_SOURCES_DIST)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -473,24 +475,28 @@ target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-plugindir = $(libdir)/pidgin
-gestures_la_LDFLAGS = -module -avoid-version
-@PLUGINS_TRUE@plugin_LTLIBRARIES = gestures.la
-@PLUGINS_TRUE@gestures_la_SOURCES = \
-@PLUGINS_TRUE@	gestures.c \
-@PLUGINS_TRUE@	gstroke.h \
-@PLUGINS_TRUE@	gstroke-internal.h \
-@PLUGINS_TRUE@	stroke.c \
-@PLUGINS_TRUE@	stroke-draw.c
+EXTRA_DIST = 
+plugindir = $(libdir)/purple-$(PURPLE_MAJOR_VERSION)
+omemo_la_LDFLAGS = -module -avoid-version
+@PLUGINS_TRUE@plugin_LTLIBRARIES = omemo.la
+@PLUGINS_TRUE@omemo_la_SOURCES = \
+@PLUGINS_TRUE@	omemo.c \
+@PLUGINS_TRUE@	omemo.h \
+@PLUGINS_TRUE@	omemo-crypto.c \
+@PLUGINS_TRUE@	omemo-store.c \
+@PLUGINS_TRUE@	omemo-xmpp.c
 
-@PLUGINS_TRUE@gestures_la_LIBADD = $(GTK_LIBS)
+
+# Only the plugin links these; libpurple itself gains no dependency.
+@PLUGINS_TRUE@omemo_la_LIBADD = $(GLIB_LIBS) $(OMEMO_LIBS)
 AM_CPPFLAGS = \
 	-DDATADIR=\"$(datadir)\" \
 	-I$(top_srcdir)/libpurple \
 	-I$(top_builddir)/libpurple \
-	-I$(top_srcdir)/pidgin \
 	$(DEBUG_CFLAGS) \
-	$(GTK_CFLAGS)
+	$(GLIB_CFLAGS) \
+	$(OMEMO_CFLAGS) \
+	$(PLUGIN_CFLAGS)
 
 all: all-am
 
@@ -505,9 +511,9 @@ $(srcdir)/Makefile.in:  $(srcdir)/Makefile.am  $(am__configure_deps)
 	      exit 1;; \
 	  esac; \
 	done; \
-	echo ' cd $(top_srcdir) && $(AUTOMAKE) --gnu pidgin/plugins/gestures/Makefile'; \
+	echo ' cd $(top_srcdir) && $(AUTOMAKE) --gnu libpurple/plugins/omemo/Makefile'; \
 	$(am__cd) $(top_srcdir) && \
-	  $(AUTOMAKE) --gnu pidgin/plugins/gestures/Makefile
+	  $(AUTOMAKE) --gnu libpurple/plugins/omemo/Makefile
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	@case '$?' in \
 	  *config.status*) \
@@ -559,8 +565,8 @@ clean-pluginLTLIBRARIES:
 	echo rm -f $${locs}; \
 	$(am__rm_f) $${locs}
 
-gestures.la: $(gestures_la_OBJECTS) $(gestures_la_DEPENDENCIES) $(EXTRA_gestures_la_DEPENDENCIES) 
-	$(AM_V_CCLD)$(gestures_la_LINK) $(am_gestures_la_rpath) $(gestures_la_OBJECTS) $(gestures_la_LIBADD) $(LIBS)
+omemo.la: $(omemo_la_OBJECTS) $(omemo_la_DEPENDENCIES) $(EXTRA_omemo_la_DEPENDENCIES) 
+	$(AM_V_CCLD)$(omemo_la_LINK) $(am_omemo_la_rpath) $(omemo_la_OBJECTS) $(omemo_la_LIBADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -568,9 +574,10 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/gestures.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/stroke-draw.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/stroke.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo-crypto.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo-store.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo-xmpp.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo.Plo@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -733,9 +740,10 @@ clean-am: clean-generic clean-libtool clean-pluginLTLIBRARIES \
 	mostlyclean-am
 
 distclean: distclean-am
-	-rm -f ./$(DEPDIR)/gestures.Plo
-	-rm -f ./$(DEPDIR)/stroke-draw.Plo
-	-rm -f ./$(DEPDIR)/stroke.Plo
+	-rm -f ./$(DEPDIR)/omemo-crypto.Plo
+	-rm -f ./$(DEPDIR)/omemo-store.Plo
+	-rm -f ./$(DEPDIR)/omemo-xmpp.Plo
+	-rm -f ./$(DEPDIR)/omemo.Plo
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -781,9 +789,10 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
-	-rm -f ./$(DEPDIR)/gestures.Plo
-	-rm -f ./$(DEPDIR)/stroke-draw.Plo
-	-rm -f ./$(DEPDIR)/stroke.Plo
+	-rm -f ./$(DEPDIR)/omemo-crypto.Plo
+	-rm -f ./$(DEPDIR)/omemo-store.Plo
+	-rm -f ./$(DEPDIR)/omemo-xmpp.Plo
+	-rm -f ./$(DEPDIR)/omemo.Plo
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 
