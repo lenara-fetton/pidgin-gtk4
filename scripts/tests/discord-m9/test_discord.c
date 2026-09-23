@@ -204,6 +204,14 @@ retracted_cb(PurpleAccount *a, const char *conv, const char *target, const char 
 
 static GString *written;
 
+static void
+query_done_cb(PurpleAccount *a, const char *conv, const char *first, const char *last,
+              guint complete, gpointer data)
+{
+	g_string_append_printf(events, "done(%s,%s,%s,%u);", conv, first ? first : "(null)",
+	                       last ? last : "(null)", complete);
+}
+
 static gboolean
 receipt_cb(PurpleAccount *a, const char *conv, const char *id, const char *state,
            const char *sender, gpointer data)
@@ -427,6 +435,20 @@ static const char *message_ack =
 static const char *message_ack_dm =
 	"{\"version\":1235,\"message_id\":\"555\",\"channel_id\":\"" DM_ID "\",\"flags\":0}";
 
+/* A scroll-back page (GET /channels/{id}/messages?before=...), newest first */
+static const char *older_page =
+	"[{\"type\":0,\"id\":\"334385199974960003\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"third\","
+	"  \"timestamp\":\"2017-07-11T17:00:03+00:00\",\"edited_timestamp\":null,"
+	"  \"author\":{\"username\":\"me\",\"discriminator\":\"0\",\"id\":\"" SELF_ID "\"}},"
+	" {\"type\":0,\"id\":\"334385199974960002\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"second\","
+	"  \"timestamp\":\"2017-07-11T17:00:02+00:00\",\"edited_timestamp\":null,"
+	"  \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	"  \"reactions\":[{\"count\":2,\"me\":true,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x91\x8d\"}},"
+	"                {\"count\":1,\"me\":false,\"emoji\":{\"id\":\"41771983429993937\",\"name\":\"LUL\"}}]},"
+	" {\"type\":0,\"id\":\"334385199974960001\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"first\","
+	"  \"timestamp\":\"2017-07-11T17:00:01+00:00\",\"edited_timestamp\":null,"
+	"  \"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"}}]";
+
 /* A bot's rich embed with fields */
 static const char *embed_rich =
 	"{\"type\":\"rich\",\"title\":\"Build #42\",\"color\":65280,"
@@ -449,6 +471,8 @@ main(int argc, char **argv)
 	purple_eventloop_set_ui_ops(&loop_ops);
 	ui_info = g_hash_table_new(g_str_hash, g_str_equal);
 	g_hash_table_insert(ui_info, "name", "discord-test");
+	/* A message-meta UI from the start: the plugin registers its signal on load */
+	g_hash_table_insert(ui_info, "message-meta", "1");
 	purple_core_set_ui_ops(&core_ops);
 	if (!purple_core_init("discord-test")) {
 		fprintf(stderr, "core init failed\n");
@@ -552,6 +576,7 @@ main(int argc, char **argv)
 	purple_account_set_connection(account, gc);
 
 	/* Stock UI first: no native metadata */
+	g_hash_table_remove(ui_info, "message-meta");
 	da = g_new0(DiscordAccount, 1);
 	da->account = account;
 	da->pc = gc;
@@ -1071,6 +1096,79 @@ main(int argc, char **argv)
 	capture_requests = FALSE;
 	g_free(da->ack_token);
 	da->ack_token = NULL;
+
+	/* ---- scroll-back: mam-fetch-older and mam-query-done ---- */
+	{
+		PurplePlugin *prpl = purple_find_prpl(DISCORD_PLUGIN_ID);
+		int n = -1;
+
+		CHECK(purple_plugin_ipc_get_params(prpl, "mam-fetch-older", NULL, &n, NULL) && n == 4);
+		CHECK(purple_signal_connect(prpl, "mam-query-done", &failures, PURPLE_CALLBACK(query_done_cb), NULL) != 0);
+	}
+	spin(60);
+	capture_requests = TRUE;
+	purple_account_set_bool(account, "show-reactions", FALSE);     /* reactions: below */
+	reset();
+	CHECK(GPOINTER_TO_INT(purple_plugin_ipc_call(purple_find_prpl(DISCORD_PLUGIN_ID), "mam-fetch-older", NULL,
+	                                             account, CHANNEL_ID, "334385199974967042", 3)));
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages?limit=3&before=334385199974967042\n");
+	respond(older_page);
+	/* Oldest first, DELAYED; ours SEND */
+	CHECK_STR(written->str,
+		"[" CHANNEL_ID "|Mason|first|0x402]"
+		"[" CHANNEL_ID "|alice|second|0x402]"
+		"[" CHANNEL_ID "|me|third|0x10401]");
+	CHECK(meta_count == 3);
+	CHECK_STR(M("mam"), "1");
+	CHECK_STR(M("mam-query"), "older");
+	CHECK_STR(M("stanza-id"), "334385199974960003");
+	CHECK_STR(M("outgoing"), "1");
+	CHECK(g_str_has_suffix(events->str, "done(" CHANNEL_ID ",334385199974960001,334385199974960003,0);"));
+	fprintf(stderr, "older page: %s\n  events: %s\n", written->str, events->str);
+	CHECK(!da->history_older);
+	/* The last page: fewer than asked for */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, "334385199974960001", 100));
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages?limit=100&before=334385199974960001\n");
+	respond("[{\"type\":0,\"id\":\"334385199974950000\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"zeroth\","
+	        "  \"timestamp\":\"2017-07-11T16:00:00+00:00\",\"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"}}]");
+	CHECK(g_str_has_suffix(events->str, "done(" CHANNEL_ID ",334385199974950000,334385199974950000,1);"));
+	/* ... nothing older */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, "334385199974950000", 0));      /* count 0 -> 1 */
+	spin(60);
+	CHECK(strstr(requests->str, "?limit=1&before=334385199974950000") != NULL);
+	respond("[]");
+	CHECK_STR(events->str, "done(" CHANNEL_ID ",(null),(null),1);");
+	CHECK_STR(written->str, "");
+	/* ... a failed request */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, NULL, 500));                    /* 500 -> 100, newest */
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages?limit=100\n");
+	respond(NULL);
+	CHECK_STR(events->str, "done(" CHANNEL_ID ",(null),(null),0);");
+	/* A DM */
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, "alice", "", 50));
+	spin(60);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" DM_ID "/messages?limit=50\n");
+	respond("[]");
+	CHECK_STR(events->str, "done(alice,(null),(null),1);");
+	CHECK(!discord_ipc_mam_fetch_older(account, CHANNEL_ID, "abc", 50));
+	CHECK(!discord_ipc_mam_fetch_older(account, "nobody", NULL, 50));
+	/* A live message afterwards is no archive result */
+	reset();
+	o = parse(msg_link_bare);
+	json_object_set_string_member(o, "id", "900000000000000099");
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(M("mam") == NULL && M("mam-query") == NULL);
+	CHECK(strstr(written->str, "|0x2]") != NULL);
+	capture_requests = FALSE;
+	purple_account_set_bool(account, "show-reactions", TRUE);
 
 	/* ---- stock UI: the same payloads give the old output ---- */
 	{
