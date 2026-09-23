@@ -1,4 +1,4 @@
-# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status)
+# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status, M4 conversations)
 
 The automated checks (unit tests, the headless selftests and
 `scripts/check-profile-compat.sh`) never sign an account in. The checks
@@ -27,10 +27,15 @@ below do, so they are for you to run by hand.
   scripts/build-pidgin4.sh --test                       # ~/.local/pidgin4/bin/pidgin4
   scripts/build-pidgin4.sh --desktop-integration        # optional: launcher, icons
   ```
-- **What it can't do yet.** There are no conversation windows (M4).
-  Received messages are logged to `logs/` but not shown, and "IM" on a
-  buddy only creates the conversation. This build is for signing in,
-  staying connected and the buddy list (M3), not for chatting.
+- **What it can't do yet.** Since M4 conversations work (see the M4
+  section). Still missing: the windows of M5 (preferences, log viewer,
+  pounces, file transfer list, ...), the tray and sounds (M6) and the
+  ported plugins (M7).
+- **Receipts and markers go out.** pidgin4 advertises `message-meta`, so
+  the XMPP prpl sends receipt requests and chat markers, and pidgin4 sends
+  "displayed" markers and publishes XEP-0490 read state when you look at a
+  conversation (`/pidgin4/conversations/send_markers`, default on). Your
+  other clients will see those reads.
 
 ## Starting
 
@@ -230,6 +235,88 @@ for you. Sign in as above (quit Pidgin 2 first, or use `-l NAME`).
       sent with a file transfer (the transfer window is M5; watch the
       debug window).
 
+## M4: conversations (with accounts signed in)
+
+Use one account at a time (`-l NAME`) and a second client on the other
+side: Conversations or Dino for XMPP (a test account on the same server
+is best), another IRC client, the Discord web client.
+
+### Opening and windows
+- [ ] Double-click a buddy, "IM" in its menu, Buddies → New Instant
+      Message (Ctrl+M) and Join a Chat: a window opens with the
+      conversation; the second one becomes a tab (placement pref
+      `/pidgin/conversations/placement`, default "last").
+- [ ] Tabs: drag to reorder; drag a tab out of the window to make a new
+      window, and onto another window's tab bar to move it there. Right
+      click on a tab: Close other tabs / Detach / Close. Middle click
+      closes. With one conversation there is no tab bar.
+- [ ] Keys: Ctrl+W closes the tab, Ctrl+Tab / Ctrl+Shift+Tab go to the
+      next/previous tab with unread text, Ctrl+PgDn/PgUp (and Ctrl+] /
+      Ctrl+[) next/previous tab, Alt+1..9 tab N, Ctrl+, / Ctrl+. move the
+      tab, Ctrl+F find, Ctrl+L clear, Ctrl+O get info.
+- [ ] The window keeps its size (`/pidgin4/conversations/width|height`).
+- [ ] With `/pidgin/conversations/im/hide_new` = `always` (or `away`
+      while away), a new IM opens no window; the buddy list row shows it
+      as unread; double-clicking the buddy shows it.
+
+### Messages
+- [ ] Send and receive in an IM and a chat on each protocol (XMPP 1:1 and
+      MUC, IRC channel and query, Discord DM and channel, Steam). Names
+      have the send/receive colours; chat nicks are coloured (XEP-0392
+      colours for XMPP, matching Dino/Conversations); a message that
+      says your nick is highlighted and its tab turns bold blue.
+- [ ] A tab with unread text turns red, with an event grey; typing shows
+      the typing icon and "X is typing..." above the entry. The buddy
+      list row turns bold with the unread count; reading the tab clears
+      both.
+- [ ] Formatting: XMPP offers bold/italic/strike/code only and sends
+      `*bold*` etc. (check the other client shows them); IRC/Discord
+      offer what their connection flags allow. Incoming formatting shows
+      unless "show incoming formatting" is off.
+- [ ] Smileys: the toolbar's smiley picker inserts them; received
+      shortcuts show as the theme's images.
+- [ ] Images: Insert Image (IM on protocols with images); dropping an
+      image file on an IM asks to send it as a file or insert it; any
+      other file is sent (HTTP upload on XMPP when the server has it).
+      Our own upload's URL, and images on the account's own XMPP domain,
+      show inline; Discord CDN images show inline.
+- [ ] `/help`, `/me waves`, `/clear`, `/debug version`, and a protocol
+      command (`/topic`, `/nick`, `/op` on IRC; `/role` on XMPP).
+- [ ] Chat user list: ops first, then voiced, buddies bold; right click
+      offers IM, Info, Ignore, Add, and Op/Deop/Voice/Kick/Ban where the
+      protocol has those commands; double click opens an IM. Tab
+      completes nicks. The topic entry sets the topic where allowed.
+- [ ] Find (Ctrl+F) filters and highlights; Save As writes an HTML file.
+- [ ] Scroll to the top: older messages load from `messages.db` (after a
+      backfill), then from the server archive on XMPP (a spinner shows
+      while it loads).
+- [ ] Options → Enable Logging / Enable Sounds / Show Formatting
+      Toolbars / Show Timestamps work (Sounds takes effect with M6).
+
+### Modern XMPP round trips (with Conversations or Dino)
+- [ ] Receipts: a sent message gets one tick when delivered, two
+      (blue) when displayed on the other side.
+- [ ] Up-arrow in the empty entry edits your last message (banner
+      "Editing"); the other client shows it corrected. A correction from
+      the other side updates the message ("edited" marker, original in
+      its tooltip).
+- [ ] Right click a message → Reply: the banner shows the quote; the
+      other client shows a reply. Replies from the other side show the
+      quoted message above.
+- [ ] React from the row menu or a reaction chip; reactions from the
+      other side appear under the message; removing works both ways.
+- [ ] Delete for Everyone (your message) retracts it on the other side;
+      a retraction from the other side shows "This message was deleted."
+      In a room where you are a moderator, Delete works on others'
+      messages too.
+- [ ] Read a conversation in the other client: its unread state clears
+      here (XEP-0490); reading here clears it there.
+- [ ] Afterwards the HTML log has readable lines for each of those
+      (`X edited: ...`, `X reacted 👍 to: ...`, `X retracted a message`);
+      open it in Pidgin 2's log viewer.
+- [ ] Restart pidgin4: the MAM catch-up doesn't repeat messages already
+      shown, including after a Pidgin 2 session in between.
+
 ## Developer aids
 
 For headless test runs only:
@@ -246,6 +333,22 @@ For headless test runs only:
   status box and checks the current saved status, then quits. It only
   runs when **no account is enabled** (otherwise it logs "skipped"), so
   use it on a scratch profile whose accounts are all disabled.
+
+- `PIDGIN4_CONV_SELFTEST=1` (M4) registers an in-process protocol
+  plugin (`prpl-pidgin4-selftest`, which logs in without a network and
+  records the M8 IPC calls) and a throwaway account on it, and then
+  checks conversations of both types: writes with every flag, the
+  metadata signals (ids, dedup by id and fuzzily, corrections, reactions,
+  receipts, retractions, moderation), the entry (send, commands,
+  Up-arrow correction, reply), the IPC calls, the contract rule 7 log
+  lines (read back from the log file), the index rows and log offsets,
+  index scroll-back, chat users and the topic, tabs and window actions,
+  unseen state, hidden conversations and detaching. It removes the
+  account and quits with status 0 when all checks pass ("PASS (N
+  checks)"). It writes logs and `messages.db` rows, so run it on a
+  **scratch copy** of the profile (logs/ can be left out).
+  `PIDGIN4_CONV_SELFTEST_HOLD=N` pauses N seconds with the chat tab and
+  then the IM tab current (for screenshots or xdotool key presses).
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
 for the Xvfb setup (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`,
