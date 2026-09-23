@@ -85,6 +85,18 @@ static const char *const builtin_hosts[] = {
 	"c.tenor.com",
 	"media.giphy.com",
 	"i.giphy.com",
+	/* Steam: images shared in chat */
+	"images.steamusercontent.com",
+	"steamusercontent-a.akamaihd.net",
+	/* Steam: emoticons (community.cloudflare redirects to community) */
+	"steamcommunity-a.akamaihd.net",
+	"community.cloudflare.steamstatic.com",
+	"community.steamstatic.com",
+	/* Steam: game images and icons, avatars */
+	"cdn.cloudflare.steamstatic.com",
+	"shared.akamai.steamstatic.com",
+	"avatars.steamstatic.com",
+	"media.steampowered.com",
 };
 
 static PidginImageLoader *default_loader = NULL;

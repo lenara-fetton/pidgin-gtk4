@@ -258,6 +258,15 @@ test_allowlist(void)
 		"https://c.tenor.com/x5BgTNkA0CUAAAAC/cat.gif",
 		"https://media.giphy.com/media/abc/giphy.gif",
 		"https://i.giphy.com/abc.gif",
+		"https://images.steamusercontent.com/ugc/123/ABC/",
+		"https://steamusercontent-a.akamaihd.net/ugc/1/2/",
+		"https://steamcommunity-a.akamaihd.net/economy/emoticon/steamhappy",
+		"https://community.cloudflare.steamstatic.com/economy/emoticon/steamhappy",
+		"https://community.steamstatic.com/economy/emoticon/steamhappy",
+		"https://cdn.cloudflare.steamstatic.com/steamcommunity/public/images/apps/440/x.jpg",
+		"https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/440/capsule_184x69.jpg?t=1",
+		"https://avatars.steamstatic.com/fef49e7fa7e1997310d705b2a6158ff8dc1cdfeb_full.jpg",
+		"https://media.steampowered.com/steamcommunity/public/images/apps/440/x.jpg",
 	};
 	static const char *const refused[] = {
 		"http://cdn.discordapp.com/emojis/1234.png",
@@ -281,6 +290,9 @@ test_allowlist(void)
 		"",
 		"upload.example.org/x.png",
 		"https://upload.example.org/x.png",
+		"http://images.steamusercontent.com/ugc/1/2/",
+		"https://steamusercontent.com/ugc/1/2/",
+		"https://store.steampowered.com/api/appdetails?appids=440",
 	};
 	gsize i;
 

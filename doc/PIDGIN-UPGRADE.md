@@ -387,7 +387,7 @@ New components in `pidgin4/`:
    - tags: B, I, U, S, SUB, SUP, FONT color/back/face/size/sml, SPAN style, A, IMG id/src, BR, HR, P, PRE, CODE, comments;
    - Discord's spoiler span (`foreground: black; background: black`) becomes a click-to-reveal spoiler;
    - an **XEP-0393 Message Styling** mode for plain-text bodies: `*bold*`, `_italic_`, `~strike~`, `` `code` ``, ```` ``` ```` blocks and `>` quotes, following the XEP's parsing rules;
-   - `IMG src=https://…` is loaded asynchronously through the remote-image loader. It's limited to allowlisted hosts (`cdn.discordapp.com`, `media.discordapp.net`, and the account's XEP-0363 upload host) and cached on disk. Other hosts show the alt text as a link;
+   - `IMG src=https://…` is loaded asynchronously through the remote-image loader. It's limited to allowlisted hosts (`cdn.discordapp.com`, `media.discordapp.net`, Steam's CDN hosts since M9, and the account's XEP-0363 upload host) and cached on disk. Other hosts show the alt text as a link;
    - output as a Pango attribute list + inline-object list.
 
    It is also used in reverse to serialize entry tags to the HTML that `get_markup` produced, including the `USE_POINTSIZE` and whole-buffer-formatting (WBFO) cases. It is unit-tested.
@@ -1206,7 +1206,7 @@ Constraint: every change must keep `libdiscord.so` and `libsteam.so` loadable an
 
 **Branches** (committed, not pushed; the users' checkouts and the `.so` files their symlinks point to are untouched):
 - `~/purple-discord`: branch `pidgin4-message-meta`, worktree `~/purple-discord-pidgin4`, commit `c5f7c41` on top of `fix/high-severity-review` (`d0f8f34`), then the second round (see *Discord, second round* below): `d459f53` stickers, GIFs and link embeds; `251a2fe` read state; `bd0cec6` scroll-back; `10256a1` history reactions; `0a35382` game activity.
-- `~/pidgin-opensteamworks`: branch `pidgin4-rich-presence`, worktree `~/pidgin-opensteamworks-pidgin4`, commit `8ae6171` on top of `master` (`e3e1f97`).
+- `~/pidgin-opensteamworks`: branch `pidgin4-rich-presence`, worktree `~/pidgin-opensteamworks-pidgin4`, commit `8ae6171` on top of `master` (`e3e1f97`), then the Steam message-metadata commits `5b426e6`, `8d33975`, `903a705`, `f0daa78` and `20ea1d4` (see *Steam, message metadata* below).
 
 **Discord** (`libdiscord.c`). Everything new is gated per connection on `DiscordAccount.native_meta`, read at login from `purple_core_get_ui_info()["message-meta"] == "1"`. Without it (stock Pidgin 2) no new code path runs, and the output is unchanged; the test below checks that for a reply, an edit, a delete and a message with a custom emoji.
 - **`receiving-message-meta`** before each message the plugin shows. Keys:
@@ -1274,6 +1274,37 @@ Constraint: every change must keep `libdiscord.so` and `libsteam.so` loadable an
 
 The plan said "on the available status type". The existing independent status is libpurple's place for this: it doesn't disturb the exclusive statuses, and stock Pidgin ignores it. So the attribute went there rather than duplicating it on every exclusive status. The "In game X" status text is unchanged, and Steam Guard and login weren't touched. `tests/test_load.c` checks the attributes.
 
+**Steam, message metadata** (2026-09-23; the five commits above, one per feature). Everything is gated per connection on `SteamAccount.native_meta`, read at login from `purple_core_get_ui_info()["message-meta"] == "1"`, the same helper as Discord's. The IPC commands and the plugin signal are registered in `plugin_load` only when the UI has message-meta (the debug log then says `UI has message-meta: registered IPC commands send-marker, send-reaction and mam-fetch-older, and the signal mam-query-done`). On stock Pidgin none of it runs: the requests Steam sees and the text written are byte-identical, which `scripts/tests/steam-m9` checks for each feature. Only the CM protobuf services the plugin already speaks are used (all in SteamDatabase/Protobufs' `steammessages_friendmessages.steamclient.proto`), plus public CDN URL patterns and the store API reply the plugin already fetched for game names.
+1. **Inline images and emoticons** (`5b426e6`). Live messages are taken from their BBCode form (`IncomingMessage.message`), and history is fetched with `bbcode_format`. `[emoticon]name[/emoticon]`, and `ːnameː`/`:name:` in plain text, become `<img src="https://steamcommunity-a.akamaihd.net/economy/emoticon/name" alt=":name:">`. `community.cloudflare.steamstatic.com` serves the same path only as a redirect to `community.steamstatic.com`, so the direct host is used. Images on `images.steamusercontent.com`/`steamusercontent-a.akamaihd.net` (`[img src=…]`, `[url=…]`, bare links) become `<a href=url>url</a><br/><img src=url>`. Stickers become the text `[sticker: Name]`, because the plugin didn't parse them before and their CDN path couldn't be verified. Other tags are dropped with their content kept; `\[` is a literal bracket. Messages we sent from another client get the same treatment, and so do our own sends (item 2).
+2. **Ids, read markers, own sends** (`8d33975`).
+   - `receiving-message-meta` before every message shown. Keys:
+     - `conv-type` = `im`;
+     - `sender`: the friend's SteamID, or our account's **username** for ours, since that is what pidgin4 matches as "self";
+     - `timestamp`;
+     - `stanza-id` = `server-id` = `<friend SteamID>:<server timestamp>`, plus `:<ordinal>` when the ordinal isn't 0 (the conversation, timestamp and ordinal are how Steam names a message in `AckMessage` and reactions);
+     - `outgoing` = `1` for ours from another client;
+     - `markable` = `1` for the friend's messages, so pidgin4 sends markers;
+     - `mam` = `1`, `mam-query` = `catchup` for the sign-on history (`GetActiveMessageSessions` + `GetRecentMessages` since the last message seen, which the plugin already did).
+
+     `discard` is honoured.
+   - **Own sends.** `send_im` returns 0, and the message is written from the `SendMessage` reply, right after `sending-message-meta` (`conv-type`, `timestamp`, `stanza-id`, `server-id` from the reply's `server_timestamp`/`ordinal`). This works like Discord's held-back echo; a failure keeps the text in the error line.
+   - **Read markers.** IPC `send-marker(account, conv, id, marker)` sends `FriendMessages.AckMessage#1` (`steamid_partner`, `timestamp`; no response) for `displayed`/`acknowledged`; `received` returns FALSE, since Steam has no delivery receipts. `FriendMessagesClient.NotifyAckMessageEcho#1` (read on another session of ours) becomes `message-receipt(account, friend, "<friend>:<timestamp>", "displayed", <our username>)`. Steam has no ack `chat_entry_type`, and it never says when the friend has read our messages.
+3. **Scroll-back** (`903a705`). IPC `mam-fetch-older(account, conv, before_id, count)` sends `FriendMessages.GetRecentMessages#1`:
+   - `time_last`/`ordinal_last` = the before message's timestamp/ordinal, or `time_last` = 2^31−1 for the newest page;
+   - `bbcode_format`;
+   - `count` + 1 (at most 100), in case Steam counts the before message; anything not older is dropped, and the newest `count` are kept.
+
+   The page is written oldest first with `PURPLE_MESSAGE_DELAYED` and `mam` = `1`, `mam-query` = `older`. Then comes the plugin's signal `mam-query-done(account, conv, first_id, last_id, complete)`, registered on the Steam prpl with the XMPP signature (`complete` = !`more_available`). A failed request emits nothing.
+4. **Reactions** (`f0daa78`).
+   - `FriendMessagesClient.MessageReaction#1` becomes `message-reaction(account, friend, target_id, emoji, sender, add)`, where `emoji` is `:name:` for an emoticon and `sticker:Name` for a sticker. pidgin4 chips are text; the `<img>` alternative would be `<img src="https://steamcommunity-a.akamaihd.net/economy/emoticon/name">`. If the UI doesn't take the reaction, a system line goes into the open conversation.
+   - Reactions listed on history messages (`FriendMessage.reactions`) are emitted as additions.
+   - IPC `send-reaction(account, conv, target_id, emoji_set)` diffs the complete set against the cached set of our own reactions. It sends `FriendMessages.UpdateMessageReaction#1` removes, then adds (`reaction_type` 1/2, `reaction` = name), reports each at once, and reports one that Steam refuses as undone. It returns FALSE, sending nothing, for anything that isn't a Steam reaction (Unicode emoji).
+5. **Game image** (`20ea1d4`). The `ingame` status type has a third attribute, `game_icon_url`, set only for message-meta UIs. It holds the store's small capsule (`capsule_imagev5`, 184×69 on `shared.akamai.steamstatic.com`, else `capsule_image`) from the `appdetails?appids=N&filters=basic` reply the plugin already fetched for names, cached per app id. The square community icon (`…/steamcommunity/public/images/apps/<appid>/<hash>.jpg`) needs the icon hash, which neither `CMsgClientPersonaState` nor appdetails carries, so it isn't used.
+
+**pidgin4 for Steam** (this branch, commit `0da5550`): the image loader's built-in allowlist now has `images.steamusercontent.com`, `steamusercontent-a.akamaihd.net`, `steamcommunity-a.akamaihd.net`, `community.cloudflare.steamstatic.com` (+ `community.steamstatic.com`, its redirect target), `cdn.cloudflare.steamstatic.com`, `avatars.steamstatic.com`, `shared.akamai.steamstatic.com` and `media.steampowered.com`. Follow-ups for pidgin4, not done here:
+- **Render `game_icon_url`** next to the game on the buddy row, in the tooltip, and optionally as the emblem. It's a wide capsule (≈2.7:1), so scale it to the row height.
+- **Connect `mam-query-done` on the conversation's prpl.** Today `connect_mam_signal()` in `pidginconvmeta.c` only connects `prpl-jabber`, so a Steam scroll-back page is shown when `OLDER_TIMEOUT_S` (30 s) expires rather than when the page ends, and it's never marked complete.
+
 **pidgin4** (this branch):
 - `gtkblist.c` has a new `presence_game()`: the game of the first active status with a `game` attribute (Steam's `ingame`, XMPP's tune). It skips types without that attribute, since asking for one is a critical. It drives:
   - the game emblem (before the tune/music one);
@@ -1288,7 +1319,14 @@ The plan said "on the available status type". The existing independent status is
 - **Stock Pidgin 2.14.14 load test.** `/usr/bin/pidgin -c <scratch copy of ~/.purple-gtk4 without logs, plugins/ = symlinks to the two new builds> -n -d` ran for 20 s under Xvfb + `dbus-run-session`, and SIGTERM made it quit cleanly. Both plugins probed and loaded (`Registered IPC commands …`, Steam `status_types`), with no errors or criticals. Both were unloaded at exit. `accounts.xml` still has its 34 accounts (2 Discord, 2 Steam); it was rewritten, but it is identical once sorted.
 - **pidgin4 load test.** The same run with `pidgin4 -c … -n -d -m` (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`) behaved the same, with 0 criticals, for both the installed pidgin4 and this branch's build.
 - **`scripts/tests/discord-m9/run.sh`** (145 checks at the time, also with `--asan`; 281 after the second round) `#include`s `libdiscord.c`. It runs the system libpurple with a null UI with and without `message-meta`, registers the M8 signals, loads the plugin as a prpl and feeds it gateway payloads in the Discord API documentation's shapes. It covers every item above, the IPC commands and the unchanged stock output.
-- **Steam `tests/test_load`**: PASSED.
+- **Steam `tests/test_load`**: PASSED (it now checks `game_icon_url` too). The plugin's `test_proto` (1089 checks), `test_cm` and `test_auth` pass. `test_cm` also has a live part, which tries a bogus-token logon against the real CMs. After many gate runs that part ended in Steam's rate limit (EResult 84), so the final runs used `TEST_CM_OFFLINE=1`. It doesn't touch the changed code. The tests Makefile has no header dependencies, so run `make -C steam-mobile/tests clean` after a struct change.
+- **`scripts/tests/steam-m9/run.sh`** (191 checks, also with `--asan`) `#include`s `libsteam.c` and links the plugin's other sources. It runs the system libpurple with a null UI whose ui_info has `message-meta`, registers the M8 signals, loads the plugin as a prpl, and drives a test-mode CM session (`steam_cm__test_new`: packets in, sent packets collected). It covers BBCode/emoticon/image conversion, ids and meta keys, discard, own sends and their failure, ack in and out, scroll-back paging (boundary, trimming, completion, failure), the catch-up, reactions in and out (echo, refusal, history), the game image, and each feature's unchanged stock output. The AckMessage, UpdateMessageReaction, MessageReaction and GetRecentMessages request/response encodings are compared byte for byte with protoc's Python output for SteamDatabase/Protobufs.
+- **Steam message-metadata gates** (before each of the five commits, rerun at the end):
+  - The symbol gate prints nothing. New libpurple imports (all 2.14): `purple_account_get_protocol_id`, `purple_conversations_get_handle`, `purple_core_get_ui_info`, `purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER`, `…_BOOLEAN__POINTER_POINTER_POINTER_UINT`, `…_VOID__POINTER_POINTER_POINTER_POINTER_UINT`, `purple_plugin_ipc_register`, `purple_signal_emit`, `_emit_return_1`, `_register` and `_unregister`.
+  - `check-abi.sh --no-abidiff`: "all ABI gates passed".
+  - Stock `/usr/bin/pidgin -n -d` with a scratch copy of `~/.purple` (no logs, no `messages.db`, `plugins/libsteam.so` pointing at the new build) ran 20 s under Xvfb + `dbus-run-session`. The plugin loaded and unloaded, no IPC was registered, there were no Steam errors, and the 126 `g_log` assertion lines were the same as with the master `.so`. The 34 accounts were kept, and the rewritten `accounts.xml` was identical to the one from the run with the master `.so`: Pidgin resets 5 status `active` flags at start-up either way.
+  - The installed pidgin4 (`-m -n -d`, `G_DEBUG=fatal-criticals`) behaved the same, and it logged the IPC registration line.
+  - pidgin4's `meson test` gives 19 OK and 1 skipped, with the new allowlist cases in `test-imageloader`.
 - **pidgin4**: `meson test` 14 OK, 1 skipped, and zero build warnings.
 - **Rich-presence check.** A scratch UI plugin in pidgin4 gave a Steam buddy (on a pretend connection) the `ingame` status. The tooltip showed "Game: Team Fortress &lt;2&gt;" (escaped), and it went away when the status was cleared.
 - No account was signed in.
@@ -1319,6 +1357,14 @@ or point `~/.purple/plugins/*.so` at the worktree builds. **The new `.so` files 
 - `MESSAGE_REACTION_REMOVE_ALL`/`_EMOJI` aren't handled (as before).
 - The purple-3 build (`libdiscord3.so`) wasn't built.
 - Not tested against live Discord or Steam: those round trips are the user's M9 checklist in `pidgin4/TESTING.md`.
+- Steam, message metadata:
+  - The two pidgin4 follow-ups above: `game_icon_url` rendering, and `mam-query-done` on non-XMPP prpls.
+  - Stickers are text, because there is no verified sticker CDN URL. The community game icon needs PICS app info (`CMsgClientPICSProductInfoRequest`, a KeyValues blob), so the store capsule stands in.
+  - Whether `GetRecentMessages`'s `time_last` is inclusive isn't documented. The plugin asks for one extra message and filters, so either way works.
+  - The own-reaction cache is per process. After a restart, only reactions seen in history or notifications are known, so `send-reaction` can't remove an older one it never saw.
+  - Own sends appear after the round trip, as with Discord.
+  - Steam has no read receipts from the friend, only our own acks.
+  - Nothing was tried against live Steam, and no account was signed in.
 
 ## Critical files
 - **Build:** `configure.ac`; new `pidgin4/meson.build`, `pidgin4/pidgin-internal.h`, `pidgin4/resources/*.gresource.xml`.
