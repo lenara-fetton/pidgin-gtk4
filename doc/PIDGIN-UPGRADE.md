@@ -506,11 +506,82 @@ Features in `libpurple/protocols/irc/` (testable with the GTK 2 UI):
   - fallback text is kept, and no metadata signals are emitted.
 - **Tests:** `scripts/tests/jabber-m8/run.sh` (190 checks) links the prefix's libpurple and libjabber and runs a null UI with a fake connected stream, without network or accounts. It covers the pure helpers (`jabber_message_get_stanza_id/origin_id`, `jabber_fallback_*`, `jabber_carbons_unwrap`, `jabber_mam_unwrap`/`query_build`/`page_done`, `jabber_chat_selfping_decide/classify`, and bookmark (de)serialization). It also covers end-to-end stanza flows: carbons, MAM paging, expiry and dedup, `discard`, fallback stripping, the send path, MUC join and catch-up, `mam-fetch-older`, and bookmark autojoin and IPC. The GTK 2 `pidgin -n` ran headless for 20 s with the new libjabber and loaded it cleanly.
 - **Open issues / follow-ups:**
-  - The message-semantics XEPs (0184, 0333, 0308 emission, 0444, 0424/0425, and the send-* IPC commands) are the next agent's work. Until 0444 is emitted, a message-meta UI loses reaction-only messages, because their whole-body fallback is stripped.
+  - The message-semantics XEPs (0184, 0333, 0308 emission, 0444, 0424/0425, and the send-* IPC commands) are the next agent's work. Until 0444 is emitted, a message-meta UI loses reaction-only messages, because their whole-body fallback is stripped. *(Done, including the reaction-only fix: see* Landed (message semantics) *below.)*
   - `jabber-receiving-message` is emitted for the outer stanza only. The OMEMO plugin has to decrypt `<encrypted/>` inside `<forwarded/>` itself, for carbons and MAM.
   - Offline messages that the server delivers without a `<stanza-id/>` can be shown again by the catch-up (the dedup key is missing). Prosody adds it.
   - MUC history on a first join, and on a non-MAM rejoin (`since`), can repeat lines that have no stanza-id.
   - The IQ layer has no timeouts, so an unanswered MAM query only ends with the stream.
+
+**Landed (message semantics), 2026-09-22.** XMPP only, on top of the protocol core above. All in `libpurple/protocols/jabber/` (`receipts.c`, `correction.c`, `reactions.c`, `retraction.c`, `styling.c`, `displayed.c`, plus `message.c`/`chat.c`). No libpurple API change; the ABI gate passes. The M4b UI implements against this list.
+
+- **Gate.** Everything below emits signals only when `jabber_ui_supports_message_meta()` is TRUE. Otherwise (the GTK 2 UI), or when every handler returns FALSE, the prpl writes the text fallback given for each item. When a handler returns TRUE, the prpl writes nothing and the UI owns the log line (contract rule 7).
+- **Event conventions.** `conv_name` and `sender` are the same as in `receiving-message-meta`:
+  - IMs: `conv_name` is the sender's full JID and `sender` the same;
+  - rooms: `conv_name` is the room JID and `sender` the nick;
+  - events we caused from another device (sent carbons, our own archive): `conv_name` is the counterpart and `sender` our own full JID;
+  - "displayed elsewhere" receipts use our own **bare** JID as `sender`.
+- **Receipts (XEP-0184).**
+  - Outgoing IMs carry `<request/>`, unless the resource's caps are known and lack `urn:xmpp:receipts`. Outgoing IMs and room messages carry `<markable/>`. Both only with a message-meta UI.
+  - Requests are answered (`<received id=''/>` + `<store/>`) on live 1:1 messages from contacts in the buddy list, whatever the UI. They aren't answered for rooms, carbons or MAM.
+  - An incoming `<received/>` becomes `message-receipt(account, conv, id, "delivered", sender)`. Not in rooms. Fallback: nothing (as before).
+- **Chat markers (XEP-0333).**
+  - `<received/>` → `"delivered"`; `<displayed/>` and `<acknowledged/>` → `"displayed"`. In rooms, too.
+  - Our own `<displayed/>` from another device (sent carbon, or reflected from our nick in a room) → `message-receipt(…, "displayed", <own bare JID>)`.
+  - Incoming `<markable/>` → meta key `markable` = `1`.
+  - IPC `gboolean send-marker(PurpleAccount *account, const char *conv_name, const char *message_id, const char *marker)`. `marker` is `displayed` (the default for NULL/""), `received` or `acknowledged`. Sends `<marker id=''/>` + `<store/>` to `conv_name`: the peer's JID as given, or type groupchat to the room. It returns FALSE for rooms not listing `muc_nonanonymous` in disco#info. In rooms `message_id` should be the room's stanza-id (`server-id`).
+- **Corrections (XEP-0308).**
+  - An incoming `<replace id=''/>` with a body → `message-corrected(account, conv, target_id, new_id, new_body, sender)`. `new_id` is the correction's own `<message id=''>`, and `new_body` is libpurple markup, as `write_conv` would get it.
+  - TRUE: nothing is written or logged. Otherwise the message is written normally, prefixed `edit: ` (translatable, `JABBER_CORRECTION_PREFIX`), and its `receiving-message-meta` carries `correction-of`. No `PURPLE_MESSAGE_*` flag marks it: 2.14 has none that fits, and none was added (the ABI is additive, but GTK 2 would ignore a new bit).
+  - In rooms the prpl keeps a bounded (512) per-room map of message id / origin-id / server-id → occupant-id. A correction or retraction whose target is known to come from a different occupant-id is dropped, so nick changes don't break matching and nick takeovers can't fake it. Without occupant-id the UI has to compare nicks.
+  - IPC `gboolean send-correction(PurpleAccount *account, const char *conv_name, const char *target_id, const char *new_body)`. `new_body` is **plain text**, already 0393-styled. It sends the body + `<replace id=target/>` + a fresh id/origin-id (+ request/markable), then emits `sending-message-meta` with `correction-of`.
+    - 1:1: **no write follows** that meta. The prpl then emits `message-corrected(…, target, new_id, markup, <own full JID>)`; if that isn't handled, it writes `edit: …` as a SEND message.
+    - Rooms: the room's reflection comes back through the incoming path.
+- **Reactions (XEP-0444).**
+  - A message with `<reactions id=''>` is always a reaction: its body (if any) is treated as the fallback, and the message is never written as-is. This fixes the core's open issue: reaction-only messages were dropped once their fallback body was stripped.
+  - The prpl keeps each sender's last set per (conversation, target) for the session. The identity is the bare JID for IMs, the full JID for room PMs, and the occupant-id (else the nick) in rooms. It emits `message-reaction(account, conv, target, emoji, sender, add)` for each removal, then each addition. A repeated set emits nothing. In rooms the target is whatever the sender used (normally the room's stanza-id).
+  - Fallback, if any emission is unhandled or there's no meta UI: a system line `X reacted 👍 🎉 to a message`, or `X removed the reaction 👍` when there are only removals.
+  - Sets are cleaned up: trimmed, unique, ≤ 32 entries of ≤ 64 bytes.
+  - IPC `gboolean send-reaction(PurpleAccount *account, const char *conv_name, const char *target_id, const char *emoji_list)`. `emoji_list` is the **complete** new set, space-separated; `""` removes all. It sends `<reactions>` + `<store/>` + a fallback body (the emoji) with `<fallback for='urn:xmpp:reactions:0'/>`; an empty set has no body. In 1:1 the diff against our last sent set is emitted locally as `message-reaction` with our own full JID (text fallback as above). Rooms: the reflection does it.
+- **Replies (XEP-0461).** Incoming as in the core (`reply-to`, `reply-to-sender`, quote stripped).
+  - IPC `gboolean send-reply(PurpleAccount *account, const char *conv_name, const char *reply_to_id, const char *reply_to_jid, const char *quoted_text, const char *body)`. `reply_to_jid` and `quoted_text` may be NULL; `body` is plain text. The UI supplies the quoted text; the prpl doesn't look anything up.
+  - Each line of `quoted_text` becomes `> line\n`, followed by `body`. The quote is marked with `<fallback for='urn:xmpp:reply:0'><body start='0' end='N'/>` (code points), plus `<reply to='' id=''/>`.
+  - It emits `sending-message-meta` with `reply-to`/`reply-to-sender`. In 1:1 it then writes `body` alone (without the quote) as a SEND message; rooms: the reflection.
+- **Retraction (XEP-0424) and moderation (XEP-0425).**
+  - Incoming `<retract xmlns='urn:xmpp:message-retract:1' id=''/>`, or the 0.2/0.3 form `<apply-to xmlns='urn:xmpp:fasten:0' id=''><retract xmlns='…:0'/></apply-to>` (`:1` wins if both are present), → `message-retracted(account, conv, target, sender, NULL)`. Room retractions are occupant-id checked.
+  - Moderation (`<retract><moderated xmlns='urn:xmpp:message-moderate:1' by=''/><reason/></retract>`, or the `:0` `<apply-to><moderated>` form) is accepted **only from the room's bare JID**. It becomes `message-retracted(…, target, <moderator nick, else the by JID>, reason-or-NULL)`.
+  - Retraction messages are always consumed. Fallbacks: `X retracted a message`; `mod removed a message[: reason]` (`A moderator` when there's no `by`). `<retracted/>` tombstones from archives are ignored.
+  - IPC `gboolean send-retraction(PurpleAccount *account, const char *conv_name, const char *target_id)` sends `:1` and the legacy `:0` form together, with a fallback body + `<fallback for='urn:xmpp:message-retract:1'/>` + `<store/>`. In 1:1 it's reported locally as `message-retracted` with our own full JID (fallback line otherwise). Rooms: reflection. In rooms it is only meaningful for our own messages, with `target_id` the stanza-id.
+  - IPC `gboolean send-moderation(PurpleAccount *account, const char *room_jid, const char *target_id, const char *reason)` sends the 0425 IQ to the room: `<moderate xmlns='urn:xmpp:message-moderate:1' id=''><retract xmlns='urn:xmpp:message-retract:1'/><reason/></moderate>`, or the `:0` `<apply-to>` form if the room only advertises that. It returns FALSE for non-room targets. An error result is written into the room as an ERROR line. The UI decides when to offer it (affiliation/role).
+- **Styling (XEP-0393).**
+  - Neither send path sends XHTML-IM any more. `send_im`/`send_chat` convert the UI's markup to a plain body:
+    - `<b>`/`<strong>` → `*`, `<i>`/`<em>` → `_`, `<s>`/`<strike>`/`<del>` → `~`, `<code>`/`<tt>` → `` ` ``;
+    - `<pre>` → a ```` ``` ```` fence;
+    - `span style` bold/italic/line-through map the same way;
+    - everything else is stripped as by `purple_markup_strip_html` (entities, `<br>`, links as "text (url)").
+
+    Markers hug non-whitespace, nested duplicates merge, and empty spans vanish.
+  - **pidgin4 contract:** pass libpurple markup as usual, i.e. HTML-escape the plain text (`purple_strdup_withhtml` for newlines). 0393 markers typed or serialized by the entry pass through unchanged.
+  - Outgoing custom smileys (BoB `<img>` in XHTML-IM) are gone with XHTML-IM. Incoming XHTML-IM and custom smileys are still rendered.
+  - Incoming `<unstyled xmlns='urn:xmpp:styling:0'/>` → meta key `unstyled` = `1`.
+  - Jabber connections now have `PURPLE_CONNECTION_HTML | ALLOW_CUSTOM_SMILEY | NO_FONTSIZE | NO_BGCOLOR | NO_URLDESC | NO_IMAGES`. These are runtime flags, not ABI. GTK 2 therefore hides font size, background colour, link text and image insertion for XMPP. Bold/italic/underline/strike stay (underline is stripped).
+- **Displayed-state sync (XEP-0490).**
+  - The `urn:xmpp:mds:displayed:0` PEP handler advertises `+notify`.
+  - Notifications from our own bare JID, and an items fetch on `signed-on` (message-meta UI only), become `message-receipt(account, <item id: the conversation's bare JID>, <stanza-id>, "displayed", <own bare JID>)`. The id is a `server-id` (our archive's for 1:1, the room's for rooms). The UI must match `conv_name` by bare JID.
+  - IPC `gboolean mds-publish(PurpleAccount *account, const char *conv_name, const char *stanza_id)` publishes `<displayed><stanza-id id='' by=''/></displayed>` into item `<bare conv JID>`. `by` is our bare JID for 1:1 and the room for rooms. Publish-options: `persist_items=true`, `max_items=max`, `send_last_published_item=never`, `access_model=whitelist`. It returns FALSE without PEP.
+- **IPC common rules.** All commands live on the prpl-jabber plugin. Call them with `GPOINTER_TO_INT(purple_plugin_ipc_call(prpl, "send-…", NULL, …))`: the gboolean is the **return value**, while the `ok` out-parameter only says whether the call was dispatched.
+  - They return FALSE for a NULL/empty id or a missing account, a non-XMPP account, or an account that isn't connected.
+  - `conv_name` is a room if it is the bare JID of a joined room; anything else (including `room@server/nick` PMs) is a 1:1 target.
+  - Every outgoing stanza gets a UUID id that is also its origin-id, remembered so that the archive copy isn't shown again.
+- **Disco features added:** `urn:xmpp:receipts`, `urn:xmpp:chat-markers:0`, `urn:xmpp:message-correct:0`, `urn:xmpp:reactions:0`, `urn:xmpp:message-retract:1`, `urn:xmpp:message-retract:0`, `urn:xmpp:reply:0`, `urn:xmpp:styling:0`, `urn:xmpp:mds:displayed:0+notify`. They are advertised regardless of the UI, since each has a readable fallback.
+- **Meta keys added** to `receiving-message-meta`: `markable`, `unstyled`. Added to `sending-message-meta`: `correction-of`, `reply-to`, `reply-to-sender` (IPC sends).
+- **Tests:** `scripts/tests/jabber-m8/run.sh` now has 405 checks (190 before), all passing against the prefix build. They cover every item above with and without a message-meta UI, and with handlers that do and don't render: 0184 answering/privacy/carbons/send path, 0333 incl. anonymous rooms, 0308 incl. the occupant-id check, 0444 diffs, reaction-only messages and fallback, 0461 serialization re-stripped with the 0428 helpers, 0424 in both namespaces + 0425 in both + spoofing + error path, 0393 conversion of GTK 2 HTML, 0490 notify/fetch/publish, IPC argument handling, features and connection flags. The GTK 2 `pidgin -n` from the prefix ran 20 s under Xvfb and loaded `libxmpp.so` cleanly. valgrind isn't installed; the tests pass under `MALLOC_CHECK_=3 MALLOC_PERTURB_`.
+- **Open issues / follow-ups:**
+  - The HTTP-upload URL message still bypasses `jabber_message_send()`, so it has no receipt request or `<markable/>` (and no `sending-message-meta`).
+  - Reaction diffs are per process. After a restart, the first set seen from a sender is reported as all-additions: the UI should treat an add it already has as a no-op, and a set arriving from a scroll-back (`mam-query=older`) page may be older than the one shown.
+  - When the UI renders reactions/corrections/retractions natively, the HTML log gets no line. The UI must write its own readable line (e.g. `purple_conversation_write(…, PURPLE_MESSAGE_SYSTEM | PURPLE_MESSAGE_NO_LINKIFY)`), as rule 7 requires. The same holds for reply quotes, which are stripped for message-meta UIs in both directions.
+  - The prpl doesn't check that a 1:1 correction/retraction comes from the original sender (it keeps no message store). The UI must compare the bare JID of `sender` with the original's.
+  - 0490 is only fetched on `signed-on`. If PEP isn't ready yet, the error is ignored and the next notification brings the state.
+  - The 0184/0333 requests are only added for a message-meta UI, so GTK 2 users don't get receipts they can't show.
 
 ### M9: Discord and Steam plugin integration (patches to the user's forks; needs M4 + M8)
 Constraint: every change must keep `libdiscord.so` and `libsteam.so` loadable and fully working in the stock Pidgin 2.14.14. They use only symbols from the original ABI, gate new behaviour on the `message-meta` ui_info key, and emit signals only when it's present. Anything that can't be done that way is dropped.
