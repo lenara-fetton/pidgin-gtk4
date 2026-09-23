@@ -292,13 +292,13 @@ fi #enable_i18n
 AM_CONDITIONAL(INSTALL_I18N, test "x$enable_i18n" = "xyes")
 
 dnl #######################################################################
-dnl # Check for GLib 2.16 (required)
+dnl # Check for GLib 2.66 and GIO (required: GNetworkMonitor, GProxyResolver, GUri)
 dnl #######################################################################
-PKG_CHECK_MODULES(GLIB, [glib-2.0 >= 2.16.0 gobject-2.0 gmodule-2.0 gthread-2.0], , [
+PKG_CHECK_MODULES(GLIB, [glib-2.0 >= 2.66.0 gio-2.0 >= 2.66.0 gobject-2.0 gmodule-2.0 gthread-2.0], , [
 	AC_MSG_RESULT(no)
 	AC_MSG_ERROR([
 
-You must have GLib 2.16.0 or newer development headers installed to build.
+You must have GLib 2.66.0 or newer development headers installed to build.
 
 If you have these installed already you may need to install pkg-config so
 I can find them.
@@ -909,16 +909,16 @@ AC_ARG_ENABLE(idn,
 	[AC_HELP_STRING([--disable-idn], [compile without IDN support])],
 	[enable_idn="$enableval" force_idn=$enableval], [enable_idn="yes" force_idn=no])
 if test "x$enable_idn" != "xno"; then
-	PKG_CHECK_MODULES(IDN, libidn >= 0.0.0, [
-		AC_DEFINE(USE_IDN, 1, [Use GNU Libidn for stringprep and IDN])
-		AC_SUBST(IDN_CFLAGS)
-		AC_SUBST(IDN_LIBS)
+	PKG_CHECK_MODULES([IDN2], [libidn2], [
+		AC_DEFINE(USE_IDN, 1, [Use GNU Libidn2 for IDNA])
+		AC_SUBST(IDN2_CFLAGS)
+		AC_SUBST(IDN2_LIBS)
 	], [
 		AC_MSG_RESULT(no)
 		enable_idn="no"
 		if test "x$force_deps" = "xyes" ; then
 			AC_MSG_ERROR([
-GNU Libidn development headers not found.
+GNU Libidn2 development headers not found.
 Use --disable-idn if you do not need it.
 ])
 		fi
@@ -1360,7 +1360,6 @@ dnl # Check for D-Bus libraries
 dnl #######################################################################
 
 AC_ARG_ENABLE(dbus, [AC_HELP_STRING([--disable-dbus], [disable D-Bus support])], , enable_dbus=yes)
-AC_ARG_ENABLE(nm, [AC_HELP_STRING([--disable-nm], [disable NetworkManager support (requires D-Bus)])], enable_nm=$enableval, enable_nm=yes)
 
 if test "x$enable_dbus" = "xyes" ; then
 	AC_CHECK_PROG(enable_dbus, dbus-binding-tool, yes, no)
@@ -1379,32 +1378,6 @@ D-Bus development headers not found.
 Use --disable-dbus if you do not need D-Bus support.
 ])
 	fi])
-fi
-
-dnl Check for NetworkManager.h; if we don't have it, oh well
-if test "x$enable_dbus" = "xyes" ; then
-	if test "x$enable_nm" = "xyes" ; then
-		PKG_CHECK_MODULES(NETWORKMANAGER, [libnm], [
-			AC_SUBST(NETWORKMANAGER_CFLAGS)
-			AC_SUBST(NETWORKMANAGER_LIBS)
-			AC_DEFINE(HAVE_NETWORKMANAGER, 1, [Define if we have NetworkManager.])
-		], [
-			PKG_CHECK_MODULES(NETWORKMANAGER, [NetworkManager >= 0.5.0], [
-				AC_SUBST(NETWORKMANAGER_CFLAGS)
-				AC_SUBST(NETWORKMANAGER_LIBS)
-				AC_DEFINE(HAVE_NETWORKMANAGER, 1, [Define if we have NetworkManager.])
-			], [
-				enable_nm=no
-				if test "x$force_deps" = "xyes" ; then
-					AC_MSG_ERROR([
-NetworkManager development headers not found.
-Use --disable-nm if you do not need NetworkManager support.
-])
-				fi])
-		])
-	fi
-else
-	enable_nm=no
 fi
 
 dnl #######################################################################
@@ -2639,8 +2612,7 @@ echo Build with voice and video.... : $enable_vv
 if test "x$enable_dbus" = "xyes" ; then
 	eval eval echo D-Bus services directory...... : $DBUS_SERVICES_DIR
 fi
-echo Build with GNU Libidn......... : $enable_idn
-echo Build with NetworkManager..... : $enable_nm
+echo Build with GNU Libidn2........ : $enable_idn
 echo SSL Library/Libraries......... : $msg_ssl
 if test "x$SSL_CERTIFICATES_DIR" != "x" ; then
 	eval eval echo SSL CA certificates directory. : $SSL_CERTIFICATES_DIR

@@ -32,6 +32,9 @@
 #define _PURPLE_PROXY_C_
 
 #include "internal.h"
+
+#include <gio/gio.h>
+
 #include "cipher.h"
 #include "debug.h"
 #include "dnsquery.h"
@@ -342,197 +345,133 @@ purple_global_proxy_set_info(PurpleProxyInfo *info)
 }
 
 
-/* index in gproxycmds below, keep them in sync */
-#define GNOME_PROXY_MODE 0
-#define GNOME_PROXY_USE_SAME_PROXY 1
-#define GNOME_PROXY_SOCKS_HOST 2
-#define GNOME_PROXY_SOCKS_PORT 3
-#define GNOME_PROXY_HTTP_HOST 4
-#define GNOME_PROXY_HTTP_PORT 5
-#define GNOME_PROXY_HTTP_USER 6
-#define GNOME_PROXY_HTTP_PASS 7
-#define GNOME2_CMDS 0
-#define GNOME3_CMDS 1
-
-/* detect proxy settings for gnome2/gnome3 */
-static const char* gproxycmds[][2] = {
-	{ "gconftool-2 -g /system/proxy/mode" , "gsettings get org.gnome.system.proxy mode" },
-	{ "gconftool-2 -g /system/http_proxy/use_same_proxy", "gsettings get org.gnome.system.proxy use-same-proxy" },
-	{ "gconftool-2 -g /system/proxy/socks_host", "gsettings get org.gnome.system.proxy.socks host" },
-	{ "gconftool-2 -g /system/proxy/socks_port", "gsettings get org.gnome.system.proxy.socks port" },
-	{ "gconftool-2 -g /system/http_proxy/host", "gsettings get org.gnome.system.proxy.http host" },
-	{ "gconftool-2 -g /system/http_proxy/port", "gsettings get org.gnome.system.proxy.http port"},
-	{ "gconftool-2 -g /system/http_proxy/authentication_user", "gsettings get org.gnome.system.proxy.http authentication-user" },
-	{ "gconftool-2 -g /system/http_proxy/authentication_password", "gsettings get org.gnome.system.proxy.http authentication-password" },
-};
-
-/**
- * This is a utility function used to retrieve proxy parameter values from
- * GNOME 2/3 environment.
+/*
+ * Desktop and environment proxy settings, through GIO's GProxyResolver.
  *
- * @param parameter	One of the GNOME_PROXY_x constants defined above
- * @param gnome_version GNOME2_CMDS or GNOME3_CMDS
+ * This replaces running gconftool-2/gsettings. The default resolver is
+ * glib-networking's GNOME resolver (org.gnome.system.proxy in GSettings) on
+ * GNOME, libproxy (environment, KDE, PAC/WPAD) elsewhere, or the proxy portal
+ * inside a sandbox.
  *
- * @return The value of requested proxy parameter
+ * purple_proxy_get_setup() is synchronous, so the lookup uses the synchronous
+ * g_proxy_resolver_lookup(). For GSettings and environment configuration that
+ * is an in-memory read; only a PAC/WPAD configuration can make it block on
+ * the network. Nothing is cached here: the resolvers track configuration
+ * changes themselves.
+ *
+ * purple_proxy_get_setup() returns a borrowed PurpleProxyInfo that callers
+ * (and in-flight connections) keep using, so resolved entries are interned
+ * by proxy URI and live until purple_proxy_uninit().
  */
-static char *
-purple_gnome_proxy_get_parameter(guint8 parameter, guint8 gnome_version)
-{
-	gchar *param, *err;
-	size_t param_len;
-
-	if (parameter > GNOME_PROXY_HTTP_PASS)
-		return NULL;
-	if (gnome_version > GNOME3_CMDS)
-		return NULL;
-
-	if (!g_spawn_command_line_sync(gproxycmds[parameter][gnome_version],
-			&param, &err, NULL, NULL))
-		return NULL;
-	g_free(err);
-
-	g_strstrip(param);
-	if (param[0] == '\'' || param[0] == '\"') {
-		param_len = strlen(param);
-		memmove(param, param + 1, param_len); /* copy last \0 too */
-		--param_len;
-		if (param_len > 0 && (param[param_len - 1] == '\'' || param[param_len - 1] == '\"'))
-			param[param_len - 1] = '\0';
-		g_strstrip(param);
-	}
-
-	return param;
-}
+static GHashTable *resolver_proxy_infos = NULL;
 
 static PurpleProxyInfo *
-purple_gnome_proxy_get_info(void)
+purple_proxy_info_from_uri(const char *proxy_uri)
 {
-	static PurpleProxyInfo info = {0, NULL, 0, NULL, NULL};
-	gboolean use_same_proxy = FALSE;
-	gchar *tmp;
-	guint8 gnome_version = GNOME3_CMDS;
+	PurpleProxyInfo *info;
+	PurpleProxyType type;
+	GUri *uri;
+	const char *scheme, *host;
+	int port, default_port;
 
-	tmp = g_find_program_in_path("gsettings");
-	if (tmp == NULL) {
-		tmp = g_find_program_in_path("gconftool-2");
-		gnome_version = GNOME2_CMDS;
-	}
-	if (tmp == NULL)
-		return purple_global_proxy_get_info();
+	if (resolver_proxy_infos == NULL)
+		resolver_proxy_infos = g_hash_table_new_full(g_str_hash, g_str_equal,
+				g_free, (GDestroyNotify)purple_proxy_info_destroy);
 
-	g_free(tmp);
+	info = g_hash_table_lookup(resolver_proxy_infos, proxy_uri);
+	if (info != NULL)
+		return info;
 
-	/* Check whether to use a proxy. */
-	tmp = purple_gnome_proxy_get_parameter(GNOME_PROXY_MODE, gnome_version);
-	if (!tmp)
-		return purple_global_proxy_get_info();
+	uri = g_uri_parse(proxy_uri, G_URI_FLAGS_HAS_PASSWORD, NULL);
+	if (uri == NULL)
+		return NULL;
 
-	if (purple_strequal(tmp, "none")) {
-		info.type = PURPLE_PROXY_NONE;
-		g_free(tmp);
-		return &info;
-	}
-
-	if (!purple_strequal(tmp, "manual")) {
-		/* Unknown setting.  Fallback to using our global proxy settings. */
-		g_free(tmp);
-		return purple_global_proxy_get_info();
-	}
-
-	g_free(tmp);
-
-	/* Free the old fields */
-	if (info.host) {
-		g_free(info.host);
-		info.host = NULL;
-	}
-	if (info.username) {
-		g_free(info.username);
-		info.username = NULL;
-	}
-	if (info.password) {
-		g_free(info.password);
-		info.password = NULL;
-	}
-
-	tmp = purple_gnome_proxy_get_parameter(GNOME_PROXY_USE_SAME_PROXY, gnome_version);
-	if (!tmp)
-		return purple_global_proxy_get_info();
-
-	if (purple_strequal(tmp, "true"))
-		use_same_proxy = TRUE;
-
-	g_free(tmp);
-
-	if (!use_same_proxy) {
-		info.host = purple_gnome_proxy_get_parameter(GNOME_PROXY_SOCKS_HOST, gnome_version);
-		if (!info.host)
-			return purple_global_proxy_get_info();
-	}
-
-	if (!use_same_proxy && (info.host != NULL) && (*info.host != '\0')) {
-		info.type = PURPLE_PROXY_SOCKS5;
-		tmp = purple_gnome_proxy_get_parameter(GNOME_PROXY_SOCKS_PORT, gnome_version);
-		if (!tmp) {
-			g_free(info.host);
-			info.host = NULL;
-			return purple_global_proxy_get_info();
-		}
-		info.port = atoi(tmp);
-		g_free(tmp);
+	scheme = g_uri_get_scheme(uri);
+	if (g_ascii_strcasecmp(scheme, "direct") == 0) {
+		type = PURPLE_PROXY_NONE;
+		default_port = 0;
+	} else if (g_ascii_strcasecmp(scheme, "http") == 0) {
+		type = PURPLE_PROXY_HTTP;
+		default_port = 80;
+	} else if (g_ascii_strcasecmp(scheme, "socks5") == 0 ||
+	           g_ascii_strcasecmp(scheme, "socks5h") == 0 ||
+	           g_ascii_strcasecmp(scheme, "socks") == 0) {
+		/* GNOME's generic "socks" host was always used as SOCKS 5 */
+		type = PURPLE_PROXY_SOCKS5;
+		default_port = 1080;
+	} else if (g_ascii_strcasecmp(scheme, "socks4") == 0 ||
+	           g_ascii_strcasecmp(scheme, "socks4a") == 0) {
+		/* socks4a: remote DNS still follows /purple/proxy/socks4_remotedns */
+		type = PURPLE_PROXY_SOCKS4;
+		default_port = 1080;
 	} else {
-		g_free(info.host);
-		info.host = purple_gnome_proxy_get_parameter(GNOME_PROXY_HTTP_HOST, gnome_version);
-		if (!info.host)
-			return purple_global_proxy_get_info();
-
-		/* If we get this far then we know we're using an HTTP proxy */
-		info.type = PURPLE_PROXY_HTTP;
-
-		if (*info.host == '\0')
-		{
-			purple_debug_info("proxy", "Gnome proxy settings are set to "
-					"'manual' but no suitable proxy server is specified.  Using "
-					"Pidgin's proxy settings instead.\n");
-			g_free(info.host);
-			info.host = NULL;
-			return purple_global_proxy_get_info();
-		}
-
-		info.username = purple_gnome_proxy_get_parameter(GNOME_PROXY_HTTP_USER, gnome_version);
-		if (!info.username)
-		{
-			g_free(info.host);
-			info.host = NULL;
-			return purple_global_proxy_get_info();
-		}
-
-		info.password = purple_gnome_proxy_get_parameter(GNOME_PROXY_HTTP_PASS, gnome_version);
-		if (!info.password)
-		{
-			g_free(info.host);
-			info.host = NULL;
-			g_free(info.username);
-			info.username = NULL;
-			return purple_global_proxy_get_info();
-		}
-
-		tmp = purple_gnome_proxy_get_parameter(GNOME_PROXY_HTTP_PORT, gnome_version);
-		if (!tmp)
-		{
-			g_free(info.host);
-			info.host = NULL;
-			g_free(info.username);
-			info.username = NULL;
-			g_free(info.password);
-			info.password = NULL;
-			return purple_global_proxy_get_info();
-		}
-		info.port = atoi(tmp);
-		g_free(tmp);
+		/* e.g. https:// (TLS to the proxy), which we can't speak */
+		g_uri_unref(uri);
+		return NULL;
 	}
 
-	return &info;
+	host = g_uri_get_host(uri);
+	if (type != PURPLE_PROXY_NONE && (host == NULL || *host == '\0')) {
+		g_uri_unref(uri);
+		return NULL;
+	}
+
+	info = purple_proxy_info_new();
+	purple_proxy_info_set_type(info, type);
+	if (type != PURPLE_PROXY_NONE) {
+		port = g_uri_get_port(uri);
+		purple_proxy_info_set_host(info, host);
+		purple_proxy_info_set_port(info, port > 0 ? port : default_port);
+		purple_proxy_info_set_username(info, g_uri_get_user(uri));
+		purple_proxy_info_set_password(info, g_uri_get_password(uri));
+	}
+	g_uri_unref(uri);
+
+	g_hash_table_insert(resolver_proxy_infos, g_strdup(proxy_uri), info);
+
+	return info;
+}
+
+/*
+ * Ask the default GProxyResolver which proxy to use to reach host:port (or a
+ * generic destination when host is NULL). Returns NULL when the resolver
+ * fails or only suggests proxy types we don't support, and an info of type
+ * PURPLE_PROXY_NONE for a direct connection.
+ */
+static PurpleProxyInfo *
+purple_proxy_resolver_get_info(const char *host, int port)
+{
+	PurpleProxyInfo *info = NULL;
+	GError *error = NULL;
+	gchar **proxies, **p, *uri;
+
+	/* All our proxy types tunnel a TCP stream (HTTP CONNECT or SOCKS), which
+	 * is what an "https" destination asks for: this picks https_proxy or
+	 * GNOME's secure proxy, falling back to http_proxy (libproxy) or the
+	 * SOCKS host (GNOME). */
+	uri = g_uri_join(G_URI_FLAGS_NONE, "https", NULL,
+	                 host != NULL ? host : "purple.invalid",
+	                 port > 0 ? port : 443, "", NULL, NULL);
+
+	proxies = g_proxy_resolver_lookup(g_proxy_resolver_get_default(), uri,
+	                                  NULL, &error);
+	g_free(uri);
+	if (proxies == NULL) {
+		purple_debug_warning("proxy", "Proxy lookup failed: %s\n",
+		                     error ? error->message : "unknown error");
+		g_clear_error(&error);
+		return NULL;
+	}
+
+	for (p = proxies; *p != NULL && info == NULL; p++)
+		info = purple_proxy_info_from_uri(*p);
+	g_strfreev(proxies);
+
+	if (info == NULL)
+		purple_debug_info("proxy", "System proxy settings suggest no "
+		                  "supported proxy type\n");
+
+	return info;
 }
 
 #ifdef _WIN32
@@ -2340,8 +2279,13 @@ connection_host_resolved(GSList *hosts, gpointer data,
 	try_connect(connect_data);
 }
 
-PurpleProxyInfo *
-purple_proxy_get_setup(PurpleAccount *account)
+/*
+ * purple_proxy_get_setup() for a known destination, so that the system proxy
+ * configuration's per-host rules (ignore-hosts, PAC) apply. host may be NULL.
+ */
+static PurpleProxyInfo *
+purple_proxy_get_setup_for_target(PurpleAccount *account, const char *host,
+                                  int port)
 {
 	PurpleProxyInfo *gpi = NULL;
 	const gchar *tmp;
@@ -2359,13 +2303,21 @@ purple_proxy_get_setup(PurpleAccount *account)
 			gpi = NULL;
 	}
 	if (gpi == NULL) {
+		/* "Use GNOME Proxy Settings": the desktop's settings, through
+		 * GProxyResolver; Pidgin's own global settings if that fails. */
 		if (purple_running_gnome())
-			gpi = purple_gnome_proxy_get_info();
-		else
+			gpi = purple_proxy_resolver_get_info(host, port);
+		if (gpi == NULL)
 			gpi = purple_global_proxy_get_info();
 	}
 
 	if (purple_proxy_info_get_type(gpi) == PURPLE_PROXY_USE_ENVVAR) {
+		PurpleProxyInfo *rpi;
+
+		/* "Use Environmental Settings". An http_proxy variable is handled
+		 * exactly as before (including HTTP_PROXY_USER etc.). Without one,
+		 * GProxyResolver is asked (libproxy reads https_proxy and no_proxy;
+		 * on GNOME it is the desktop setting), then all_proxy. */
 		if ((tmp = g_getenv("HTTP_PROXY")) != NULL ||
 			(tmp = g_getenv("http_proxy")) != NULL ||
 			(tmp = g_getenv("HTTPPROXY")) != NULL) {
@@ -2412,6 +2364,21 @@ purple_proxy_get_setup(PurpleAccount *account)
 			if ((wgpi = purple_win32_proxy_get_info()) != NULL)
 				return wgpi;
 #endif
+			rpi = purple_proxy_resolver_get_info(host, port);
+			if (rpi != NULL &&
+			    purple_proxy_info_get_type(rpi) != PURPLE_PROXY_NONE)
+				return rpi;
+
+			/* all_proxy (curl's convention, e.g. socks5://host:1080), which
+			 * libproxy does not read */
+			if ((tmp = g_getenv("all_proxy")) != NULL ||
+			    (tmp = g_getenv("ALL_PROXY")) != NULL) {
+				rpi = purple_proxy_info_from_uri(tmp);
+				if (rpi != NULL &&
+				    purple_proxy_info_get_type(rpi) != PURPLE_PROXY_NONE)
+					return rpi;
+			}
+
 			/* no proxy environment variable found, don't use a proxy */
 			purple_debug_info("proxy", "No environment settings found, not using a proxy\n");
 			gpi = tmp_none_proxy_info;
@@ -2420,6 +2387,12 @@ purple_proxy_get_setup(PurpleAccount *account)
 	}
 
 	return gpi;
+}
+
+PurpleProxyInfo *
+purple_proxy_get_setup(PurpleAccount *account)
+{
+	return purple_proxy_get_setup_for_target(account, NULL, 0);
 }
 
 PurpleProxyConnectData *
@@ -2467,7 +2440,8 @@ purple_proxy_connect(void *handle, PurpleAccount *account,
 		connect_data->gpi = purple_proxy_info_new();
 		purple_proxy_info_set_type(connect_data->gpi, PURPLE_PROXY_NONE);
 	} else {
-		connect_data->gpi = purple_proxy_get_setup(account);
+		connect_data->gpi = purple_proxy_get_setup_for_target(account,
+				connect_data->host, connect_data->port);
 	}
 
 	if ((purple_proxy_info_get_type(connect_data->gpi) != PURPLE_PROXY_NONE) &&
@@ -2555,7 +2529,8 @@ purple_proxy_connect_udp(void *handle, PurpleAccount *account,
 		connect_data->gpi = purple_proxy_info_new();
 		purple_proxy_info_set_type(connect_data->gpi, PURPLE_PROXY_NONE);
 	} else {
-		connect_data->gpi = purple_proxy_get_setup(account);
+		connect_data->gpi = purple_proxy_get_setup_for_target(account,
+				connect_data->host, connect_data->port);
 	}
 
 	if ((purple_proxy_info_get_type(connect_data->gpi) != PURPLE_PROXY_NONE) &&
@@ -2875,4 +2850,9 @@ purple_proxy_uninit(void)
 	g_list_free_full(no_proxy_entries,
 	                 (GDestroyNotify)purple_proxy_no_proxy_entry_free);
 	no_proxy_entries = NULL;
+
+	if (resolver_proxy_infos != NULL) {
+		g_hash_table_destroy(resolver_proxy_infos);
+		resolver_proxy_infos = NULL;
+	}
 }

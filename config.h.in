@@ -198,9 +198,6 @@
 /* Define to 1 if you have the <mono/metadata/object.h> header file. */
 #undef HAVE_MONO_METADATA_OBJECT_H
 
-/* Define if we have NetworkManager. */
-#undef HAVE_NETWORKMANAGER
-
 /* Define to 1 if you have the <nspr.h> header file. */
 #undef HAVE_NSPR_H
 
@@ -465,7 +462,7 @@
 /* Define if we're using GtkSpell */
 #undef USE_GTKSPELL
 
-/* Use GNU Libidn for stringprep and IDN */
+/* Use GNU Libidn2 for IDNA */
 #undef USE_IDN
 
 /* Define if we're using XScreenSaver. */

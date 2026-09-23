@@ -26,6 +26,8 @@
 
 #include "internal.h"
 
+#include <gio/gio.h>
+
 #ifndef _WIN32
 #include <arpa/nameser.h>
 #include <resolv.h>
@@ -54,7 +56,7 @@
 #include "dnsquery.h"
 
 #ifdef USE_IDN
-#include <idna.h>
+#include <idn2.h>
 #endif
 
 #ifdef __HAIKU__
@@ -73,32 +75,11 @@
 #  define HX_SIZE_OF_IFREQ(a) sizeof(a)
 #endif
 
-#ifdef HAVE_NETWORKMANAGER
-#include <dbus/dbus-glib.h>
-#include <NetworkManager.h>
-
-#if !defined(NM_CHECK_VERSION)
-#define NM_CHECK_VERSION(x,y,z) 0
-#endif
-
-static DBusGConnection *nm_conn = NULL;
-static DBusGProxy *nm_proxy = NULL;
-static DBusGProxy *dbus_proxy = NULL;
-static NMState nm_state = NM_STATE_UNKNOWN;
-static gboolean have_nm_state = FALSE;
-
-#elif defined _WIN32
-static int current_network_count;
-
-/* Mutex for the other global vars */
-static GStaticMutex mutex = G_STATIC_MUTEX_INIT;
-static gboolean network_initialized = FALSE;
-static HANDLE network_change_handle = NULL;
-static int (WSAAPI *MyWSANSPIoctl) (
-		HANDLE hLookup, DWORD dwControlCode, LPVOID lpvInBuffer,
-		DWORD cbInBuffer, LPVOID lpvOutBuffer, DWORD cbOutBuffer,
-		LPDWORD lpcbBytesReturned, LPWSACOMPLETION lpCompletion) = NULL;
-#endif
+/* Network availability comes from GIO's GNetworkMonitor (netlink, or the
+ * NetworkManager/portal backends when those are present). */
+static GNetworkMonitor *network_monitor = NULL;
+static gulong network_changed_id = 0;
+static gboolean network_was_available = TRUE;
 
 struct _PurpleNetworkListenData {
 	int listenfd;
@@ -111,13 +92,7 @@ struct _PurpleNetworkListenData {
 	int timer;
 };
 
-#ifdef HAVE_NETWORKMANAGER
-static NMState nm_get_network_state(void);
-#endif
-
-#if defined(HAVE_NETWORKMANAGER) || defined(_WIN32)
 static gboolean force_online;
-#endif
 
 /* Cached IP addresses for STUN and TURN servers (set globally in prefs) */
 static gchar *stun_ip = NULL;
@@ -441,7 +416,7 @@ purple_network_do_listen(unsigned short port, int socket_family, int socket_type
 	 * XXX - Try IPv6 addresses first?
 	 */
 	for (next = res; next != NULL; next = next->ai_next) {
-#if _WIN32
+#ifdef _WIN32
 		/*
 		 * On Windows, the address family for the transport
 		 * address should always be set to AF_INET.
@@ -620,398 +595,62 @@ purple_network_get_port_from_fd(int fd)
 	return ntohs(addr.in.sin_port);
 }
 
-#ifdef _WIN32
-#ifndef NS_NLA
-#define NS_NLA 15
-#endif
-static gint
-wpurple_get_connected_network_count(void)
-{
-	gint net_cnt = 0;
-
-	WSAQUERYSET qs;
-	HANDLE h;
-	gint retval;
-	int errorid;
-
-	memset(&qs, 0, sizeof(WSAQUERYSET));
-	qs.dwSize = sizeof(WSAQUERYSET);
-	qs.dwNameSpace = NS_NLA;
-
-	retval = WSALookupServiceBeginA(&qs, LUP_RETURN_ALL, &h);
-	if (retval != ERROR_SUCCESS) {
-		gchar *msg;
-		errorid = WSAGetLastError();
-		msg = g_win32_error_message(errorid);
-		purple_debug_warning("network", "Couldn't retrieve NLA SP lookup handle. "
-						"NLA service is probably not running. Message: %s (%d).\n",
-						msg, errorid);
-		g_free(msg);
-
-		return -1;
-	} else {
-		gchar *buf = NULL;
-		WSAQUERYSET *res = (LPWSAQUERYSET) buf;
-		DWORD current_size = 0;
-		int iteration_count = 0;
-		while (iteration_count++ < 100) {
-			DWORD size = current_size;
-			retval = WSALookupServiceNextA(h, 0, &size, res);
-			if (retval == ERROR_SUCCESS) {
-				net_cnt++;
-				purple_debug_info("network", "found network '%s'\n",
-						res->lpszServiceInstanceName ? res->lpszServiceInstanceName : "(NULL)");
-			} else {
-				errorid = WSAGetLastError();
-				if (errorid == WSAEFAULT) {
-					if (size == 0 || size > 102400) {
-						purple_debug_warning("network", "Got unexpected NLA buffer size %" G_GUINT32_FORMAT ".\n", (guint32) size);
-						break;
-					}
-					buf = g_realloc(buf, size);
-					res = (LPWSAQUERYSET) buf;
-					current_size = size;
-				} else {
-					break;
-				}
-			}
-		}
-		g_free(buf);
-
-		if (!(errorid == WSA_E_NO_MORE || errorid == WSAENOMORE)) {
-			gchar *msg = g_win32_error_message(errorid);
-			purple_debug_error("network", "got unexpected NLA response %s (%d)\n", msg, errorid);
-			g_free(msg);
-
-			net_cnt = -1;
-		}
-
-		retval = WSALookupServiceEnd(h);
-	}
-
-	return net_cnt;
-
-}
-
-static gboolean wpurple_network_change_thread_cb(gpointer data)
-{
-	gint new_count;
-	PurpleConnectionUiOps *ui_ops = purple_connections_get_ui_ops();
-
-	new_count = wpurple_get_connected_network_count();
-
-	if (new_count < 0)
-		return FALSE;
-
-	purple_debug_info("network", "Received Network Change Notification. Current network count is %d, previous count was %d.\n", new_count, current_network_count);
-
-	purple_signal_emit(purple_network_get_handle(), "network-configuration-changed", NULL);
-
-	if (new_count > 0 && ui_ops != NULL && ui_ops->network_connected != NULL) {
-		ui_ops->network_connected();
-	} else if (new_count == 0 && current_network_count > 0 &&
-			   ui_ops != NULL && ui_ops->network_disconnected != NULL) {
-		ui_ops->network_disconnected();
-	}
-
-	current_network_count = new_count;
-
-	return FALSE;
-}
-
-static gboolean _print_debug_msg(gpointer data) {
-	gchar *msg = data;
-	purple_debug_warning("network", "%s", msg);
-	g_free(msg);
-	return FALSE;
-}
-
-static gpointer wpurple_network_change_thread(gpointer data)
-{
-	WSAQUERYSET qs;
-	WSAEVENT *nla_event;
-	time_t last_trigger = time(NULL) - 31;
-	gchar *buf = NULL;
-	WSAQUERYSET *res = (LPWSAQUERYSET) buf;
-	DWORD current_size = 0;
-
-	if ((nla_event = WSACreateEvent()) == WSA_INVALID_EVENT) {
-		int errorid = WSAGetLastError();
-		gchar *msg = g_win32_error_message(errorid);
-		purple_timeout_add(0, _print_debug_msg,
-						   g_strdup_printf("Couldn't create WSA event. "
-										   "Message: %s (%d).\n", msg, errorid));
-		g_free(msg);
-		g_thread_exit(NULL);
-		return NULL;
-	}
-
-	while (TRUE) {
-		int retval;
-		int iteration_count;
-		DWORD retLen = 0;
-		WSACOMPLETION completion;
-		WSAOVERLAPPED overlapped;
-
-		g_static_mutex_lock(&mutex);
-		if (network_initialized == FALSE) {
-			/* purple_network_uninit has been called */
-			WSACloseEvent(nla_event);
-			g_static_mutex_unlock(&mutex);
-			g_thread_exit(NULL);
-			return NULL;
-		}
-
-		if (network_change_handle == NULL) {
-			memset(&qs, 0, sizeof(WSAQUERYSET));
-			qs.dwSize = sizeof(WSAQUERYSET);
-			qs.dwNameSpace = NS_NLA;
-			if (WSALookupServiceBeginA(&qs, 0, &network_change_handle) == SOCKET_ERROR) {
-				int errorid = WSAGetLastError();
-				gchar *msg = g_win32_error_message(errorid);
-				purple_timeout_add(0, _print_debug_msg,
-								   g_strdup_printf("Couldn't retrieve NLA SP lookup handle. "
-												   "NLA service is probably not running. Message: %s (%d).\n",
-													msg, errorid));
-				g_free(msg);
-				WSACloseEvent(nla_event);
-				g_static_mutex_unlock(&mutex);
-				g_thread_exit(NULL);
-				return NULL;
-			}
-		}
-		g_static_mutex_unlock(&mutex);
-
-		memset(&completion, 0, sizeof(WSACOMPLETION));
-		completion.Type = NSP_NOTIFY_EVENT;
-		overlapped.hEvent = nla_event;
-		completion.Parameters.Event.lpOverlapped = &overlapped;
-
-		if (MyWSANSPIoctl(network_change_handle, SIO_NSP_NOTIFY_CHANGE, NULL, 0, NULL, 0, &retLen, &completion) == SOCKET_ERROR) {
-			int errorid = WSAGetLastError();
-			if (errorid == WSA_INVALID_HANDLE) {
-				purple_timeout_add(0, _print_debug_msg,
-								   g_strdup("Invalid NLA handle; resetting.\n"));
-				g_static_mutex_lock(&mutex);
-				retval = WSALookupServiceEnd(network_change_handle);
-				network_change_handle = NULL;
-				g_static_mutex_unlock(&mutex);
-				continue;
-			/* WSA_IO_PENDING indicates successful async notification will happen */
-			} else if (errorid != WSA_IO_PENDING) {
-				gchar *msg = g_win32_error_message(errorid);
-				purple_timeout_add(0, _print_debug_msg,
-								   g_strdup_printf("Unable to wait for changes. Message: %s (%d).\n",
-												   msg, errorid));
-				g_free(msg);
-			}
-		}
-
-		/* Make sure at least 30 seconds have elapsed since the last
-		 * notification so we don't peg the cpu if this keeps changing. */
-		if ((time(NULL) - last_trigger) < 30)
-			Sleep(30000);
-
-		/* This will block until NLA notifies us */
-		retval = WaitForSingleObjectEx(nla_event, WSA_INFINITE, TRUE);
-
-		last_trigger = time(NULL);
-
-		g_static_mutex_lock(&mutex);
-		if (network_initialized == FALSE) {
-			/* Time to die */
-			WSACloseEvent(nla_event);
-			g_static_mutex_unlock(&mutex);
-			g_thread_exit(NULL);
-			return NULL;
-		}
-
-		iteration_count = 0;
-		while (iteration_count++ < 100) {
-			DWORD size = current_size;
-			retval = WSALookupServiceNextA(network_change_handle, 0, &size, res);
-			if (retval == ERROR_SUCCESS) {
-				/*purple_timeout_add(0, _print_debug_msg,
-							   g_strdup_printf("thread found network '%s'\n",
-											   res->lpszServiceInstanceName ? res->lpszServiceInstanceName : "(NULL)"));*/
-			} else {
-				int errorid = WSAGetLastError();
-				if (errorid == WSAEFAULT) {
-					if (size == 0 || size > 102400) {
-						purple_timeout_add(0, _print_debug_msg,
-							   g_strdup_printf("Thread got unexpected NLA buffer size %" G_GUINT32_FORMAT ".\n", (guint32) size));
-						break;
-					}
-					buf = g_realloc(buf, size);
-					res = (LPWSAQUERYSET) buf;
-					current_size = size;
-				} else {
-					break;
-				}
-			}
-
-		}
-		g_free(buf);
-		buf = NULL;
-		current_size = 0;
-
-		WSAResetEvent(nla_event);
-		g_static_mutex_unlock(&mutex);
-
-		purple_timeout_add(0, wpurple_network_change_thread_cb, NULL);
-	}
-
-	g_thread_exit(NULL);
-	return NULL;
-}
-#endif
-
 gboolean
 purple_network_is_available(void)
 {
-#ifdef HAVE_NETWORKMANAGER
 	if (force_online)
 		return TRUE;
 
-	if (!have_nm_state)
-	{
-		have_nm_state = TRUE;
-		nm_state = nm_get_network_state();
-		if (nm_state == NM_STATE_UNKNOWN)
-			purple_debug_warning("network", "NetworkManager not active. Assuming connection exists.\n");
-	}
+	/* Before init, assume a connection exists (as the old NetworkManager
+	 * code did whenever NM was not running). */
+	if (network_monitor == NULL)
+		return TRUE;
 
-	switch (nm_state)
-	{
-		case NM_STATE_UNKNOWN:
-#if NM_CHECK_VERSION(0,8,992)
-		case NM_STATE_CONNECTED_LOCAL:
-		case NM_STATE_CONNECTED_SITE:
-		case NM_STATE_CONNECTED_GLOBAL:
-#else
-		case NM_STATE_CONNECTED:
-#endif
-			return TRUE;
-		default:
-			break;
-	}
-
-	return FALSE;
-
-#elif defined _WIN32
-	return (current_network_count > 0 || force_online);
-#else
-	return TRUE;
-#endif
+	return g_network_monitor_get_network_available(network_monitor);
 }
 
 void
 purple_network_force_online()
 {
-#if defined(HAVE_NETWORKMANAGER) || defined(_WIN32)
 	force_online = TRUE;
-#endif
 }
 
-#ifdef HAVE_NETWORKMANAGER
 static void
-nm_update_state(NMState state)
+network_changed_cb(GNetworkMonitor *monitor, gboolean available,
+                   gpointer user_data)
 {
-	NMState prev = nm_state;
 	PurpleConnectionUiOps *ui_ops = purple_connections_get_ui_ops();
+	gboolean was_available = network_was_available;
 
-	have_nm_state = TRUE;
-	nm_state = state;
+	network_was_available = available;
 
-	purple_signal_emit(purple_network_get_handle(), "network-configuration-changed", NULL);
+	purple_debug_info("network", "Network configuration changed, network "
+	                  "is %savailable.\n", available ? "" : "not ");
 
-	switch(state)
-	{
-#if NM_CHECK_VERSION(0,8,992)
-		case NM_STATE_CONNECTED_LOCAL:
-		case NM_STATE_CONNECTED_SITE:
-		case NM_STATE_CONNECTED_GLOBAL:
-#else
-		case NM_STATE_CONNECTED:
-#endif
-			/* Call res_init in case DNS servers have changed */
-			res_init();
-			/* update STUN IP in case we it changed (theoretically we could
-			   have gone from IPv4 to IPv6, f.ex. or we were previously
-			   offline */
-			purple_network_set_stun_server(
-				purple_prefs_get_string("/purple/network/stun_server"));
-			purple_network_set_turn_server(
-				purple_prefs_get_string("/purple/network/turn_server"));
+	/* GNetworkMonitor emits network-changed for any change to the routing
+	 * configuration, not only for availability transitions, so this signal
+	 * fires more often than it did with NetworkManager. */
+	purple_signal_emit(purple_network_get_handle(),
+	                   "network-configuration-changed", NULL);
 
-			if (ui_ops != NULL && ui_ops->network_connected != NULL)
-				ui_ops->network_connected();
-			break;
-		case NM_STATE_ASLEEP:
-		case NM_STATE_CONNECTING:
-		case NM_STATE_DISCONNECTED:
-#if NM_CHECK_VERSION(0,8,992)
-		case NM_STATE_DISCONNECTING:
-#endif
-#if NM_CHECK_VERSION(1,0,0)
-			if (prev != NM_STATE_CONNECTED_GLOBAL && prev != NM_STATE_UNKNOWN)
-				break;
-#else
-			if (prev != NM_STATE_CONNECTED && prev != NM_STATE_UNKNOWN)
-				break;
-#endif
-			if (ui_ops != NULL && ui_ops->network_disconnected != NULL)
-				ui_ops->network_disconnected();
-			break;
-		case NM_STATE_UNKNOWN:
-		default:
-			break;
+	if (available && !was_available) {
+		/* Call res_init in case DNS servers have changed */
+		res_init();
+		/* update STUN IP in case we it changed (theoretically we could
+		   have gone from IPv4 to IPv6, f.ex. or we were previously
+		   offline */
+		purple_network_set_stun_server(
+			purple_prefs_get_string("/purple/network/stun_server"));
+		purple_network_set_turn_server(
+			purple_prefs_get_string("/purple/network/turn_server"));
+
+		if (ui_ops != NULL && ui_ops->network_connected != NULL)
+			ui_ops->network_connected();
+	} else if (!available && was_available) {
+		if (ui_ops != NULL && ui_ops->network_disconnected != NULL)
+			ui_ops->network_disconnected();
 	}
 }
-
-static void
-nm_state_change_cb(DBusGProxy *proxy, NMState state, gpointer user_data)
-{
-	purple_debug_info("network", "Got StateChange from NetworkManager: %d.\n", state);
-	nm_update_state(state);
-}
-
-static NMState
-nm_get_network_state(void)
-{
-	GError *err = NULL;
-	NMState state = NM_STATE_UNKNOWN;
-
-	if (!nm_proxy)
-		return NM_STATE_UNKNOWN;
-
-	if (!dbus_g_proxy_call(nm_proxy, "state", &err, G_TYPE_INVALID, G_TYPE_UINT, &state, G_TYPE_INVALID)) {
-		g_error_free(err);
-		return NM_STATE_UNKNOWN;
-	}
-
-	return state;
-}
-
-static void
-nm_dbus_name_owner_changed_cb(DBusGProxy *proxy, char *service, char *old_owner, char *new_owner, gpointer user_data)
-{
-	if (purple_strequal(service, NM_DBUS_SERVICE)) {
-		gboolean old_owner_good = old_owner && (old_owner[0] != '\0');
-		gboolean new_owner_good = new_owner && (new_owner[0] != '\0');
-
-		purple_debug_info("network", "Got NameOwnerChanged signal, service = '%s', old_owner = '%s', new_owner = '%s'\n", service, old_owner, new_owner);
-		if (!old_owner_good && new_owner_good) {	/* Equivalent to old ServiceCreated signal */
-			purple_debug_info("network", "NetworkManager has started.\n");
-			nm_update_state(nm_get_network_state());
-		} else if (old_owner_good && !new_owner_good) {	/* Equivalent to old ServiceDeleted signal */
-			purple_debug_info("network", "NetworkManager has gone away.\n");
-			nm_update_state(NM_STATE_UNKNOWN);
-		}
-	}
-}
-
-#endif
 
 static void
 purple_network_ip_lookup_cb(GSList *hosts, gpointer data,
@@ -1161,6 +800,36 @@ purple_network_remove_port_mapping(gint fd)
 	}
 }
 
+#ifdef USE_IDN
+/*
+ * STD3 ASCII rules on an ACE (ToASCII result): only letters, digits, hyphens
+ * and dots, and no label starts or ends with a hyphen. This is checked by
+ * hand because libidn2's IDN2_USE_STD3_ASCII_RULES silently deletes the
+ * offending characters ("exa_mple.com" becomes "example.com").
+ */
+static gboolean
+purple_network_ace_is_std3(const char *ace)
+{
+	const char *c;
+	char prev = '.';
+
+	for (c = ace; *c != '\0'; c++) {
+		if (*c == '.') {
+			if (prev == '-')
+				return FALSE;
+		} else if (*c == '-') {
+			if (prev == '.')
+				return FALSE;
+		} else if (!g_ascii_isalnum(*c)) {
+			return FALSE;
+		}
+		prev = *c;
+	}
+
+	return prev != '-';
+}
+#endif
+
 int purple_network_convert_idn_to_ascii(const gchar *in, gchar **out)
 {
 #ifdef USE_IDN
@@ -1169,15 +838,21 @@ int purple_network_convert_idn_to_ascii(const gchar *in, gchar **out)
 
 	g_return_val_if_fail(out != NULL, -1);
 
-	ret = idna_to_ascii_8z(in, &tmp, IDNA_USE_STD3_ASCII_RULES);
-	if (ret != IDNA_SUCCESS) {
+	/* IDNA2008 with UTS #46 non-transitional processing (so "ß" stays "ß"
+	 * rather than becoming "ss" as with libidn's IDNA2003), and the same
+	 * STD3 ASCII rules libidn applied. */
+	ret = idn2_to_ascii_8z(in, &tmp, IDN2_NFC_INPUT | IDN2_NONTRANSITIONAL);
+	if (ret == IDN2_OK && !purple_network_ace_is_std3(tmp)) {
+		idn2_free(tmp);
+		ret = IDN2_DISALLOWED;
+	}
+	if (ret != IDN2_OK) {
 		*out = NULL;
 		return ret;
 	}
 
 	*out = g_strdup(tmp);
-	/* This *MUST* be freed with free, not g_free */
-	free(tmp);
+	idn2_free(tmp);
 	return 0;
 #else
 	g_return_val_if_fail(out != NULL, -1);
@@ -1217,26 +892,6 @@ _purple_network_set_common_socket_flags(int fd)
 void
 purple_network_init(void)
 {
-#ifdef HAVE_NETWORKMANAGER
-	GError *error = NULL;
-#endif
-#ifdef _WIN32
-	GError *err = NULL;
-	gint cnt = wpurple_get_connected_network_count();
-
-	network_initialized = TRUE;
-	if (cnt < 0) /* Assume there is a network */
-		current_network_count = 1;
-	/* Don't listen for network changes if we can't tell anyway */
-	else {
-		current_network_count = cnt;
-		if ((MyWSANSPIoctl = (void*) wpurple_find_and_loadproc("ws2_32.dll", "WSANSPIoctl"))) {
-			if (!g_thread_create(wpurple_network_change_thread, NULL, FALSE, &err))
-				purple_debug_error("network", "Couldn't create Network Monitor thread: %s\n", err ? err->message : "");
-		}
-	}
-#endif
-
 	purple_prefs_add_none  ("/purple/network");
 	purple_prefs_add_string("/purple/network/stun_server", "");
 	purple_prefs_add_string("/purple/network/turn_server", "");
@@ -1254,33 +909,13 @@ purple_network_init(void)
 	if(purple_prefs_get_bool("/purple/network/map_ports") || purple_prefs_get_bool("/purple/network/auto_ip"))
 		purple_upnp_discover(NULL, NULL);
 
-#ifdef HAVE_NETWORKMANAGER
-	nm_conn = dbus_g_bus_get(DBUS_BUS_SYSTEM, &error);
-	if (!nm_conn) {
-		purple_debug_warning("network", "Error connecting to DBus System service: %s.\n", error->message);
-	} else {
-		nm_proxy = dbus_g_proxy_new_for_name(nm_conn,
-		                                     NM_DBUS_SERVICE,
-		                                     NM_DBUS_PATH,
-		                                     NM_DBUS_INTERFACE);
-		/* NM 0.6 signal */
-		dbus_g_proxy_add_signal(nm_proxy, "StateChange", G_TYPE_UINT, G_TYPE_INVALID);
-		dbus_g_proxy_connect_signal(nm_proxy, "StateChange",
-		                            G_CALLBACK(nm_state_change_cb), NULL, NULL);
-		/* NM 0.7 and later signal */
-		dbus_g_proxy_add_signal(nm_proxy, "StateChanged", G_TYPE_UINT, G_TYPE_INVALID);
-		dbus_g_proxy_connect_signal(nm_proxy, "StateChanged",
-		                            G_CALLBACK(nm_state_change_cb), NULL, NULL);
-
-		dbus_proxy = dbus_g_proxy_new_for_name(nm_conn,
-		                                       DBUS_SERVICE_DBUS,
-		                                       DBUS_PATH_DBUS,
-		                                       DBUS_INTERFACE_DBUS);
-		dbus_g_proxy_add_signal(dbus_proxy, "NameOwnerChanged", G_TYPE_STRING, G_TYPE_STRING, G_TYPE_STRING, G_TYPE_INVALID);
-		dbus_g_proxy_connect_signal(dbus_proxy, "NameOwnerChanged",
-		                            G_CALLBACK(nm_dbus_name_owner_changed_cb), NULL, NULL);
-	}
-#endif
+	network_monitor = g_object_ref(g_network_monitor_get_default());
+	network_was_available = g_network_monitor_get_network_available(network_monitor);
+	network_changed_id = g_signal_connect(network_monitor, "network-changed",
+	                                      G_CALLBACK(network_changed_cb), NULL);
+	purple_debug_info("network", "Using %s, network is %savailable.\n",
+	                  G_OBJECT_TYPE_NAME(network_monitor),
+	                  network_was_available ? "" : "not ");
 
 	purple_signal_register(purple_network_get_handle(), "network-configuration-changed",
 						   purple_marshal_VOID, NULL, 0);
@@ -1302,41 +937,12 @@ purple_network_init(void)
 void
 purple_network_uninit(void)
 {
-#ifdef HAVE_NETWORKMANAGER
-	if (nm_proxy) {
-		dbus_g_proxy_disconnect_signal(nm_proxy, "StateChange", G_CALLBACK(nm_state_change_cb), NULL);
-		dbus_g_proxy_disconnect_signal(nm_proxy, "StateChanged", G_CALLBACK(nm_state_change_cb), NULL);
-		g_object_unref(G_OBJECT(nm_proxy));
+	if (network_monitor != NULL) {
+		g_signal_handler_disconnect(network_monitor, network_changed_id);
+		network_changed_id = 0;
+		g_clear_object(&network_monitor);
 	}
-	if (dbus_proxy) {
-		dbus_g_proxy_disconnect_signal(dbus_proxy, "NameOwnerChanged", G_CALLBACK(nm_dbus_name_owner_changed_cb), NULL);
-		g_object_unref(G_OBJECT(dbus_proxy));
-	}
-	if (nm_conn)
-		dbus_g_connection_unref(nm_conn);
-#endif
 
-#ifdef _WIN32
-	g_static_mutex_lock(&mutex);
-	network_initialized = FALSE;
-	if (network_change_handle != NULL) {
-		int retval;
-		/* Trigger the NLA thread to stop waiting for network changes. Not
-		 * doing this can cause hangs on WSACleanup. */
-		purple_debug_warning("network", "Terminating the NLA thread\n");
-		if ((retval = WSALookupServiceEnd(network_change_handle)) == SOCKET_ERROR) {
-			int errorid = WSAGetLastError();
-			gchar *msg = g_win32_error_message(errorid);
-			purple_debug_warning("network", "Unable to kill NLA thread. Message: %s (%d).\n",
-				msg, errorid);
-			g_free(msg);
-		}
-		network_change_handle = NULL;
-
-	}
-	g_static_mutex_unlock(&mutex);
-
-#endif
 	purple_signal_unregister(purple_network_get_handle(),
 							 "network-configuration-changed");
 

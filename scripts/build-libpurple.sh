@@ -101,7 +101,6 @@ configure_args=(
 	--disable-consoleui
 	--enable-gtkui
 	"$dbus_opt"
-	--disable-nm
 	--disable-vv
 	--disable-gstreamer
 	--disable-gstreamer-video
