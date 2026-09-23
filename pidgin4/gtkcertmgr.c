@@ -280,6 +280,7 @@ view_certificate(GtkWindow *parent, PurpleCertificate *crt, const char *id)
 		certmgr->views = g_list_prepend(certmgr->views, window);
 		g_signal_connect(window, "destroy", G_CALLBACK(view_destroy_cb), NULL);
 	}
+	pidgin_window_set_secondary(GTK_WINDOW(window));
 	gtk_window_present(GTK_WINDOW(window));
 }
 
@@ -641,7 +642,7 @@ pidgin_certmgr_show(void)
 	mgr->tls_peers = tls_peers_pool();
 
 	mgr->window = win = pidgin_dialog_new(_("Certificate Manager"),
-		pidgin_get_active_window(), "certmgr", TRUE);
+		NULL, "certmgr", TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(win), 520, 440);
 	g_signal_connect(win, "destroy", G_CALLBACK(certmgr_destroy_cb), NULL);
 	content = pidgin_dialog_get_content_area(win);
@@ -712,6 +713,7 @@ pidgin_certmgr_show(void)
 	}
 	repopulate_list();
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 

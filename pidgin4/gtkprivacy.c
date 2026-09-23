@@ -478,6 +478,7 @@ pidgin_privacy_dialog_show(void)
 	if (privacy_dialog == NULL)
 		privacy_dialog = privacy_dialog_new();
 
+	pidgin_window_set_secondary(GTK_WINDOW(privacy_dialog->win));
 	gtk_window_present(GTK_WINDOW(privacy_dialog->win));
 }
 

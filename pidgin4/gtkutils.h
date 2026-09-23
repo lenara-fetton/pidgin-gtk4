@@ -140,6 +140,40 @@ GdkTexture *pidgin_texture_new_from_imgstore(PurpleStoredImage *image);
  */
 GtkWindow *pidgin_get_active_window(void);
 
+/** The bool pref read by pidgin_window_set_secondary(). */
+#define PIDGIN_PREF_SECONDARY_TRANSIENT PIDGIN4_PREFS_ROOT "/windows/secondary_transient"
+
+/**
+ * Makes @win a "secondary" window: while the pref
+ * /pidgin4/windows/secondary_transient is TRUE (the default), it becomes
+ * transient for the buddy list window (or, without one, the active
+ * conversation window), so tiling compositors such as Sway float it
+ * (xdg_toplevel.set_parent). The buddy list and conversation windows stay
+ * plain toplevels and tile. destroy-with-parent is always FALSE: closing
+ * the buddy list must not take Preferences etc. with it. A window that
+ * already has a transient parent keeps it. Call it before the first
+ * gtk_window_present(); the compositor decides floating at map time.
+ */
+void pidgin_window_set_secondary(GtkWindow *win);
+
+/**
+ * The parent for a GtkAlertDialog or GtkFileDialog (their windows cannot
+ * be passed to pidgin_window_set_secondary()): the active window, else the
+ * buddy list (or active conversation window) while the pref is TRUE.
+ */
+GtkWindow *pidgin_get_dialog_parent(void);
+
+/**
+ * Marks the buddy list or a conversation window (they stay plain
+ * toplevels, which tiling compositors tile) so that secondary windows can
+ * tell when it has drawn its first frame: on Wayland a parent only counts
+ * once it is mapped. Call it before the window is first presented.
+ */
+void pidgin_window_set_primary(GtkWindow *win);
+
+/** TRUE if pidgin_window_set_secondary() was called on @win. */
+gboolean pidgin_window_is_secondary(GtkWindow *win);
+
 /**
  * Creates a dialog-like toplevel GtkWindow: attached to the application,
  * transient for @parent (may be NULL), closed by Escape, with a vertical

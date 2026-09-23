@@ -32,6 +32,8 @@
 #include "prpl.h"
 #include "util.h"
 
+#include "gtkblist.h"
+#include "gtkconvwin.h"
 #include "gtkutils.h"
 #include "pidgincomposeentry.h"
 #include "pidginformattoolbar.h"
@@ -595,6 +597,259 @@ pidgin_get_active_window(void)
 	GtkApplication *app = pidgin_application_get();
 
 	return app ? gtk_application_get_active_window(app) : NULL;
+}
+
+/*
+ * Secondary windows (pidgin_window_set_secondary).
+ *
+ * On Wayland GTK sends xdg_toplevel.set_parent when the child's surface is
+ * created, i.e. at gtk_window_present(). wlroots only accepts a parent
+ * that is mapped (has committed a buffer), and Sway decides whether a
+ * window floats when it maps. So the parent must have drawn a frame
+ * before the child is presented: a buddy list hidden into the tray, or a
+ * window presented in the same main loop iteration (the debug and account
+ * windows at startup, the account editor over a just-opened account
+ * manager), would leave the child tiled.
+ *
+ * Every window that can be a parent is therefore tracked from its first
+ * present: "pidgin-window-painted" is set on its first frame after each
+ * map and cleared when it unmaps. A child presented over a parent that has
+ * not drawn yet is remembered and shown again (unmapped and presented, a
+ * new xdg_toplevel) once the parent has drawn, so the compositor sees the
+ * parent. Parents are chosen among mapped windows only.
+ */
+#define TRACKED_KEY  "pidgin-window-tracked"
+#define PAINTED_KEY  "pidgin-window-painted"
+#define WAITING_KEY  "pidgin-window-waiting"   /* GPtrArray of GWeakRef * */
+#define SECONDARY_KEY "pidgin-secondary-window"
+#define AUTO_PARENT_KEY "pidgin-secondary-auto-parent"
+
+static gboolean
+secondary_pref(void)
+{
+	return purple_prefs_exists(PIDGIN_PREF_SECONDARY_TRANSIENT) &&
+		purple_prefs_get_bool(PIDGIN_PREF_SECONDARY_TRANSIENT);
+}
+
+static gboolean
+window_painted(GtkWindow *win)
+{
+	if (!gtk_widget_get_mapped(GTK_WIDGET(win)))
+		return FALSE;
+	/* An untracked window has long been drawn (or is not ours). */
+	return !g_object_get_data(G_OBJECT(win), TRACKED_KEY) ||
+		g_object_get_data(G_OBJECT(win), PAINTED_KEY) != NULL;
+}
+
+/* Without the gdk/wayland headers (not every component links them). */
+static gboolean
+display_is_wayland(GdkDisplay *display)
+{
+	GType type = g_type_from_name("GdkWaylandDisplay");
+
+	return type != 0 && G_TYPE_CHECK_INSTANCE_TYPE(display, type);
+}
+
+static void
+weak_ref_free(gpointer data)
+{
+	g_weak_ref_clear(data);
+	g_free(data);
+}
+
+/* The parent has drawn: show the children presented too early again. */
+static void
+release_waiting(GtkWindow *parent)
+{
+	GPtrArray *waiting = g_object_steal_data(G_OBJECT(parent), WAITING_KEY);
+	guint i;
+
+	if (waiting == NULL)
+		return;
+	/* X11's WM_TRANSIENT_FOR does not care when it was set. */
+	if (!display_is_wayland(gtk_widget_get_display(GTK_WIDGET(parent)))) {
+		g_ptr_array_unref(waiting);
+		return;
+	}
+	for (i = 0; i < waiting->len; i++) {
+		GtkWindow *child = g_weak_ref_get(waiting->pdata[i]);
+
+		if (child == NULL)
+			continue;
+		if (gtk_window_get_transient_for(child) == parent &&
+		    gtk_widget_get_mapped(GTK_WIDGET(child))) {
+			purple_debug_info("gtkutils", "re-presenting \"%s\" over its parent\n",
+			                  gtk_window_get_title(child) ? gtk_window_get_title(child) : "");
+			gtk_widget_set_visible(GTK_WIDGET(child), FALSE);
+			gtk_window_present(child);
+		}
+		g_object_unref(child);
+	}
+	g_ptr_array_unref(waiting);
+}
+
+static void
+tracked_after_paint_cb(GdkFrameClock *clock, GtkWindow *win)
+{
+	g_signal_handlers_disconnect_by_func(clock, tracked_after_paint_cb, win);
+	g_object_set_data(G_OBJECT(win), PAINTED_KEY, GINT_TO_POINTER(1));
+	release_waiting(win);
+}
+
+static void
+tracked_map_cb(GtkWidget *widget, gpointer data)
+{
+	GdkFrameClock *clock = gtk_widget_get_frame_clock(widget);
+
+	g_object_set_data(G_OBJECT(widget), PAINTED_KEY, NULL);
+	if (clock == NULL)
+		return;
+	g_signal_handlers_disconnect_by_func(clock, tracked_after_paint_cb, widget);
+	g_signal_connect_object(clock, "after-paint",
+	                        G_CALLBACK(tracked_after_paint_cb), widget, 0);
+}
+
+static void
+tracked_unmap_cb(GtkWidget *widget, gpointer data)
+{
+	g_object_set_data(G_OBJECT(widget), PAINTED_KEY, NULL);
+}
+
+/* Call before the window is first presented. */
+static void
+window_track(GtkWindow *win)
+{
+	if (g_object_get_data(G_OBJECT(win), TRACKED_KEY))
+		return;
+	g_object_set_data(G_OBJECT(win), TRACKED_KEY, GINT_TO_POINTER(1));
+	g_signal_connect(win, "map", G_CALLBACK(tracked_map_cb), NULL);
+	g_signal_connect(win, "unmap", G_CALLBACK(tracked_unmap_cb), NULL);
+	if (gtk_widget_get_mapped(GTK_WIDGET(win)))
+		tracked_map_cb(GTK_WIDGET(win), NULL);
+}
+
+/* @child is about to be presented over @parent: if @parent has not drawn
+ * yet, present @child again once it has. */
+static void
+wait_for_parent(GtkWindow *child, GtkWindow *parent)
+{
+	GPtrArray *waiting;
+	GWeakRef *ref;
+
+	if (window_painted(parent) || !gtk_widget_get_mapped(GTK_WIDGET(parent)))
+		return;
+	waiting = g_object_get_data(G_OBJECT(parent), WAITING_KEY);
+	if (waiting == NULL) {
+		waiting = g_ptr_array_new_with_free_func(weak_ref_free);
+		g_object_set_data_full(G_OBJECT(parent), WAITING_KEY, waiting,
+		                       (GDestroyNotify)g_ptr_array_unref);
+	}
+	ref = g_new0(GWeakRef, 1);
+	g_weak_ref_init(ref, child);
+	g_ptr_array_add(waiting, ref);
+}
+
+void
+pidgin_window_set_primary(GtkWindow *win)
+{
+	g_return_if_fail(GTK_IS_WINDOW(win));
+
+	window_track(win);
+}
+
+/* The window a secondary window floats over: the buddy list, else a
+ * conversation window, else another secondary window (the active one, or
+ * the newest), all only while mapped. */
+static GtkWindow *
+secondary_parent(GtkWindow *win)
+{
+	GtkWidget *blist = pidgin_blist_get_window();
+	GtkApplication *app = pidgin_application_get();
+	GtkWindow *found = NULL;
+	GList *l;
+
+	if (blist != NULL && GTK_WINDOW(blist) != win && gtk_widget_get_mapped(blist))
+		return GTK_WINDOW(blist);
+
+	for (l = pidgin_conv_windows_get_list(); l != NULL; l = l->next) {
+		GtkWidget *w = pidgin_conv_window_get_window(l->data);
+
+		if (w == NULL || GTK_WINDOW(w) == win || !gtk_widget_get_mapped(w))
+			continue;
+		found = GTK_WINDOW(w);
+		if (gtk_window_is_active(found))
+			return found;
+	}
+	if (found != NULL)
+		return found;
+
+	/* gtk_application_get_windows() is most recently focused first. */
+	for (l = app ? gtk_application_get_windows(app) : NULL; l != NULL; l = l->next) {
+		GtkWindow *w = l->data;
+
+		if (w != win && pidgin_window_is_secondary(w) &&
+		    gtk_widget_get_mapped(GTK_WIDGET(w)))
+			return w;
+	}
+	return NULL;
+}
+
+void
+pidgin_window_set_secondary(GtkWindow *win)
+{
+	GtkWindow *parent;
+
+	g_return_if_fail(GTK_IS_WINDOW(win));
+
+	g_object_set_data(G_OBJECT(win), SECONDARY_KEY, GINT_TO_POINTER(1));
+	window_track(win);
+	/* Hiding the parent (the buddy list into the tray) does not hide its
+	 * transient children in GTK 4; destroying it would destroy them if
+	 * this were TRUE. */
+	gtk_window_set_destroy_with_parent(win, FALSE);
+
+	/* Already mapped: the compositor has decided; leave it. */
+	if (gtk_widget_get_mapped(GTK_WIDGET(win)))
+		return;
+
+	parent = gtk_window_get_transient_for(win);
+	if (parent != NULL && g_object_get_data(G_OBJECT(win), AUTO_PARENT_KEY)) {
+		/* Shown again (e.g. the accounts window hides on close): choose
+		 * again if the pref changed or the parent is hidden now. */
+		if (!secondary_pref() || !gtk_widget_get_mapped(GTK_WIDGET(parent))) {
+			gtk_window_set_transient_for(win, NULL);
+			g_object_set_data(G_OBJECT(win), AUTO_PARENT_KEY, NULL);
+			parent = NULL;
+		}
+	}
+	if (parent == NULL) {
+		if (!secondary_pref())
+			return;
+		parent = secondary_parent(win);
+		if (parent == NULL)
+			return;
+		gtk_window_set_transient_for(win, parent);
+		g_object_set_data(G_OBJECT(win), AUTO_PARENT_KEY, GINT_TO_POINTER(1));
+	}
+	wait_for_parent(win, parent);
+}
+
+GtkWindow *
+pidgin_get_dialog_parent(void)
+{
+	GtkWindow *active = pidgin_get_active_window();
+
+	if (active != NULL)
+		return active;
+	if (!secondary_pref())
+		return NULL;
+	return secondary_parent(NULL);
+}
+
+gboolean
+pidgin_window_is_secondary(GtkWindow *win)
+{
+	return win != NULL && g_object_get_data(G_OBJECT(win), SECONDARY_KEY) != NULL;
 }
 
 GtkWidget *

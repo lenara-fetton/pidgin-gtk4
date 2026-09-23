@@ -768,6 +768,7 @@ PidginDiscoDialog *pidgin_disco_dialog_new(void)
 	update_buttons(dialog);
 
 	/* show the dialog window and return the dialog */
+	pidgin_window_set_secondary(GTK_WINDOW(dialog->window));
 	gtk_window_present(GTK_WINDOW(dialog->window));
 
 	return dialog;

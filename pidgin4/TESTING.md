@@ -303,6 +303,35 @@ need the `.desktop` file.
       it from the tray or a notification: Sway follows its
       `focus_on_window_activation` setting (default `urgent`: the
       workspace is marked urgent in Waybar instead of switching).
+- [ ] **Floating dialogs.** Sway floats a toplevel that has a parent
+      (`xdg_toplevel.set_parent`) and tiles the others. The buddy list and
+      the conversation windows tile; every other window (Preferences,
+      Accounts and the account editor, Buddy Pounces and its editor, Saved
+      Statuses and the status editor, Plugins and plugin options, File
+      Transfers, the log viewers, Privacy, Room List, Certificates, Custom
+      Smileys, About, OMEMO, the XMPP console and service discovery, the
+      debug window, the New IM/Get Info/View Log/Join Chat and Add
+      Buddy/Chat/Group dialogs, requests and notifications) is a dialog of
+      the buddy list and floats. `swaymsg -t get_tree | jq -r '.. |
+      objects | select(.app_id? == "com.minowick.Pidgin4") | "\(.type)
+      \(.name)"'` shows them as `floating_con`, the list as `con`.
+      A request that belongs to a conversation is a dialog of that
+      conversation window. With the buddy list hidden in the tray a new
+      dialog floats over a conversation window or another open dialog;
+      with no pidgin4 window shown at all (e.g. Preferences from the tray
+      menu while everything is hidden) there is nothing to attach it to and
+      it tiles. Hiding the list leaves open dialogs open and usable.
+      Preferences → Interface → "Secondary windows are dialogs of the buddy
+      list (float on tiling compositors)"
+      (`/pidgin4/windows/secondary_transient`, default on) switches this off
+      for windows opened afterwards (non-resizable dialogs such as Add
+      Buddy still float: Sway floats fixed-size windows anyway).
+      Headless: `PIDGIN4_WINDOWS_SELFTEST=1` checks every window it opens
+      (`PIDGIN4_SELFTEST_SECONDARY=off` for the pref switched off); live:
+      `PIDGIN4_SELFTEST_WAYLAND=1 PIDGIN4_WINDOWS_SELFTEST=secondary
+      PIDGIN4_SELFTEST_HOLD=10 scripts/run-pidgin4-selftest.sh BIN
+      SCRATCH-PROFILE` holds for 10 s with everything open, then again
+      with the list hidden, for `swaymsg -t get_tree`.
 
 ### GNOME 49
 - [ ] **Tray.** GNOME has no tray of its own. Without the
@@ -752,8 +781,16 @@ For headless test runs only:
   search on the profile's logs (read-only), privacy, room list,
   certificates (views every tls_peers certificate), file transfers,
   custom smileys, plugins (toggles Psychic Mode on and off and checks
-  that only `/pidgin4/plugins/loaded` changes), About and OMEMO. A
-  comma-separated list (`prefs,log`) runs only those modules.
+  that only `/pidgin4/plugins/loaded` changes), About and OMEMO, and
+  (module `secondary`) the accounts window and editor, the debug window,
+  the Add Buddy/Group and gtkdialogs.c requests, a request, a formatted
+  notification and a dialog opened with the buddy list hidden. Every
+  window mapped on the way must have a transient parent, except the
+  buddy list and conversation windows (`PIDGIN4_SELFTEST_SECONDARY=off`:
+  with `/pidgin4/windows/secondary_transient` off, none may be a dialog
+  of the buddy list). A comma-separated list (`prefs,log`) runs only
+  those modules. `PIDGIN4_SELFTEST_HOLD=N` pauses the `secondary` module
+  N seconds twice (for `swaymsg -t get_tree`).
   `PIDGIN4_SELFTEST_SHOTS=DIR` saves screenshots of the windows.
   `scripts/run-pidgin4-selftest.sh BIN PROFILE [TIMEOUT]` runs a binary
   this way on a private Xvfb (or, with `PIDGIN4_SELFTEST_WAYLAND=1`, on

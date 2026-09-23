@@ -652,6 +652,7 @@ create_console(PurplePluginAction *action)
 	entry_changed_cb(buffer, NULL);
 
 	update_hbox();
+	pidgin_window_set_secondary(GTK_WINDOW(console->window));
 	gtk_window_present(GTK_WINDOW(console->window));
 	gtk_widget_grab_focus(console->entry);
 }

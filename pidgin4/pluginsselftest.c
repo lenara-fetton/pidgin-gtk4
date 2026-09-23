@@ -31,6 +31,7 @@
 #include "plugin.h"
 #include "pluginpref.h"
 #include "prefs.h"
+#include "request.h"
 #include "server.h"
 #include "signals.h"
 #include "util.h"
@@ -753,6 +754,9 @@ test_xmpp_windows(void)
 		spin(100);
 		w = find_window(_("XMPP Console"));
 		CHECK(w != NULL, "no console window");
+		/* A dialog of the buddy list, so Sway floats it. */
+		CHECK(w == NULL || gtk_window_get_transient_for(w) != NULL,
+		      "the console window has no transient parent");
 		if (w != NULL)
 			gtk_window_destroy(w);
 		spin(50);
@@ -763,10 +767,50 @@ test_xmpp_windows(void)
 		spin(100);
 		w = find_window(_("Service Discovery"));
 		CHECK(w != NULL, "no disco window");
+		CHECK(w == NULL || gtk_window_get_transient_for(w) != NULL,
+		      "the disco window has no transient parent");
 		if (w != NULL)
 			gtk_window_destroy(w);
 		spin(50);
 	}
+}
+
+/* pidgin_window_set_secondary(): a request that belongs to a conversation
+ * is transient for the conversation window, the others for the buddy
+ * list. */
+static void request_cb(void *data, const char *text) { }
+
+static void
+test_request_parents(void)
+{
+	static int handle;
+	PurpleConversation *conv = new_im("request@example.invalid");
+	PidginWindow *win;
+	GtkWindow *w;
+
+	purple_conversation_present(conv);
+	spin(100);
+	win = pidgin_conv_get_window(PIDGIN_CONVERSATION(conv));
+	purple_request_input(&handle, "Conversation request", NULL, NULL, NULL,
+		FALSE, FALSE, NULL, "_OK", G_CALLBACK(request_cb), "_Cancel",
+		G_CALLBACK(request_cb), st_account, "request@example.invalid", conv, NULL);
+	purple_request_input(&handle, "Other request", NULL, NULL, NULL,
+		FALSE, FALSE, NULL, "_OK", G_CALLBACK(request_cb), "_Cancel",
+		G_CALLBACK(request_cb), st_account, NULL, NULL, NULL);
+	spin(100);
+
+	w = find_window("Conversation request");
+	CHECK(w != NULL && win != NULL &&
+	      GTK_WIDGET(gtk_window_get_transient_for(w)) == pidgin_conv_window_get_window(win),
+	      "a conversation's request is not transient for its conversation window");
+	w = find_window("Other request");
+	CHECK(w != NULL &&
+	      GTK_WIDGET(gtk_window_get_transient_for(w)) == pidgin_blist_get_window(),
+	      "a request without a conversation is not transient for the buddy list");
+
+	purple_request_close_with_handle(&handle);
+	purple_conversation_destroy(conv);
+	spin(50);
 }
 
 /* Every plugin's configuration: the GTK frames in a window, the
@@ -859,6 +903,7 @@ selftest_run(gpointer data)
 	test_cap_and_buddynote();
 	test_compose_plugins();
 	test_xmpp_windows();
+	test_request_parents();
 	test_config_frames();
 
 	/* A conversation open while everything unloads */

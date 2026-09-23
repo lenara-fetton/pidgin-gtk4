@@ -579,7 +579,7 @@ pidgin_pounce_editor_show(PurpleAccount *account, const char *name,
 	/* Create the window. */
 	dialog->window = window = pidgin_dialog_new(
 		(cur_pounce == NULL ? _("Add Buddy Pounce") : _("Modify Buddy Pounce")),
-		pidgin_get_active_window(), "buddy_pounce", TRUE);
+		NULL, "buddy_pounce", TRUE);
 	g_signal_connect(window, "destroy", G_CALLBACK(editor_destroy_cb), dialog);
 	pounce_editors = g_list_prepend(pounce_editors, dialog);
 
@@ -791,6 +791,7 @@ pidgin_pounce_editor_show(PurpleAccount *account, const char *name,
 	update_action_sensitivity(dialog);
 	buddy_changed_cb(GTK_EDITABLE(dialog->buddy_entry), dialog);
 
+	pidgin_window_set_secondary(GTK_WINDOW(window));
 	gtk_window_present(GTK_WINDOW(window));
 }
 
@@ -1172,6 +1173,7 @@ pidgin_pounces_manager_show(void)
 
 	populate_pounces_list(dialog);
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 

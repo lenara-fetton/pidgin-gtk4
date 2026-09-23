@@ -818,6 +818,7 @@ pidgin_xfer_dialog_show(void)
 {
 	if (xfer_dialog == NULL)
 		create_dialog();
+	pidgin_window_set_secondary(GTK_WINDOW(xfer_dialog->window));
 	gtk_window_present(GTK_WINDOW(xfer_dialog->window));
 }
 

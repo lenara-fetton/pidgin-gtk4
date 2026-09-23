@@ -576,7 +576,7 @@ pidgin_about_show(void)
 
 	about = g_new0(AboutWindow, 1);
 	title = g_strdup_printf(_("About %s"), "Pidgin 4");
-	about->window = win = pidgin_dialog_new(title, pidgin_get_active_window(),
+	about->window = win = pidgin_dialog_new(title, NULL,
 	                                        "about", TRUE);
 	g_free(title);
 	gtk_window_set_default_size(GTK_WINDOW(win), 560, 560);
@@ -634,6 +634,7 @@ pidgin_about_show(void)
 
 	pidgin_dialog_add_button(win, _("_Close"), G_CALLBACK(close_cb), NULL);
 
+	pidgin_window_set_secondary(GTK_WINDOW(win));
 	gtk_window_present(GTK_WINDOW(win));
 }
 

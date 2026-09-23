@@ -112,7 +112,7 @@ pidgin_notify_message(PurpleNotifyMsgType type, const char *title,
 		type == PURPLE_NOTIFY_MSG_WARNING ? "warning" : "info",
 		primary ? primary : "", secondary ? ": " : "", secondary ? secondary : "");
 
-	gtk_alert_dialog_choose(dialog, pidgin_get_active_window(),
+	gtk_alert_dialog_choose(dialog, pidgin_get_dialog_parent(),
 	                        msg->cancellable, message_response_cb, msg);
 	g_object_unref(dialog);
 
@@ -154,7 +154,7 @@ pidgin_notify_formatted(const char *title, const char *primary,
 {
 	GtkWidget *window, *content, *label, *sw, *button;
 
-	window = pidgin_dialog_new(title, pidgin_get_active_window(), "notify_formatted", TRUE);
+	window = pidgin_dialog_new(title, NULL, "notify_formatted", TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(window), 420, 360);
 	g_signal_connect(window, "close-request", G_CALLBACK(formatted_close_request_cb), NULL);
 
@@ -179,6 +179,7 @@ pidgin_notify_formatted(const char *title, const char *primary,
 
 	g_object_set_data(G_OBJECT(window), "info-widget", label);
 
+	pidgin_window_set_secondary(GTK_WINDOW(window));
 	gtk_window_present(GTK_WINDOW(window));
 	gtk_widget_grab_focus(button);
 
@@ -436,7 +437,7 @@ pidgin_notify_searchresults(PurpleConnection *gc, const char *title,
 
 	/* Create the window */
 	window = pidgin_dialog_new(title ? title : _("Search Results"),
-	                           pidgin_get_active_window(), "searchresults", TRUE);
+	                           NULL, "searchresults", TRUE);
 	gtk_window_set_default_size(GTK_WINDOW(window), 560, 480);
 	g_signal_connect(window, "close-request",
 	                 G_CALLBACK(searchresults_close_request_cb), data);
@@ -535,6 +536,7 @@ pidgin_notify_searchresults(PurpleConnection *gc, const char *title,
 	pidgin_notify_searchresults_new_rows(gc, results, data);
 
 	/* Show the window */
+	pidgin_window_set_secondary(GTK_WINDOW(window));
 	gtk_window_present(GTK_WINDOW(window));
 	return data;
 }
@@ -690,6 +692,7 @@ pidgin_notify_emails(PurpleConnection *gc, size_t count, gboolean detailed,
 		}
 	}
 
+	pidgin_window_set_secondary(GTK_WINDOW(mail_window));
 	gtk_window_present(GTK_WINDOW(mail_window));
 
 	data = g_new0(PidginNotifyMailData, 1);
