@@ -25,6 +25,7 @@
 #include <libsoup/soup.h>
 
 #include "account.h"
+#include "accountopt.h"
 #include "blist.h"
 #include "connection.h"
 #include "conversation.h"
@@ -40,6 +41,7 @@
 #include "value.h"
 #include "version.h"
 
+#include "gtkaccount.h"
 #include "gtkblist.h"
 #include "gtkconv.h"
 #include "gtkconvwin.h"
@@ -1256,6 +1258,93 @@ test_encryption_hint(void)
 }
 
 /**************************************************************************
+ * 5. The account editor's MAM option; 6. idle
+ **************************************************************************/
+
+#define MAM_LABEL "Ask the server to archive all messages (XEP-0313)"
+
+static void
+test_account_editor(void)
+{
+	PurplePlugin *jabber = purple_find_prpl("prpl-jabber");
+	PurpleAccountOption *mam = NULL;
+	PurpleAccount *xmpp;
+	GtkWidget *win, *label, *check;
+	GList *l;
+
+	if (jabber == NULL) {
+		g_print(R2 ": no XMPP protocol; account editor not checked\n");
+		return;
+	}
+	for (l = PURPLE_PLUGIN_PROTOCOL_INFO(jabber)->protocol_options; l != NULL; l = l->next)
+		if (purple_strequal(purple_account_option_get_setting(l->data), "mam_prefs_always"))
+			mam = l->data;
+	CHECK(mam != NULL && purple_account_option_get_type(mam) == PURPLE_PREF_BOOLEAN &&
+	      purple_account_option_get_default_bool(mam) &&
+	      purple_strequal(purple_account_option_get_text(mam), MAM_LABEL),
+	      "mam_prefs_always option: %s", mam ? purple_account_option_get_text(mam) : "-");
+
+	/* the editor shows it as a check box, on by default */
+	xmpp = purple_account_new("r2-editor@example.invalid", "prpl-jabber");
+	purple_accounts_add(xmpp);
+	pidgin_account_dialog_show(PIDGIN_MODIFY_ACCOUNT_DIALOG, xmpp);
+	spin(200);
+	win = find_window("account");
+	label = find_label(win, MAM_LABEL);
+	check = label ? gtk_widget_get_ancestor(label, GTK_TYPE_CHECK_BUTTON) : NULL;
+	CHECK(check != NULL && gtk_check_button_get_active(GTK_CHECK_BUTTON(check)),
+	      "no active \"%s\" check box in the account editor", MAM_LABEL);
+	if (win != NULL)
+		gtk_window_destroy(GTK_WINDOW(win));
+	spin(100);
+	purple_accounts_delete(xmpp);
+}
+
+static void
+test_idle(void)
+{
+	PurpleGroup *group = purple_group_new("pidgin4 r2 selftest idle");
+	PurpleBuddy *buddy;
+	PidginBlistNodeItem *item;
+	char *tip, *secondary = NULL, *idle = NULL;
+	gboolean biglist;
+
+	purple_blist_add_group(group, NULL);
+	buddy = purple_buddy_new(r2_account, "idler@example.invalid", "Idler");
+	purple_blist_add_buddy(buddy, NULL, group, NULL);
+	purple_prpl_got_user_status(r2_account, "idler@example.invalid", "available", NULL);
+	purple_prpl_got_user_idle(r2_account, "idler@example.invalid", TRUE, time(NULL) - 600);
+	spin(300);
+
+	CHECK(purple_presence_is_idle(purple_buddy_get_presence(buddy)), "not idle");
+	tip = pidgin_blist_get_tooltip_text((PurpleBlistNode *)buddy, TRUE);
+	CHECK(tip != NULL && strstr(tip, "Idle") != NULL, "the tooltip has no Idle: %s", tip);
+	g_free(tip);
+
+	item = pidgin_blist_model_lookup(pidgin_blist_get_model(), (PurpleBlistNode *)buddy);
+	if (item == NULL)
+		item = pidgin_blist_model_lookup(pidgin_blist_get_model(),
+		                                 (PurpleBlistNode *)purple_buddy_get_contact(buddy));
+	CHECK(item != NULL, "no buddy list row");
+	if (item != NULL) {
+		g_object_get(item, "secondary", &secondary, "idle", &idle, NULL);
+		biglist = purple_prefs_get_bool(PIDGIN_PREFS_ROOT "/blist/show_buddy_icons");
+		if (purple_prefs_get_bool(PIDGIN_PREFS_ROOT "/blist/show_idle_time"))
+			CHECK(biglist ? (secondary != NULL && strstr(secondary, "Idle 10m") != NULL)
+			              : purple_strequal(idle, "0:10"),
+			      "the row shows no idle time (secondary %s, idle %s)", secondary, idle);
+		g_free(secondary);
+		g_free(idle);
+	}
+	/* back */
+	purple_prpl_got_user_idle(r2_account, "idler@example.invalid", FALSE, 0);
+	spin(100);
+	CHECK(!purple_presence_is_idle(purple_buddy_get_presence(buddy)), "still idle");
+	purple_blist_remove_buddy(buddy);
+	purple_blist_remove_group(group);
+}
+
+/**************************************************************************
  * Driver
  **************************************************************************/
 
@@ -1284,6 +1373,10 @@ selftest_run(gpointer data)
 	test_file_shares();
 	g_print(R2 ": encryption hint\n");
 	test_encryption_hint();
+	g_print(R2 ": account editor\n");
+	test_account_editor();
+	g_print(R2 ": idle\n");
+	test_idle();
 
 done:
 	while (purple_get_conversations() != NULL)

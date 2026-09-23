@@ -856,6 +856,15 @@ but no XEP-0186.
       contact, shows a warning that they use OMEMO 2, which isn't
       supported.
 
+### Archive preferences and idle
+- [ ] Accounts → Modify the XMPP account → Advanced: "Ask the server to
+      archive all messages (XEP-0313)" is on by default; turned off (and
+      reconnected), no MAM prefs IQ is sent (`-d` log); Pidgin 2 shows the
+      same option.
+- [ ] A contact idle in Conversations/Dino (XEP-0319): the buddy list
+      shows "Idle Nm" on their row (with buddy details on) or the idle
+      time column, and "Idle" in the tooltip; it goes when they're back.
+
 For headless test runs only:
 - `PIDGIN4_REQUEST_SELFTEST=1` opens one request of every kind at startup.
 - `PIDGIN4_ACCOUNT_SELFTEST=1` opens the accounts window, then opens and
@@ -958,7 +967,10 @@ For headless test runs only:
   and a PDF's file card; the XEP-0380 line (text, italics, icon,
   tooltip) and the OMEMO window's OMEMO 2 warning (a stand-in OMEMO
   plugin listing devices for an unconnected XMPP account that got an
-  `urn:xmpp:omemo:2` message). It removes its account and quits with
+  `urn:xmpp:omemo:2` message); the XMPP account editor's
+  `mam_prefs_always` check box (label, on by default); and a buddy's
+  idle time on its row and in its tooltip after
+  `purple_prpl_got_user_idle()`. It removes its account and quits with
   status 0 ("PASS (N checks)"). Scratch profile only.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
