@@ -50,6 +50,7 @@
 #include "util.h"
 
 #include "gtkaccount.h"
+#include "gtkblist.h"
 #include "gtkconn.h"
 #include "gtkdebug.h"
 #include "gtkdialogs.h"
@@ -155,8 +156,9 @@ pidgin_ui_init(void)
 	 *     nor shown, privacy and room list windows do not exist;
 	 *   sound, idle (TODO(M6)): see gtksound.c and gtkidle.c;
 	 *   whiteboard, media: dropped (no voice/video, no Doodle).
-	 * The blist ops are an all-NULL stub (stubs.c) because libpurple
-	 * only saves blist.xml through them.
+	 * The blist ops (gtkblist.c) leave save_node/remove_node/
+	 * save_account NULL: libpurple then uses its own savers, which is
+	 * how blist.xml is written.
 	 */
 	purple_accounts_set_ui_ops(pidgin_accounts_get_ui_ops());
 	purple_blist_set_ui_ops(pidgin_blist_get_ui_ops());
@@ -167,6 +169,7 @@ pidgin_ui_init(void)
 	purple_idle_set_ui_ops(pidgin_idle_get_ui_ops());
 
 	pidgin_account_init();
+	pidgin_blist_init();
 	pidgin_connection_init();
 	pidgin_pounces_init();
 	pidgin_utils_init();
@@ -180,6 +183,7 @@ pidgin_quit(void)
 	pidgin_utils_uninit();
 	pidgin_notify_uninit();
 	pidgin_connection_uninit();
+	pidgin_blist_uninit();
 	pidgin_account_uninit();
 	pidgin_debug_uninit();
 
@@ -466,8 +470,14 @@ startup_cb(GApplication *app, gpointer data)
 	if (opts.force_online)
 		purple_network_force_online();
 
-	/* No-op until the buddy list exists (TODO(M3)). */
+	/* The buddy list window (gtkblist.c) is the main window. */
 	purple_blist_show();
+
+	/* As Pidgin 2: with no enabled account, open the accounts window. */
+	if ((accounts = purple_accounts_get_all_active()) == NULL ||
+	    g_getenv("PIDGIN4_ACCOUNT_SELFTEST") != NULL)
+		pidgin_accounts_window_show();
+	g_list_free(accounts);
 
 	if (purple_prefs_get_bool(PIDGIN4_PREFS_ROOT "/debug/enabled"))
 		pidgin_debug_window_show();
@@ -519,9 +529,8 @@ activate_cb(GApplication *app, gpointer data)
 	if (!core_running)
 		return;
 
-	/* The buddy list is M3; until then the account manager is the main
-	 * window, shown at startup and whenever pidgin4 is launched again. */
-	pidgin_accounts_window_show();
+	/* A second launch raises the buddy list. */
+	purple_blist_set_visible(TRUE);
 }
 
 static void

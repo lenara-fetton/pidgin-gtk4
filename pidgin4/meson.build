@@ -106,6 +106,7 @@ add_project_arguments(
 
 pidgin4_sources = files(
 	'gtkaccount.c',
+	'gtkblist.c',
 	'gtkconn.c',
 	'gtkdebug.c',
 	'gtkdialogs.c',
@@ -116,8 +117,11 @@ pidgin4_sources = files(
 	'gtkprefs.c',
 	'gtkrequest.c',
 	'gtksound.c',
+	'gtkstatusbox.c',
 	'gtkutils.c',
+	'pidginblistmodel.c',
 	'pidginmenu.c',
+	'pidginminidialog.c',
 	'pidginsingleui.c',
 	'stubs.c',
 )
@@ -165,6 +169,14 @@ test_singleui = executable('test-singleui',
 	dependencies : [glib_dep, purple_dep],
 	install : false)
 test('singleui', test_singleui)
+
+# M3: the buddy list model (links libpurple and GTK; needs no display).
+test_blistmodel = executable('test-blistmodel',
+	'tests/test-blistmodel.c', 'pidginblistmodel.c', 'gtkeventloop.c',
+	dependencies : [glib_dep, gio_dep, gobject_dep, gtk_dep, purple_dep],
+	build_rpath : purple_libdir,
+	install : false)
+test('blistmodel', test_blistmodel)
 
 desktop_validate = find_program('desktop-file-validate', required : false)
 if desktop_validate.found()

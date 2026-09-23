@@ -760,7 +760,8 @@ create_string_field(PidginRequestData *data, PurpleRequestField *field)
 	gboolean editable = purple_request_field_string_is_editable(field);
 	GtkWidget *widget;
 
-	/* TODO(M3): username completion for the "screenname" type hints. */
+	/* TODO(M5): username completion for the "screenname" type hints
+	 * (GtkEntryCompletion is deprecated; needs a completion popover). */
 
 	if (purple_request_field_string_is_multiline(field)) {
 		GtkWidget *view = text_view_new(value, editable);

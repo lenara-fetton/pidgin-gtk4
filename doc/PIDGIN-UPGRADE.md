@@ -235,7 +235,7 @@ Channel binding:
 - **Pounces.** While parsing `pounces.xml`, libpurple drops an action's `<param>`s unless the UI registered that action when the pounce was created, and then rewrites the file without them. This is a real data loss seen on the dev profile: the `execute-command` command vanished. `stubs.c` registers the pounce handler and the five actions as `gtkpounce.c` does, and runs `execute-command`. The editor and the other actions are TODO(M5).
 
 **Stubs and TODOs by milestone:**
-- **M3**
+- **M3** (all done; see the M3 status note)
   - the buddy list (`stubs.c` blist ops);
   - connection-error mini-dialogs (alerts for now);
   - the status box and connecting throbber;
@@ -289,6 +289,84 @@ Channel binding:
 - The mini-dialog/error area (`minidialog.c`, `gtkscrollbook.c`) is reimplemented as simple `GtkBox`/`GtkStack` widgets.
 - `gtkstatusbox.c` (custom GtkContainer) is replaced by a `GtkMenuButton` + popover with a compose entry for the status message.
 - DnD for buddy reordering and file drops uses `GtkDragSource`/`GtkDropTarget`.
+
+**Status: done, except the checks with accounts signed in, which are left to the user** (the M3 section of `pidgin4/TESTING.md`).
+
+**What's in `pidgin4/`:**
+- **`pidginblistmodel.[ch]`**: the model, apart from the widgets so it is unit tested.
+  - `PidginBlistNodeItem` wraps a `PurpleBlistNode`. Its display properties (`name`, `secondary`, `idle`, `status-icon`, `emblem`, `protocol-icon`, `buddy-icon`, `style`) notify only on change.
+  - `PidginBlistModel` keeps a hash `node → item` and one `GListStore` per level: groups (buddy list order), a group's contacts and chats (sorted), and the buddies of contacts with more than one buddy. Visible means "in the parent's store"; the visibility rules are Pidgin 2's (`buddy_is_displayable`, empty groups, recent sign-on/off).
+  - The sort methods are comparators: alphabetical, status (`purple_presence_compare`), log activity, and `NULL` for buddy list order ("Manually"). Changing the method re-sorts every group at once.
+  - `update`/`remove` implement the placement half of the blist UI ops; the UI computes the display in the `item-refresh` signal.
+- **`gtkblist.[ch]`**: the full `PurpleBlistUiOps`, replacing the stub. `save_node`/`remove_node`/`save_account` stay `NULL`, so libpurple's own savers still write `blist.xml`.
+  - The window is a `GtkApplicationWindow` and the app's main window. It holds a `GtkPopoverMenuBar`, the alert area, a `GtkListView` over a `GtkTreeListModel` of the model's stores, and the status box.
+  - Rows are `GtkTreeExpander` > `GtkBox` with the status icon, name and status/idle line, the short idle time, emblem, protocol icon and buddy icon (`GtkPicture`), bound to the item. Contacts with several buddies expand like groups.
+  - `PidginBlistTheme` is gone. Its colours and fonts are the CSS classes `.pidgin-blist-online`, `-away`, `-idle`, `-offline`, `-group`, `-contact` and `-chat` in `resources/style.css`, for a future `gtk4.css`. Status, emblem and mood icons are in the GResource as `pidgin-status-*`, `pidgin-emblem-*` and `pidgin-mood-*`.
+  - Group collapse is stored in the shared `collapsed` group setting, written only when it changes.
+  - The menubar is a `GMenuModel` from `blist_menu[]` with `win.*` actions. Show and Sort submenus are stateful actions bound to prefs. The Accounts menu is dynamic: Enable Account, and per enabled account Edit Account, the prpl actions (via `pidginmenu`) and Disable. Plugin actions appear under Tools. Accelerators: Ctrl+M, I, L, B, Y, U, P, T, F1 (Ctrl+A and Ctrl+C are left to text entries), plus Ctrl+O and F2 on the list.
+  - Context menus are `GtkPopoverMenu`s built per node from Pidgin 2's `create_*_menu`, including the prpl's `blist_node_menu` and the `blist-node-extended-menu` signal. They open on right click, long press, Menu and Shift+F10.
+  - Tooltips are custom widgets from `::query-tooltip`. The `drawing-tooltip` (for cap), `drawing-buddy`, `gtkblist-created`, `-hiding` and `-unhiding` signals keep Pidgin 2's names and signatures.
+  - Connection errors are mini-dialogs in the alert area, from `account-error-changed` as in Pidgin 2: generic errors with Reconnect or Re-enable, Modify Account and Dismiss (and SSL FAQs), and a single "Welcome back!" dialog for accounts signed on elsewhere. Errors are cleared only when dismissed, never at quit. `gtkconn.c` no longer shows alerts. `pidgin_blist_add_alert()` is the API for other code.
+  - Drag and drop uses Pidgin 2's drop semantics for groups, contacts, buddies and chats (move, reorder, merge into a contact), and offers `application/x-im-contact` to other apps. Files dropped on a buddy: an image offers "Set as buddy icon" (the contact's custom icon) or "Send image file"; anything else is sent with `serv_send_file`.
+  - Dialogs: Add Buddy, Add Chat, Join a Chat (account drop-down, the prpl's chat fields) and Add Group. `gtkdialogs.c` gains New IM, Get User Info, View User Log, alias, rename group, remove and merge groups.
+  - Account requests (authorize, "added you", "add buddy?") are mini-dialogs in the buddy list again.
+  - Closing the window quits, unless `/pidgin4/blist/close_hides` is set. A second launch raises the list. The accounts window opens at startup only when no account is enabled.
+- **`gtkstatusbox.[ch]`**: a `GtkMenuButton` showing the current saved status.
+  - Its popover lists Available, Away, Do Not Disturb, Invisible and Offline, the popular saved statuses, and "New status…" and "Saved statuses…" (both TODO(M5)). The status message is a plain `GtkTextView` (TODO(M4): `PidginComposeEntry`), applied 4 s after typing stops, on Enter or when the popover closes. The saved-status logic is Pidgin 2's.
+  - A spinner shows while accounts connect, and "Waiting for network connection" while the network is down.
+  - The buddy icon button next to it (`GtkFileDialog`) sets `/pidgin/accounts/buddyicon` and converts the image for every account that uses the global icon.
+- **`pidginminidialog.[ch]`**: `PidginMiniDialog`, a `GtkBox` subclass with icon, title, description, extra contents and closing or non-closing buttons.
+- **`gtkaccount.c`**: the editor has "Use this buddy icon for this account" (chooser, Remove, image drops on the window), saved as in Pidgin 2. `gtkutils.c` gains `pidgin_convert_buddy_icon()`.
+
+**Prefs:**
+- The shared keys have the same meaning in both UIs: `/pidgin/blist/{show_buddy_icons, show_empty_groups, show_idle_time, show_offline_buddies, show_protocol_icons, sort_type}`, `/pidgin/sound/mute` (the Mute Sounds toggle; sounds are M6) and `/pidgin/accounts/buddyicon`. pidgin4 registers them with Pidgin 2's types and defaults, so a profile Pidgin 2 has used gains nothing.
+- New pidgin4 keys:
+  - `/pidgin4/blist/width`, `/pidgin4/blist/height`: the window size (Wayland gives clients no position).
+  - `/pidgin4/blist/close_hides` (default FALSE until the M6 tray).
+  - `/pidgin4/blist/list_visible`.
+  - `/pidgin4/blist/show_disconnected_accounts`: Buddies → Show → "Buddies of Disconnected Accounts", default FALSE. It also shows the buddies and chats of accounts that are not connected; Pidgin 2 never shows those, so with `-n` the list is otherwise empty.
+  - `/pidgin4/filelocations/last_icon_folder`.
+
+**Verification done:**
+- **Build**: zero warnings; no deprecated GTK API even with `GDK_VERSION_MIN_REQUIRED=4.22` (checked by hand).
+- **Unit tests**: `meson test` passes all 4, including the new `blistmodel` test, which drives the model through real libpurple blist UI ops. It covers the sort comparators, ordering and re-sorting, moves between groups, visibility flags, `show_offline`/recent sign-on/invisible nodes, expandable contacts (add, remove, merge) and notify-on-change.
+- **Headless** (Xvfb, `GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`, `dbus-run-session`, `-c ~/.purple-gtk4 -n -d`) with `PIDGIN4_BLIST_SELFTEST=1`:
+  - "everything shown: visible 72 groups, 319 contacts" (of 72/319; 674 buddies);
+  - collapsed and expanded all 72 groups;
+  - built 1065 context menus and tooltips;
+  - toggled every Show option and every sort method; the model stays consistent;
+  - restored the prefs and group states. `profile-compat.py` finds no `blist.xml` change afterwards.
+- **Status selftest**: with every account disabled (scratch copy), `PIDGIN4_STATUS_SELFTEST=1` set Away with a message through the status box. `status.xml` gained that transient status.
+- **Driven with xdotool** on Xvfb:
+  - right-click menus, tooltips and the menubar menus;
+  - dragging a contact onto another group moves it in `blist.xml`;
+  - collapsing a group persists across a restart;
+  - fake fatal and "name in use" `current_error`s in `accounts.xml` show as mini-dialogs and survive quitting.
+- **Other runs**:
+  - `PIDGIN4_ACCOUNT_SELFTEST=1` still passes; it now opens the accounts window itself.
+  - SIGTERM saves and exits 0.
+  - The same selftest under Wayland (Sway, `GDK_BACKEND=wayland`) is clean.
+- **Profile round-trip**: `scripts/check-profile-compat.sh --pidgin4 ~/.local/pidgin4-m3/bin/pidgin4` **PASSES** with one extra allowance, `--allow 'added:^prefs\.xml:/pref/pref\[plugins\]/pref\[core\]/pref\[omemo\]'`. Without it the only failures are those three prefs. They come from the `omemo.so` that the M8 work installed into the shared libpurple prefix, which libpurple probes; M3 does not cause them.
+- **No account was signed in.**
+
+**TODOs by milestone:**
+- **M4**
+  - IM and join open no window yet (the conversation is created or joined);
+  - unseen-message markers on rows (conversation signals);
+  - the status message as `PidginComposeEntry`;
+  - "Send IM" in the authorize mini-dialog.
+- **M5**
+  - windows that log `TODO(M5)`: preferences, privacy, pounces, file transfers, room list, system and user logs, plugins, custom smileys, certificates, the status editor and saved statuses;
+  - blist themes and `gtk4.css`;
+  - Set Mood;
+  - screenname completion in requests (`GtkEntryCompletion` is deprecated).
+- **M6**: the tray (then `close_hides` can default to TRUE) and Mute Sounds taking effect.
+- **Dropped**: per-account status boxes in the account editor, the headline, `x-im-contact`/vCard drops from other apps (drags out still offer `x-im-contact`), and inline in-place editing of names (alias and rename are dialogs).
+
+**Known gaps:**
+- Row widths follow the longest name; very long status texts are ellipsized.
+- `purple_log_get_activity_score` is cached by libpurple but reads the log index once per buddy, so the first "By recent log activity" sort on a big log directory is slow (as in Pidgin 2).
+- The popover for a context menu is parented to the window's content box and positioned at the pointer. It closes when its node is removed.
 
 ### M4: Message view and compose entry (GtkIMHtml replacement) — daily-driver threshold
 New components in `pidgin4/`:

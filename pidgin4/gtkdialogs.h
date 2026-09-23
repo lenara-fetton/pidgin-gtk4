@@ -32,11 +32,28 @@
 #include "conversation.h"
 
 /*
- * The M2 subset of pidgin/gtkdialogs.h. The IM/info/alias/remove dialogs
- * come with the buddy list (TODO(M3)); build info, developers and
- * translators with the other windows (TODO(M5)).
+ * The pidgin4 subset of pidgin/gtkdialogs.h. Build info, developers and
+ * translators come with the other windows (TODO(M5)).
  */
 void pidgin_dialogs_destroy_all(void);
 void pidgin_dialogs_about(void);
+
+/* Buddy list dialogs (M3). They are purple_request_*() dialogs, so they
+ * close with their node (purple_request_close_with_handle()). */
+void pidgin_dialogs_im(void);
+/** TODO(M4): opens the conversation; until then it only creates it. */
+void pidgin_dialogs_im_with_user(PurpleAccount *account, const char *username);
+void pidgin_dialogs_info(void);
+/** TODO(M5): the log viewer. Asks for the user, then logs a TODO. */
+void pidgin_dialogs_log(void);
+void pidgin_dialogs_alias_contact(PurpleContact *contact);
+void pidgin_dialogs_alias_buddy(PurpleBuddy *buddy);
+void pidgin_dialogs_alias_chat(PurpleChat *chat);
+void pidgin_dialogs_rename_group(PurpleGroup *group);
+void pidgin_dialogs_remove_buddy(PurpleBuddy *buddy);
+void pidgin_dialogs_remove_group(PurpleGroup *group);
+void pidgin_dialogs_remove_chat(PurpleChat *chat);
+void pidgin_dialogs_remove_contact(PurpleContact *contact);
+void pidgin_dialogs_merge_groups(PurpleGroup *source, const char *new_name);
 
 #endif /* _PIDGINDIALOGS_H_ */

@@ -9,3 +9,83 @@
 .pidgin-debug-view {
 	font-family: monospace;
 }
+
+/* M3: the buddy list (gtkblist.c). Pidgin 2's blist theme colours and
+ * fonts are these classes now; <profile>/pidgin4/gtk4.css (M5) can
+ * restyle them. Row classes: .pidgin-blist-group, -contact, -chat,
+ * -online, -away, -idle, -offline. */
+
+.pidgin-blist-status-icon {
+	-gtk-icon-size: 16px;
+}
+
+.pidgin-blist-biglist .pidgin-blist-status-icon {
+	-gtk-icon-size: 22px;
+}
+
+.pidgin-blist-emblem,
+.pidgin-blist-protocol-icon {
+	-gtk-icon-size: 16px;
+}
+
+.pidgin-blist-status-text,
+.pidgin-blist-idle-time {
+	font-size: smaller;
+	opacity: 0.7;
+}
+
+.pidgin-blist-avatar {
+	border-radius: 4px;
+}
+
+.pidgin-blist-offline .pidgin-blist-name,
+.pidgin-blist-idle .pidgin-blist-name {
+	opacity: 0.6;
+}
+
+.pidgin-blist-offline .pidgin-blist-avatar {
+	filter: grayscale(1);
+	opacity: 0.6;
+}
+
+.pidgin-blist-idle .pidgin-blist-avatar,
+.pidgin-blist-idle .pidgin-blist-status-icon {
+	filter: grayscale(0.75);
+	opacity: 0.6;
+}
+
+/* Drag and drop targets */
+.pidgin-blist-drop-before {
+	box-shadow: inset 0 2px alpha(currentColor, 0.6);
+}
+
+.pidgin-blist-drop-after {
+	box-shadow: inset 0 -2px alpha(currentColor, 0.6);
+}
+
+.pidgin-blist-drop-into {
+	background-color: alpha(currentColor, 0.1);
+}
+
+/* The alert area (mini-dialogs) */
+.pidgin-blist-alerts {
+	padding: 4px;
+}
+
+.pidgin-mini-dialog {
+	padding: 6px;
+	border-radius: 6px;
+	background-color: alpha(currentColor, 0.06);
+}
+
+.pidgin-mini-dialog-title {
+	font-weight: bold;
+}
+
+.pidgin-mini-dialog-description {
+	font-size: smaller;
+}
+
+.pidgin-status-box {
+	padding: 2px;
+}
