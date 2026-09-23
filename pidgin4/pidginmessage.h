@@ -44,6 +44,7 @@
 
 #include "conversation.h"
 
+#include "pidginattachment.h"
 #include "pidginmarkup.h"
 
 G_BEGIN_DECLS
@@ -98,6 +99,11 @@ time_t pidgin_message_get_time(PidginMessage *msg);
 const char *pidgin_message_get_html(PidginMessage *msg);
 /** Replaces the body (drops the parsed form). */
 void pidgin_message_set_html(PidginMessage *msg, const char *html);
+
+/** A file shown under the text (display only: the html, the log and the
+ * index keep the text). NULL removes it. */
+PidginAttachment *pidgin_message_get_attachment(PidginMessage *msg);
+void pidgin_message_set_attachment(PidginMessage *msg, PidginAttachment *attachment);
 
 /**
  * How the body is parsed: markup flags (e.g. PIDGIN_MARKUP_STYLING for XMPP,

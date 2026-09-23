@@ -49,6 +49,7 @@ struct _PidginImageLoader {
 
 	char *cache_dir;
 	GHashTable *allowed_hosts;  /* lowercase host -> itself */
+	GHashTable *allowed_uris;   /* exact URI -> itself */
 	gboolean allow_http;
 	gsize max_image_size;
 	guint64 cache_limit;
@@ -170,7 +171,8 @@ parse_allowed(PidginImageLoader *loader, const char *uri, gboolean *encrypted)
 	}
 
 	lower = g_ascii_strdown(host, -1);
-	allowed = g_hash_table_contains(loader->allowed_hosts, lower);
+	allowed = g_hash_table_contains(loader->allowed_hosts, lower) ||
+	          g_hash_table_contains(loader->allowed_uris, uri);
 	g_free(lower);
 
 	if (!allowed) {
@@ -1093,6 +1095,7 @@ pidgin_image_loader_finalize(GObject *object)
 	g_hash_table_destroy(loader->memory_cache);
 	g_queue_clear_full(&loader->memory_lru, (GDestroyNotify)memory_entry_free);
 	g_hash_table_destroy(loader->allowed_hosts);
+	g_hash_table_destroy(loader->allowed_uris);
 	g_main_context_unref(loader->context);
 	g_free(loader->cache_dir);
 
@@ -1119,6 +1122,7 @@ pidgin_image_loader_init(PidginImageLoader *loader)
 	                                              g_free, NULL);
 	for (i = 0; i < G_N_ELEMENTS(builtin_hosts); i++)
 		g_hash_table_add(loader->allowed_hosts, g_strdup(builtin_hosts[i]));
+	loader->allowed_uris = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
 	loader->max_image_size = PIDGIN_IMAGE_LOADER_DEFAULT_MAX_IMAGE_SIZE;
 	loader->cache_limit = PIDGIN_IMAGE_LOADER_DEFAULT_CACHE_LIMIT;
@@ -1173,6 +1177,131 @@ pidgin_image_loader_allow_host(PidginImageLoader *loader, const char *host)
 	g_return_if_fail(host != NULL && *host != '\0');
 
 	g_hash_table_add(loader->allowed_hosts, g_ascii_strdown(host, -1));
+}
+
+void
+pidgin_image_loader_allow_uri(PidginImageLoader *loader, const char *uri)
+{
+	g_return_if_fail(PIDGIN_IS_IMAGE_LOADER(loader));
+	g_return_if_fail(uri != NULL && *uri != '\0');
+
+	g_hash_table_add(loader->allowed_uris, g_strdup(uri));
+}
+
+/**************************************************************************
+ * Probing (HEAD)
+ **************************************************************************/
+
+typedef struct {
+	SoupMessage *msg;
+	char *content_type;
+	goffset size;
+} Probe;
+
+static void
+probe_free(Probe *probe)
+{
+	g_clear_object(&probe->msg);
+	g_free(probe->content_type);
+	g_free(probe);
+}
+
+static void
+probe_send_cb(GObject *source, GAsyncResult *result, gpointer data)
+{
+	GTask *task = data;
+	Probe *probe = g_task_get_task_data(task);
+	GError *error = NULL;
+	GInputStream *stream = soup_session_send_finish(SOUP_SESSION(source), result, &error);
+	SoupMessageHeaders *headers;
+	guint status;
+
+	if (stream == NULL) {
+		g_task_return_error(task, error);
+		g_object_unref(task);
+		return;
+	}
+	g_input_stream_close(stream, NULL, NULL);
+	g_object_unref(stream);
+
+	status = soup_message_get_status(probe->msg);
+	if (!SOUP_STATUS_IS_SUCCESSFUL(status)) {
+		g_task_return_new_error(task, PIDGIN_IMAGE_LOADER_ERROR,
+		                        PIDGIN_IMAGE_LOADER_ERROR_HTTP,
+		                        _("HTTP error %u"), status);
+		g_object_unref(task);
+		return;
+	}
+	headers = soup_message_get_response_headers(probe->msg);
+	probe->content_type = g_ascii_strdown(
+		soup_message_headers_get_content_type(headers, NULL) ?
+		soup_message_headers_get_content_type(headers, NULL) : "", -1);
+	probe->size = soup_message_headers_get_encoding(headers) == SOUP_ENCODING_CONTENT_LENGTH ?
+		soup_message_headers_get_content_length(headers) : -1;
+	g_task_return_boolean(task, TRUE);
+	g_object_unref(task);
+}
+
+void
+pidgin_image_loader_probe_async(PidginImageLoader *loader, const char *uri,
+                                GCancellable *cancellable,
+                                GAsyncReadyCallback callback, gpointer data)
+{
+	GTask *task;
+	GUri *guri;
+	Probe *probe;
+	const char *scheme;
+
+	g_return_if_fail(PIDGIN_IS_IMAGE_LOADER(loader));
+
+	task = g_task_new(loader, cancellable, callback, data);
+	g_task_set_source_tag(task, pidgin_image_loader_probe_async);
+
+	guri = uri ? g_uri_parse(uri, URI_PARSE_FLAGS, NULL) : NULL;
+	scheme = guri ? g_uri_get_scheme(guri) : NULL;
+	if (guri == NULL || g_uri_get_userinfo(guri) != NULL || g_uri_get_host(guri) == NULL ||
+	    !(g_ascii_strcasecmp(scheme, "https") == 0 ||
+	      (loader->allow_http && g_ascii_strcasecmp(scheme, "http") == 0))) {
+		g_task_return_new_error(task, PIDGIN_IMAGE_LOADER_ERROR,
+		                        PIDGIN_IMAGE_LOADER_ERROR_NOT_ALLOWED,
+		                        _("Only https addresses are probed"));
+		if (guri != NULL)
+			g_uri_unref(guri);
+		g_object_unref(task);
+		return;
+	}
+	g_uri_unref(guri);
+
+	probe = g_new0(Probe, 1);
+	probe->size = -1;
+	probe->msg = soup_message_new(SOUP_METHOD_HEAD, uri);
+	g_task_set_task_data(task, probe, (GDestroyNotify)probe_free);
+	if (probe->msg == NULL) {
+		g_task_return_new_error(task, PIDGIN_IMAGE_LOADER_ERROR,
+		                        PIDGIN_IMAGE_LOADER_ERROR_NOT_ALLOWED,
+		                        _("The address is not valid"));
+		g_object_unref(task);
+		return;
+	}
+	soup_session_send_async(loader_session(loader), probe->msg, G_PRIORITY_DEFAULT,
+	                        cancellable, probe_send_cb, task);
+}
+
+char *
+pidgin_image_loader_probe_finish(PidginImageLoader *loader, GAsyncResult *result,
+                                 goffset *size, GError **error)
+{
+	Probe *probe;
+
+	g_return_val_if_fail(PIDGIN_IS_IMAGE_LOADER(loader), NULL);
+	g_return_val_if_fail(g_task_is_valid(result, loader), NULL);
+
+	if (!g_task_propagate_boolean(G_TASK(result), error))
+		return NULL;
+	probe = g_task_get_task_data(G_TASK(result));
+	if (size != NULL)
+		*size = probe->size;
+	return g_strdup(probe->content_type);
 }
 
 gboolean

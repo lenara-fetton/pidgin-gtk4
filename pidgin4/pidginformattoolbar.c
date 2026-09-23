@@ -42,7 +42,7 @@ struct _PidginFormatToolbar
 	GtkWidget *bold, *italic, *underline, *strike, *code;
 	GtkWidget *smaller, *larger, *font, *fore, *back;
 	GtkWidget *link, *image, *smiley, *reset;
-	GtkWidget *attention;
+	GtkWidget *attach, *attention;
 	GtkWidget *smiley_popover;
 	GtkWidget *smiley_grid;
 	GtkWidget *link_popover;
@@ -491,6 +491,20 @@ pidgin_format_toolbar_get_entry(PidginFormatToolbar *tb)
 }
 
 void
+pidgin_format_toolbar_set_show_attach(PidginFormatToolbar *tb, gboolean show)
+{
+	g_return_if_fail(PIDGIN_IS_FORMAT_TOOLBAR(tb));
+	gtk_widget_set_visible(tb->attach, show);
+}
+
+GtkWidget *
+pidgin_format_toolbar_get_attach_button(PidginFormatToolbar *tb)
+{
+	g_return_val_if_fail(PIDGIN_IS_FORMAT_TOOLBAR(tb), NULL);
+	return tb->attach;
+}
+
+void
 pidgin_format_toolbar_set_show_attention(PidginFormatToolbar *tb, gboolean show)
 {
 	g_return_if_fail(PIDGIN_IS_FORMAT_TOOLBAR(tb));
@@ -589,6 +603,13 @@ pidgin_format_toolbar_init(PidginFormatToolbar *tb)
 
 	tb->reset = make_button(tb, "edit-clear-all-symbolic", NULL, _("Reset formatting"),
 	                        G_CALLBACK(reset_cb));
+
+	/* Attach: the conversation window's conv.send-file action (the file
+	 * chooser, then serv_send_file / serv_chat_send_file); shown by the
+	 * conversation when its prpl can send it a file. */
+	tb->attach = make_button(tb, "mail-attachment-symbolic", NULL, _("Send File"), NULL);
+	gtk_actionable_set_action_name(GTK_ACTIONABLE(tb->attach), "conv.send-file");
+	gtk_widget_set_visible(tb->attach, FALSE);
 
 	/* Pidgin 2's "Attention!" button: the conversation window's
 	 * conv.get-attention action; shown by the conversation for prpls

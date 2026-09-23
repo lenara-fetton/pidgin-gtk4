@@ -115,6 +115,11 @@ server_cb(SoupServer *server, SoupServerMessage *msg, const char *path,
 			soup_message_body_append_take(body, g_malloc0(BIG_SIZE / 10),
 			                              BIG_SIZE / 10);
 		soup_message_body_complete(body);
+	} else if (g_str_equal(path, "/share/clip")) {
+		/* no extension: only the Content-Type says what it is */
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "video/mp4", SOUP_MEMORY_STATIC,
+		                                 "not really a video", 18);
 	} else if (g_str_equal(path, "/redirect-ok")) {
 		soup_server_message_set_redirect(msg, 302, "/png-redirected");
 	} else if (g_str_equal(path, "/redirect-evil")) {
@@ -291,6 +296,102 @@ test_allowlist(void)
 	g_assert_false(pidgin_image_loader_is_allowed(loader,
 		"http://upload.example.org/x.png"));
 
+	g_object_unref(loader);
+}
+
+/* One URI allowed whatever its host (an XMPP file share); the rest of the
+ * host stays refused. */
+static void
+test_allow_uri(void)
+{
+	PidginImageLoader *loader = pidgin_image_loader_new(NULL);
+	const char *share = "https://files.other.example/abc/photo.jpg";
+	const char *enc = "aesgcm://files.other.example/abc/p.jpg#00112233";
+
+	g_assert_false(pidgin_image_loader_is_allowed(loader, share));
+	pidgin_image_loader_allow_uri(loader, share);
+	pidgin_image_loader_allow_uri(loader, enc);
+	g_assert_true(pidgin_image_loader_is_allowed(loader, share));
+	g_assert_true(pidgin_image_loader_is_allowed(loader, enc));
+	g_assert_false(pidgin_image_loader_is_allowed(loader,
+		"https://files.other.example/abc/other.jpg"));
+	g_assert_false(pidgin_image_loader_is_allowed(loader,
+		"https://files.other.example/abc/photo.jpg?x"));
+	/* the scheme rules still hold */
+	pidgin_image_loader_allow_uri(loader, "http://files.other.example/x.png");
+	pidgin_image_loader_allow_uri(loader, "file:///etc/passwd");
+	g_assert_false(pidgin_image_loader_is_allowed(loader, "http://files.other.example/x.png"));
+	g_assert_false(pidgin_image_loader_is_allowed(loader, "file:///etc/passwd"));
+	g_object_unref(loader);
+}
+
+typedef struct {
+	gboolean done;
+	char *type;
+	goffset size;
+	GError *error;
+} ProbeResult;
+
+static void
+probe_cb(GObject *source, GAsyncResult *result, gpointer data)
+{
+	ProbeResult *r = data;
+
+	r->type = pidgin_image_loader_probe_finish(PIDGIN_IMAGE_LOADER(source), result,
+	                                           &r->size, &r->error);
+	r->done = TRUE;
+}
+
+static void
+probe(PidginImageLoader *loader, const char *uri, ProbeResult *r)
+{
+	g_clear_pointer(&r->type, g_free);
+	g_clear_error(&r->error);
+	r->done = FALSE;
+	pidgin_image_loader_probe_async(loader, uri, NULL, probe_cb, r);
+	while (!r->done)
+		g_main_context_iteration(NULL, TRUE);
+}
+
+/* HEAD: the Content-Type and length, any host, no body fetched */
+static void
+test_probe(Fixture *f, gconstpointer data)
+{
+	PidginImageLoader *loader = pidgin_image_loader_new(NULL);
+	ProbeResult r = { 0 };
+	char *uri;
+
+	/* not in test mode: http is not probed */
+	uri = url(f, "/png");
+	probe(loader, uri, &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_NOT_ALLOWED);
+	g_assert_cmpuint(g_hash_table_size(f->hits), ==, 0);
+	g_free(uri);
+
+	pidgin_image_loader_set_allow_http_for_tests(loader, TRUE);
+	uri = url(f, "/png");      /* 127.0.0.1 is not an allowed host */
+	probe(loader, uri, &r);
+	g_assert_no_error(r.error);
+	g_assert_cmpstr(r.type, ==, "image/png");
+	g_assert_cmpint(r.size, ==, g_bytes_get_size(f->png));
+	g_free(uri);
+
+	uri = url(f, "/share/clip");
+	probe(loader, uri, &r);
+	g_assert_no_error(r.error);
+	g_assert_cmpstr(r.type, ==, "video/mp4");
+	g_free(uri);
+
+	uri = url(f, "/missing");
+	probe(loader, uri, &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_HTTP);
+	g_free(uri);
+
+	probe(loader, "ftp://127.0.0.1/x", &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_NOT_ALLOWED);
+
+	g_clear_pointer(&r.type, g_free);
+	g_clear_error(&r.error);
 	g_object_unref(loader);
 }
 
@@ -698,10 +799,12 @@ main(int argc, char *argv[])
 
 	g_test_add_func("/imageloader/allowlist", test_allowlist);
 	g_test_add_func("/imageloader/default", test_default);
+	g_test_add_func("/imageloader/allow-uri", test_allow_uri);
 #define ADD(name, func) \
 	g_test_add("/imageloader/" name, Fixture, NULL, fixture_setup, func, \
 	           fixture_teardown)
 	ADD("not-allowed", test_not_allowed);
+	ADD("probe", test_probe);
 	ADD("load-and-disk-cache", test_load_and_disk_cache);
 	ADD("no-disk-cache", test_no_disk_cache);
 	ADD("gif", test_gif);

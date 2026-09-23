@@ -59,6 +59,7 @@ struct _PidginMessage
 	gint64 index_id;
 
 	GPtrArray *css_classes;         /* M7: extra row classes (plugins) */
+	PidginAttachment *attachment;   /* shown under the text */
 };
 
 enum {
@@ -82,6 +83,7 @@ enum {
 	PROP_RETRACTED,
 	PROP_INDEX_ID,
 	PROP_CSS_CLASSES,
+	PROP_ATTACHMENT,
 	N_PROPS
 };
 
@@ -118,6 +120,7 @@ pidgin_message_get_property(GObject *obj, guint prop_id, GValue *value,
 		case PROP_FLAGS: g_value_set_uint(value, msg->flags); break;
 		case PROP_TIME: g_value_set_int64(value, msg->when); break;
 		case PROP_HTML: g_value_set_string(value, msg->html); break;
+		case PROP_ATTACHMENT: g_value_set_object(value, msg->attachment); break;
 		case PROP_STANZA_ID: g_value_set_string(value, msg->stanza_id); break;
 		case PROP_ORIGIN_ID: g_value_set_string(value, msg->origin_id); break;
 		case PROP_SERVER_ID: g_value_set_string(value, msg->server_id); break;
@@ -148,6 +151,7 @@ pidgin_message_set_property(GObject *obj, guint prop_id, const GValue *value,
 		case PROP_ALIAS: pidgin_message_set_alias(msg, g_value_get_string(value)); break;
 		case PROP_FLAGS: pidgin_message_set_flags(msg, g_value_get_uint(value)); break;
 		case PROP_HTML: pidgin_message_set_html(msg, g_value_get_string(value)); break;
+		case PROP_ATTACHMENT: pidgin_message_set_attachment(msg, g_value_get_object(value)); break;
 		case PROP_STANZA_ID: pidgin_message_set_stanza_id(msg, g_value_get_string(value)); break;
 		case PROP_ORIGIN_ID: pidgin_message_set_origin_id(msg, g_value_get_string(value)); break;
 		case PROP_SERVER_ID: pidgin_message_set_server_id(msg, g_value_get_string(value)); break;
@@ -189,6 +193,7 @@ pidgin_message_finalize(GObject *obj)
 	g_list_free(msg->reaction_order);
 	g_clear_pointer(&msg->reactions, g_hash_table_destroy);
 	g_clear_pointer(&msg->css_classes, g_ptr_array_unref);
+	g_clear_object(&msg->attachment);
 
 	G_OBJECT_CLASS(pidgin_message_parent_class)->finalize(obj);
 }
@@ -210,6 +215,8 @@ pidgin_message_class_init(PidginMessageClass *klass)
 	props[PROP_FLAGS] = g_param_spec_uint("flags", NULL, NULL, 0, G_MAXUINT, 0, rw);
 	props[PROP_TIME] = g_param_spec_int64("time", NULL, NULL, G_MININT64, G_MAXINT64, 0, ro);
 	props[PROP_HTML] = g_param_spec_string("html", NULL, NULL, NULL, rw);
+	props[PROP_ATTACHMENT] = g_param_spec_object("attachment", NULL, NULL,
+		PIDGIN_TYPE_ATTACHMENT, rw);
 	props[PROP_STANZA_ID] = g_param_spec_string("stanza-id", NULL, NULL, NULL, rw);
 	props[PROP_ORIGIN_ID] = g_param_spec_string("origin-id", NULL, NULL, NULL, rw);
 	props[PROP_SERVER_ID] = g_param_spec_string("server-id", NULL, NULL, NULL, rw);
@@ -359,6 +366,21 @@ pidgin_message_set_html(PidginMessage *msg, const char *html)
 		return;
 	g_clear_pointer(&msg->markup, pidgin_markup_result_unref);
 	set_string(msg, &msg->html, html ? html : "", PROP_HTML);
+}
+
+PidginAttachment *
+pidgin_message_get_attachment(PidginMessage *msg)
+{
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE(msg), NULL);
+	return msg->attachment;
+}
+
+void
+pidgin_message_set_attachment(PidginMessage *msg, PidginAttachment *attachment)
+{
+	g_return_if_fail(PIDGIN_IS_MESSAGE(msg));
+	if (g_set_object(&msg->attachment, attachment))
+		g_object_notify_by_pspec(G_OBJECT(msg), props[PROP_ATTACHMENT]);
 }
 
 void

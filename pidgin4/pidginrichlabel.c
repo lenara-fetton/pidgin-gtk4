@@ -42,6 +42,7 @@ typedef struct
 	GtkTextMark *start;
 	GtkTextMark *end;
 	char *uri;
+	char *link;                     /* the link around a remote image */
 	PidginRichLabel *label;         /* weak, for the async callback */
 	int width, height;
 } ImageSlot;
@@ -79,6 +80,7 @@ image_slot_clear(ImageSlot *slot)
 	g_clear_object(&slot->anchor);
 	g_clear_object(&slot->texture);
 	g_free(slot->uri);
+	g_free(slot->link);
 	g_clear_weak_pointer(&slot->label);
 }
 
@@ -326,6 +328,36 @@ picture_for(PidginRichLabel *label, GdkPaintable *paintable, int want_w, int wan
 	return picture;
 }
 
+static const char *link_at_iter(const GtkTextIter *iter);
+
+static void
+linked_picture_clicked_cb(GtkGestureClick *gesture, int n_press, double x, double y,
+                          gpointer data)
+{
+	pidgin_markup_activate_uri(gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture)),
+	                           data);
+}
+
+/* A remote image inside a link (the inline preview of a shared URL, whose
+ * fallback text was that link) opens the link when clicked, as its text
+ * did. */
+static GtkWidget *
+link_picture(GtkWidget *picture, const char *link)
+{
+	GtkGesture *click;
+
+	if (link == NULL)
+		return picture;
+	click = gtk_gesture_click_new();
+	gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), GDK_BUTTON_PRIMARY);
+	g_signal_connect_data(click, "released", G_CALLBACK(linked_picture_clicked_cb),
+	                      g_strdup(link), (GClosureNotify)g_free, 0);
+	gtk_widget_add_controller(picture, GTK_EVENT_CONTROLLER(click));
+	gtk_widget_set_cursor_from_name(picture, "pointer");
+	gtk_widget_set_tooltip_text(picture, link);
+	return picture;
+}
+
 static void
 add_anchor_widget(PidginRichLabel *label, GtkTextBuffer *buffer, GtkTextIter *iter,
                   GtkWidget *widget, ImageSlot *slot)
@@ -369,7 +401,8 @@ remote_loaded_cb(GObject *source, GAsyncResult *res, gpointer data)
 	gtk_text_buffer_delete(buffer, &s, &e);
 	slot->texture = texture;
 	add_anchor_widget(label, buffer, &s,
-	                  picture_for(label, GDK_PAINTABLE(texture), slot->width, slot->height),
+	                  link_picture(picture_for(label, GDK_PAINTABLE(texture), slot->width,
+	                                           slot->height), slot->link),
 	                  slot);
 	gtk_text_buffer_delete_mark(buffer, slot->start);
 	gtk_text_buffer_delete_mark(buffer, slot->end);
@@ -442,6 +475,7 @@ replace_object(PidginRichLabel *label, GtkTextBuffer *buffer, const char *text,
 			slot->uri = g_strdup(o->uri);
 			slot->width = o->width;
 			slot->height = o->height;
+			slot->link = g_strdup(link_at_iter(&s));
 			g_ptr_array_add(label->images, slot);
 
 			cached = pidgin_image_loader_lookup_cached(loader, o->uri);
@@ -449,7 +483,8 @@ replace_object(PidginRichLabel *label, GtkTextBuffer *buffer, const char *text,
 				slot->texture = cached;
 				gtk_text_buffer_delete(buffer, &s, &e);
 				add_anchor_widget(label, buffer, &s,
-				                  picture_for(label, GDK_PAINTABLE(cached), o->width, o->height),
+				                  link_picture(picture_for(label, GDK_PAINTABLE(cached),
+				                                           o->width, o->height), slot->link),
 				                  slot);
 				break;
 			}

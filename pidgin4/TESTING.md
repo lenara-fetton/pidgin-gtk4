@@ -363,10 +363,41 @@ is best), another IRC client, the Discord web client.
 - [ ] Smileys: the toolbar's smiley picker inserts them; received
       shortcuts show as the theme's images.
 - [ ] Images: Insert Image (IM on protocols with images); dropping an
-      image file on an IM asks to send it as a file or insert it; any
-      other file is sent (HTTP upload on XMPP when the server has it).
-      Our own upload's URL, and images on the account's own XMPP domain,
-      show inline; Discord CDN images show inline.
+      image file on an IM does what a paste does (below); only where
+      neither works does it offer "Set as Buddy Icon"; any other file is
+      sent (HTTP upload on XMPP when the server has it). Our own upload's
+      URL, and images on the account's own XMPP domain, show inline;
+      Discord CDN images show inline.
+- [ ] Paste a screenshot (Ctrl+V, or right click → Paste Image) into an
+      XMPP chat: it uploads (HTTP upload; a "Sending the image
+      pasted-….png as a file." line, then the transfer lines), and
+      `~/.purple…/pidgin4/paste/` is empty again once it finished. Into
+      a Discord DM: the image appears in the entry inline. Copy
+      spreadsheet cells (text and an image on the clipboard): Ctrl+V
+      pastes the text. A photo pastes as `.jpg` with Preferences →
+      Conversations → "Send pasted images as" Automatic, `.png` with PNG.
+- [ ] From Conversations or Dino, share a photo whose upload host is not
+      your server's (a contact on another server): it shows inline under
+      its link, and clicking it opens the link. A shared non-image file
+      stays a link. Preferences → Conversations → "Show images shared
+      over XMPP inline" off: links only. Receive an image by file
+      transfer (Jingle/SI): libpurple's "Transfer of file … complete"
+      line keeps its blue link and the picture shows under it; clicking
+      the picture opens the file ("Show received image files inline"
+      turns it off).
+- [ ] Audio and video: receive a voice message or clip over XMPP (a
+      share from Conversations/Dino, and a Jingle/SI transfer) and a
+      Discord video attachment: libpurple's line and the link stay, and
+      a card under it shows the name, the size when known, "Play" (opens
+      the default player, e.g. mpv) and, for a received file, "Open
+      Folder". With this machine's GTK (USE=-gstreamer) there is no
+      inline player; rebuilding gtk with USE=gstreamer turns inline
+      playback on by itself (a player in the card), unless Preferences →
+      Conversations → "Play audio and video inline" is off.
+- [ ] The toolbar's paperclip (Send File) shows in XMPP IMs and MUCs
+      (HTTP upload) and wherever the protocol can send a file, not on
+      Steam; clicking it opens the file chooser and sends the file. It
+      follows tab switches and Send To.
 - [ ] `/help`, `/me waves`, `/clear`, `/debug version`, and a protocol
       command (`/topic`, `/nick`, `/op` on IRC; `/role` on XMPP).
 - [ ] Chat user list: ops first, then voiced, buddies bold; right click

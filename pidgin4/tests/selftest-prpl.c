@@ -20,6 +20,7 @@
 #include "cmds.h"
 #include "connection.h"
 #include "conversation.h"
+#include "ft.h"
 #include "plugin.h"
 #include "prpl.h"
 #include "server.h"
@@ -180,6 +181,58 @@ st_send_attention(PurpleConnection *gc, const char *who, guint type)
 	return TRUE;
 }
 
+/* File transfer (off unless pidgin_selftest_prpl_set_caps() turns it on):
+ * records the call; with a file, starts a transfer that never moves, for
+ * the test to finish or cancel. */
+static PurpleXfer *st_last_xfer = NULL;
+
+static void
+st_xfer_init(PurpleXfer *xfer)
+{
+}
+
+static void
+st_xfer_start(PurpleConnection *gc, int chat_id, const char *who, const char *file)
+{
+	PurpleXfer *xfer;
+
+	if (file == NULL)
+		return;     /* a real prpl asks for the file here */
+	xfer = purple_xfer_new(purple_connection_get_account(gc), PURPLE_XFER_SEND, who);
+	purple_xfer_set_init_fnc(xfer, st_xfer_init);
+	st_last_xfer = xfer;
+	purple_xfer_request_accepted(xfer, file);
+}
+
+static gboolean
+st_can_receive_file(PurpleConnection *gc, const char *who)
+{
+	return TRUE;
+}
+
+static void
+st_send_file(PurpleConnection *gc, const char *who, const char *file)
+{
+	record("send-file", who, file, NULL);
+	st_xfer_start(gc, -1, who, file);
+}
+
+static gboolean
+st_chat_can_receive_file(PurpleConnection *gc, int id)
+{
+	return TRUE;
+}
+
+static void
+st_chat_send_file(PurpleConnection *gc, int id, const char *file)
+{
+	PurpleConversation *conv = purple_find_chat(gc, id);
+	const char *room = conv ? purple_conversation_get_name(conv) : "";
+
+	record("chat-send-file", room, file, NULL);
+	st_xfer_start(gc, id, room, file);
+}
+
 static PurpleCmdId st_cmd_id;
 
 static gboolean
@@ -320,6 +373,31 @@ const char *
 pidgin_selftest_prpl_get_call(const char *command)
 {
 	return st_calls ? g_hash_table_lookup(st_calls, command) : NULL;
+}
+
+void
+pidgin_selftest_prpl_set_caps(gboolean im_images, gboolean files)
+{
+	if (im_images)
+		st_prpl_info.options |= OPT_PROTO_IM_IMAGE;
+	else
+		st_prpl_info.options &= ~OPT_PROTO_IM_IMAGE;
+	st_prpl_info.send_file = files ? st_send_file : NULL;
+	st_prpl_info.can_receive_file = files ? st_can_receive_file : NULL;
+	st_prpl_info.chat_send_file = files ? st_chat_send_file : NULL;
+	st_prpl_info.chat_can_receive_file = files ? st_chat_can_receive_file : NULL;
+}
+
+PurpleXfer *
+pidgin_selftest_prpl_get_last_xfer(void)
+{
+	return st_last_xfer;
+}
+
+void
+pidgin_selftest_prpl_forget_xfer(void)
+{
+	st_last_xfer = NULL;
 }
 
 void

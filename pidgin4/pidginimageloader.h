@@ -112,7 +112,29 @@ PidginImageLoader *pidgin_image_loader_get_default(void);
 void pidgin_image_loader_allow_host(PidginImageLoader *loader,
                                     const char *host);
 
-/** Whether @uri may be fetched: https/aesgcm on an allowed host. */
+/**
+ * Allows fetching exactly @uri (https or aesgcm, compared as a string),
+ * whatever its host: an attachment someone shared (an XMPP file share).
+ * A redirect from it must still lead to an allowed host.
+ */
+void pidgin_image_loader_allow_uri(PidginImageLoader *loader, const char *uri);
+
+/**
+ * A HEAD request for @uri (https only, http in test mode; any host: it
+ * fetches no body), to learn what a link is before allowing it. Uses the
+ * loader's session.
+ */
+void pidgin_image_loader_probe_async(PidginImageLoader *loader, const char *uri,
+                                     GCancellable *cancellable,
+                                     GAsyncReadyCallback callback, gpointer data);
+
+/** The Content-Type (lowercase, no parameters; "" if none) and, in @size,
+ * the Content-Length or -1. NULL with @error set on failure. */
+char *pidgin_image_loader_probe_finish(PidginImageLoader *loader, GAsyncResult *result,
+                                       goffset *size, GError **error);
+
+/** Whether @uri may be fetched: https/aesgcm on an allowed host, or an
+ * allowed URI. */
 gboolean pidgin_image_loader_is_allowed(PidginImageLoader *loader,
                                         const char *uri);
 

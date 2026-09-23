@@ -59,6 +59,10 @@ struct _PidginComposeEntry
 	GList *history;                 /* char* html, newest first */
 	int history_pos;                /* -1 = the draft */
 	char *draft;
+
+	gboolean paste_images;          /* set_paste_images() */
+	GdkClipboard *clipboard;        /* watched for "compose.paste-image" */
+	gulong clipboard_formats_id;
 };
 
 enum {
@@ -67,6 +71,7 @@ enum {
 	SIG_EDIT_LAST,
 	SIG_FORMAT_CHANGED,
 	SIG_PRE_SEND,
+	SIG_PASTE_IMAGE,
 	N_SIGNALS
 };
 
@@ -470,8 +475,23 @@ spelling_setup(PidginComposeEntry *entry)
 
 	entry->spelling = spelling_text_buffer_adapter_new(GTK_SOURCE_BUFFER(buffer),
 	                                                   spelling_checker_get_default());
-	gtk_text_view_set_extra_menu(GTK_TEXT_VIEW(entry),
-		spelling_text_buffer_adapter_get_menu_model(entry->spelling));
+	{
+		/* "Paste Image" (hidden unless it applies), then libspelling's
+		 * suggestions */
+		GMenu *extra = g_menu_new();
+		GMenu *paste = g_menu_new();
+		GMenuItem *item = g_menu_item_new(_("Paste _Image"), "compose.paste-image");
+
+		g_menu_item_set_attribute(item, "hidden-when", "s", "action-disabled");
+		g_menu_append_item(paste, item);
+		g_object_unref(item);
+		g_menu_append_section(extra, NULL, G_MENU_MODEL(paste));
+		g_object_unref(paste);
+		g_menu_append_section(extra, NULL,
+			spelling_text_buffer_adapter_get_menu_model(entry->spelling));
+		gtk_text_view_set_extra_menu(GTK_TEXT_VIEW(entry), G_MENU_MODEL(extra));
+		g_object_unref(extra);
+	}
 	gtk_widget_insert_action_group(GTK_WIDGET(entry), "spelling",
 	                               G_ACTION_GROUP(entry->spelling));
 	spelling_text_buffer_adapter_set_enabled(entry->spelling, enabled);
@@ -1068,6 +1088,177 @@ pidgin_compose_entry_get_spellcheck(PidginComposeEntry *entry)
 }
 
 /**************************************************************************
+ * Pasting images
+ *
+ * The paste rule (Ctrl+V, Shift+Insert and the context menu's Paste all
+ * emit "paste-clipboard"): the clipboard's image is pasted only if
+ * set_paste_images() said the conversation takes images and
+ *   - the clipboard has no text at all (a screenshot tool, "Copy Image"),
+ *     or
+ *   - it has text too, but that text is empty or only whitespace (some
+ *     apps put an empty text/plain next to the image).
+ * Otherwise the text is pasted, as GtkTextView would: a clipboard with
+ * real text and an image (spreadsheet cells, rich text with a rendering)
+ * pastes the text. The image is read as a GdkTexture and handed to
+ * "paste-image"; if no handler takes it, the normal text paste runs.
+ *
+ * GtkTextView disables its context menu's Paste when the clipboard has
+ * no text, so the extra menu has "Paste Image" (compose.paste-image),
+ * shown while the clipboard has an image and images are taken. It
+ * pastes the image even if there is text.
+ **************************************************************************/
+
+static void
+paste_text(PidginComposeEntry *entry)
+{
+	GTK_TEXT_VIEW_CLASS(pidgin_compose_entry_parent_class)->paste_clipboard(GTK_TEXT_VIEW(entry));
+}
+
+/* What the clipboard can give: GTypes, remote mime types resolved. */
+static void
+clipboard_offers(GdkClipboard *clipboard, gboolean *image, gboolean *text)
+{
+	GdkContentFormats *formats = gdk_content_formats_union_deserialize_gtypes(
+		gdk_content_formats_ref(gdk_clipboard_get_formats(clipboard)));
+
+	*image = gdk_content_formats_contain_gtype(formats, GDK_TYPE_TEXTURE);
+	*text = gdk_content_formats_contain_gtype(formats, G_TYPE_STRING);
+	gdk_content_formats_unref(formats);
+}
+
+static void
+paste_texture_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	PidginComposeEntry *entry = data;
+	GError *error = NULL;
+	GdkTexture *texture = gdk_clipboard_read_texture_finish(GDK_CLIPBOARD(source), res, &error);
+	gboolean handled = FALSE;
+
+	if (texture == NULL) {
+		purple_debug_warning("compose", "reading the clipboard's image: %s\n",
+		                     error ? error->message : "?");
+		g_clear_error(&error);
+	} else if (gtk_widget_get_root(GTK_WIDGET(entry)) != NULL) {
+		g_signal_emit(entry, signals[SIG_PASTE_IMAGE], 0, texture, &handled);
+	} else {
+		handled = TRUE;     /* the entry is gone; nothing to paste into */
+	}
+	if (!handled)
+		paste_text(entry);
+	g_clear_object(&texture);
+	g_object_unref(entry);
+}
+
+static void
+paste_image(PidginComposeEntry *entry, GdkClipboard *clipboard)
+{
+	gdk_clipboard_read_texture_async(clipboard, NULL, paste_texture_cb, g_object_ref(entry));
+}
+
+static void
+paste_text_probe_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	PidginComposeEntry *entry = data;
+	char *text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(source), res, NULL);
+
+	if (text != NULL && *g_strstrip(text) != '\0')
+		paste_text(entry);
+	else
+		paste_image(entry, GDK_CLIPBOARD(source));
+	g_free(text);
+	g_object_unref(entry);
+}
+
+static void
+pidgin_compose_entry_paste_clipboard(GtkTextView *view)
+{
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(view);
+	GdkClipboard *clipboard = gtk_widget_get_clipboard(GTK_WIDGET(view));
+	gboolean image, text;
+
+	clipboard_offers(clipboard, &image, &text);
+	if (!entry->paste_images || !image)
+		paste_text(entry);
+	else if (!text)
+		paste_image(entry, clipboard);
+	else    /* both: the text wins unless it is blank */
+		gdk_clipboard_read_text_async(clipboard, NULL, paste_text_probe_cb,
+		                              g_object_ref(entry));
+}
+
+static void
+paste_image_action(GtkWidget *widget, const char *name, GVariant *param)
+{
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(widget);
+	GdkClipboard *clipboard = gtk_widget_get_clipboard(widget);
+	gboolean image, text;
+
+	clipboard_offers(clipboard, &image, &text);
+	if (entry->paste_images && image)
+		paste_image(entry, clipboard);
+}
+
+static void
+update_paste_image_action(PidginComposeEntry *entry)
+{
+	gboolean image = FALSE, text;
+
+	if (entry->clipboard != NULL)
+		clipboard_offers(entry->clipboard, &image, &text);
+	gtk_widget_action_set_enabled(GTK_WIDGET(entry), "compose.paste-image",
+	                              entry->paste_images && image);
+}
+
+static void
+clipboard_formats_cb(GdkClipboard *clipboard, GParamSpec *pspec, PidginComposeEntry *entry)
+{
+	update_paste_image_action(entry);
+}
+
+static void
+unwatch_clipboard(PidginComposeEntry *entry)
+{
+	if (entry->clipboard != NULL)
+		g_clear_signal_handler(&entry->clipboard_formats_id, entry->clipboard);
+	g_clear_object(&entry->clipboard);
+}
+
+static void
+pidgin_compose_entry_realize(GtkWidget *widget)
+{
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(widget);
+
+	GTK_WIDGET_CLASS(pidgin_compose_entry_parent_class)->realize(widget);
+	unwatch_clipboard(entry);
+	entry->clipboard = g_object_ref(gtk_widget_get_clipboard(widget));
+	entry->clipboard_formats_id = g_signal_connect(entry->clipboard, "notify::formats",
+		G_CALLBACK(clipboard_formats_cb), entry);
+	update_paste_image_action(entry);
+}
+
+static void
+pidgin_compose_entry_unrealize(GtkWidget *widget)
+{
+	unwatch_clipboard(PIDGIN_COMPOSE_ENTRY(widget));
+	GTK_WIDGET_CLASS(pidgin_compose_entry_parent_class)->unrealize(widget);
+}
+
+void
+pidgin_compose_entry_set_paste_images(PidginComposeEntry *entry, gboolean paste)
+{
+	g_return_if_fail(PIDGIN_IS_COMPOSE_ENTRY(entry));
+	entry->paste_images = paste;
+	update_paste_image_action(entry);
+}
+
+gboolean
+pidgin_compose_entry_get_paste_images(PidginComposeEntry *entry)
+{
+	g_return_val_if_fail(PIDGIN_IS_COMPOSE_ENTRY(entry), FALSE);
+	return entry->paste_images;
+}
+
+/**************************************************************************
  * GObject
  **************************************************************************/
 
@@ -1078,6 +1269,7 @@ pidgin_compose_entry_dispose(GObject *obj)
 
 	g_clear_handle_id(&entry->typing_timeout, g_source_remove);
 	g_clear_object(&entry->spelling);
+	unwatch_clipboard(entry);
 
 	G_OBJECT_CLASS(pidgin_compose_entry_parent_class)->dispose(obj);
 }
@@ -1099,9 +1291,15 @@ static void
 pidgin_compose_entry_class_init(PidginComposeEntryClass *klass)
 {
 	GObjectClass *obj_class = G_OBJECT_CLASS(klass);
+	GtkWidgetClass *widget_class = GTK_WIDGET_CLASS(klass);
 
 	obj_class->dispose = pidgin_compose_entry_dispose;
 	obj_class->finalize = pidgin_compose_entry_finalize;
+	widget_class->realize = pidgin_compose_entry_realize;
+	widget_class->unrealize = pidgin_compose_entry_unrealize;
+	GTK_TEXT_VIEW_CLASS(klass)->paste_clipboard = pidgin_compose_entry_paste_clipboard;
+	gtk_widget_class_install_action(widget_class, "compose.paste-image", NULL,
+	                                paste_image_action);
 
 	signals[SIG_MESSAGE_SEND] = g_signal_new("message-send",
 		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
@@ -1121,6 +1319,11 @@ pidgin_compose_entry_class_init(PidginComposeEntryClass *klass)
 		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
 		g_signal_accumulator_true_handled, NULL, NULL,
 		G_TYPE_BOOLEAN, 0);
+	/* A paste chose the clipboard's image (see "Pasting images"). */
+	signals[SIG_PASTE_IMAGE] = g_signal_new("paste-image",
+		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
+		g_signal_accumulator_true_handled, NULL, NULL,
+		G_TYPE_BOOLEAN, 1, GDK_TYPE_TEXTURE);
 
 	spelling_init();
 }
@@ -1149,6 +1352,7 @@ pidgin_compose_entry_init(PidginComposeEntry *entry)
 	gtk_text_view_set_top_margin(GTK_TEXT_VIEW(entry), 2);
 	gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(entry), 2);
 	gtk_widget_add_css_class(GTK_WIDGET(entry), "pidgin-compose-entry");
+	gtk_widget_action_set_enabled(GTK_WIDGET(entry), "compose.paste-image", FALSE);
 
 	g_signal_connect_after(buffer, "insert-text", G_CALLBACK(insert_text_after_cb), entry);
 	g_signal_connect(buffer, "mark-set", G_CALLBACK(mark_set_cb), entry);

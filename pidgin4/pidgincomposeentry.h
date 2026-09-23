@@ -52,6 +52,10 @@
  *   "edit-last-requested" void (PidginComposeEntry *entry)
  *   "format-changed"      void (PidginComposeEntry *entry)
  *       The formatting at the cursor changed (for toolbars).
+ *   "paste-image"         gboolean (PidginComposeEntry *entry, GdkTexture *texture)
+ *       A paste chose the clipboard's image (only with
+ *       set_paste_images(TRUE); see the paste rule there). Return TRUE
+ *       if it was taken; otherwise the clipboard's text is pasted.
  */
 #ifndef _PIDGINCOMPOSEENTRY_H_
 #define _PIDGINCOMPOSEENTRY_H_
@@ -92,6 +96,16 @@ void pidgin_compose_entry_set_markup_flags(PidginComposeEntry *entry, PidginMark
 void pidgin_compose_entry_set_smiley_category(PidginComposeEntry *entry, const char *sml);
 
 void pidgin_compose_entry_set_return_inserts_newline(PidginComposeEntry *entry, gboolean newline);
+
+/**
+ * Whether pastes may choose the clipboard's image ("paste-image"). The
+ * rule: the image is chosen if the clipboard has no text, or only empty
+ * or blank text; otherwise the text is pasted, as GtkTextView would. The
+ * context menu then also shows "Paste Image" while the clipboard holds an
+ * image (GtkTextView's own Paste is disabled without text). Default FALSE.
+ */
+void pidgin_compose_entry_set_paste_images(PidginComposeEntry *entry, gboolean paste);
+gboolean pidgin_compose_entry_get_paste_images(PidginComposeEntry *entry);
 
 /** Spell checking; defaults to the shared /pidgin/conversations/spellcheck. */
 void pidgin_compose_entry_set_spellcheck(PidginComposeEntry *entry, gboolean enabled);

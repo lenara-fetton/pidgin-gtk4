@@ -54,6 +54,15 @@ PidginComposeEntry *pidgin_format_toolbar_get_entry(PidginFormatToolbar *toolbar
 void pidgin_format_toolbar_update(PidginFormatToolbar *toolbar);
 
 /**
+ * Shows or hides the attach (Send File) button, which activates the
+ * conversation window's conv.send-file action (hidden by default).
+ */
+void pidgin_format_toolbar_set_show_attach(PidginFormatToolbar *toolbar, gboolean show);
+
+/** The attach button, for tests. */
+GtkWidget *pidgin_format_toolbar_get_attach_button(PidginFormatToolbar *toolbar);
+
+/**
  * Shows or hides the "Attention!" button, which activates the
  * conversation window's conv.get-attention action (hidden by default).
  */
