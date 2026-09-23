@@ -418,8 +418,15 @@ static void irc_login(PurpleAccount *account)
 
 	if (purple_account_get_bool(account, "ssl", FALSE)) {
 		if (purple_ssl_is_supported()) {
-			irc->gsc = purple_ssl_connect(account, irc->server,
-					purple_account_get_int(account, "port", IRC_DEFAULT_SSL_PORT),
+			int port = purple_account_get_int(account, "port", IRC_DEFAULT_SSL_PORT);
+
+			/* The port option defaults to the plaintext port. With
+			 * SSL on and the port left at that default, use the
+			 * standard TLS port instead (RFC 7194). The saved
+			 * setting is left alone. */
+			if (port == IRC_DEFAULT_PORT)
+				port = IRC_DEFAULT_SSL_PORT;
+			irc->gsc = purple_ssl_connect(account, irc->server, port,
 					irc_login_cb_ssl, irc_ssl_connect_failure, gc);
 		} else {
 			purple_connection_error_reason (gc,

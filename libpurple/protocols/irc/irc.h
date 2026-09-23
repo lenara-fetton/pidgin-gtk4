@@ -29,13 +29,18 @@
 #include <sasl/sasl.h>
 #endif
 
+#include "conversation.h"
 #include "ft.h"
 #include "roomlist.h"
 #include "sslconn.h"
 
 #define IRC_DEFAULT_SERVER "irc.libera.chat"
 #define IRC_DEFAULT_PORT 6667
-#define IRC_DEFAULT_SSL_PORT 994
+#define IRC_DEFAULT_SSL_PORT 6697
+
+/* Seconds to wait for a reply to CAP LS before giving up on IRCv3
+ * capability negotiation and carrying on with plain registration. */
+#define IRC_CAP_TIMEOUT 5
 
 #define IRC_DEFAULT_CHARSET "UTF-8"
 #define IRC_DEFAULT_AUTODETECT FALSE
