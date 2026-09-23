@@ -61,10 +61,9 @@ purple_libdir = purple_dep.get_variable(pkgconfig : 'libdir')
 purple_plugindir = purple_dep.get_variable(pkgconfig : 'plugindir')
 purple_datadir = purple_dep.get_variable(pkgconfig : 'datadir')
 
-if purple_prefix == '/usr'
-	warning('building against the system libpurple in /usr; the plan builds ' +
-	        'against the private prefix (PKG_CONFIG_PATH=<prefix>/lib/pkgconfig)')
-endif
+# A private prefix (the development build) needs a runpath to its
+# libpurple; a packaged build against the system libpurple in /usr does not.
+purple_rpath = purple_prefix == '/usr' ? '' : purple_libdir
 
 conf = configuration_data()
 conf.set_quoted('PACKAGE', 'pidgin')          # the shared gettext domain
@@ -229,7 +228,7 @@ executable('pidgin4',
 	# UI plugins resolve pidgin_* symbols from the executable.
 	export_dynamic : true,
 	build_rpath : purple_libdir,
-	install_rpath : purple_libdir,
+	install_rpath : purple_rpath,
 	install : true)
 
 # M7: the UI plugins, installed into <prefix>/lib/pidgin4.

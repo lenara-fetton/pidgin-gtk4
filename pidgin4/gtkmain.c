@@ -442,14 +442,15 @@ add_plugin_search_paths(void)
 	char *path;
 
 	/*
-	 * Profile contract, rule 3: only these directories, never the system
-	 * /usr/lib64/pidgin or /usr/lib64/purple-2. Earlier entries win.
+	 * Profile contract, rule 3: only these directories, never Pidgin 2's
+	 * GTK 2 plugin dir (/usr/lib64/pidgin). Earlier entries win.
 	 *   <profile>/pidgin4/plugins  pidgin4 UI plugins (created here)
 	 *   <profile>/plugins          prpls shared with Pidgin 2 (Discord,
 	 *                              Steam); not created, nothing added
 	 *   <prefix>/lib/pidgin4       pidgin4 UI plugins from the prefix
 	 *   <purple prefix>/lib/purple-2  libpurple adds this itself (LIBDIR
-	 *                              of the installed libpurple)
+	 *                              of the installed libpurple; the
+	 *                              packaged build's /usr/lib64/purple-2)
 	 */
 	path = g_build_filename(pidgin_user_dir(), "plugins", NULL);
 	if (g_mkdir_with_parents(path, S_IRWXU) != 0)
