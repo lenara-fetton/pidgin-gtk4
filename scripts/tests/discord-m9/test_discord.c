@@ -5,9 +5,35 @@
  * signals itself (as pidgin4's libpurple does), and drives the plugin's
  * message processing with Discord gateway payloads. No network: the fake
  * connection isn't in purple_connections_get_all(), so every REST call
- * fails immediately (its callback gets NULL).
+ * fails immediately (its callback gets NULL). With capture_requests set,
+ * REST calls are recorded instead (requests), and their callbacks wait in
+ * pending_requests for the test to answer them (respond()).
  */
+#include <purple.h>
+#include "purple2compat/http.h"
+
+static gboolean capture_requests;
+static GString *requests;               /* "METHOD URL [body]\n" */
+static GQueue pending_requests = G_QUEUE_INIT;  /* DiscordProxyConnection */
+
+#undef PURPLE_CONNECTION_IS_VALID
+#define PURPLE_CONNECTION_IS_VALID(gc) \
+	(capture_requests || g_list_find(purple_connections_get_all(), (gc)) != NULL)
+
+static PurpleHttpConnection *
+test_http_request(PurpleConnection *gc, PurpleHttpRequest *request, PurpleHttpCallback callback, gpointer user_data)
+{
+	const gchar *body = purple_http_request_get_contents(request);
+
+	g_string_append_printf(requests, "%s %s%s%s\n", purple_http_request_get_method(request),
+	                       purple_http_request_get_url(request), body ? " " : "", body ? body : "");
+	g_queue_push_tail(&pending_requests, user_data);
+	return NULL;
+}
+
+#define purple_http_request test_http_request
 #include "libdiscord.c"
+#undef purple_http_request
 
 /* purple_compat.h maps these onto libpurple's event loop, which is us */
 #undef g_timeout_add_seconds
@@ -114,6 +140,11 @@ register_meta_signals(void)
 		purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT),
 		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
 		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING));
+	purple_signal_register(h, "message-receipt", purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 5,
+		purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING));
 }
 
 /* ---- recording handlers ---- */
@@ -174,6 +205,46 @@ retracted_cb(PurpleAccount *a, const char *conv, const char *target, const char 
 static GString *written;
 
 static gboolean
+receipt_cb(PurpleAccount *a, const char *conv, const char *id, const char *state,
+           const char *sender, gpointer data)
+{
+	g_string_append_printf(events, "receipt(%s,%s,%s,%s);", conv, id, state, sender);
+	return handle_events;
+}
+
+/* Runs the event loop for @ms (delayed requests go out after 30 ms) */
+static void
+spin(guint ms)
+{
+	gint64 end = g_get_monotonic_time() + ms * 1000;
+
+	while (g_get_monotonic_time() < end) {
+		g_main_context_iteration(NULL, FALSE);
+		g_usleep(1000);
+	}
+}
+
+/* Answers the oldest captured request with @json (NULL: a failure) */
+static void
+respond(const char *json)
+{
+	DiscordProxyConnection *conn = g_queue_pop_head(&pending_requests);
+	JsonParser *parser = json_parser_new();
+	JsonNode *root = NULL;
+
+	if (conn == NULL) {
+		fprintf(stderr, "respond(): no pending request\n");
+		exit(2);
+	}
+	if (json != NULL && json_parser_load_from_data(parser, json, -1, NULL))
+		root = json_parser_get_root(parser);
+	if (conn->callback)
+		conn->callback(conn->ya, root, conn->user_data);
+	g_object_unref(parser);
+	discord_proxy_connection_free(conn);
+}
+
+static gboolean
 writing_cb(PurpleAccount *account, const char *who, char **message, PurpleConversation *conv,
            PurpleMessageFlags flags, gpointer data)
 {
@@ -187,6 +258,8 @@ reset(void)
 {
 	g_string_truncate(events, 0);
 	g_string_truncate(written, 0);
+	if (requests != NULL)
+		g_string_truncate(requests, 0);
 	g_hash_table_remove_all(last_meta);
 	g_clear_pointer(&last_meta_conv, g_free);
 	meta_count = 0;
@@ -347,6 +420,13 @@ static const char *msg_link_update =
 	" \"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
 	" \"embeds\":[" LINK_EMBED "]}";
 
+/* MESSAGE_ACK (user gateway): read up to a message on another client */
+static const char *message_ack =
+	"{\"version\":1234,\"message_id\":\"334385199974967099\",\"channel_id\":\"" CHANNEL_ID "\","
+	" \"last_viewed\":3500,\"flags\":0}";
+static const char *message_ack_dm =
+	"{\"version\":1235,\"message_id\":\"555\",\"channel_id\":\"" DM_ID "\",\"flags\":0}";
+
 /* A bot's rich embed with fields */
 static const char *embed_rich =
 	"{\"type\":\"rich\",\"title\":\"Build #42\",\"color\":65280,"
@@ -389,7 +469,7 @@ main(int argc, char **argv)
 		CHECK(purple_plugin_ipc_get_params(prpl, "send-reaction", NULL, NULL, NULL));
 		CHECK(purple_plugin_ipc_get_params(prpl, "send-retraction", NULL, NULL, NULL));
 		CHECK(purple_plugin_ipc_get_params(prpl, "send-reply", NULL, NULL, NULL));
-		CHECK(!purple_plugin_ipc_get_params(prpl, "send-marker", NULL, NULL, NULL));
+		CHECK(purple_plugin_ipc_get_params(prpl, "send-marker", NULL, NULL, NULL));
 		{
 			int n = -1;
 			PurpleValue **params = NULL, *ret = NULL;
@@ -405,10 +485,12 @@ main(int argc, char **argv)
 	seen_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	events = g_string_new(NULL);
 	written = g_string_new(NULL);
+	requests = g_string_new(NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "receiving-message-meta", &failures, PURPLE_CALLBACK(meta_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-corrected", &failures, PURPLE_CALLBACK(corrected_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-reaction", &failures, PURPLE_CALLBACK(reaction_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-retracted", &failures, PURPLE_CALLBACK(retracted_cb), NULL);
+	purple_signal_connect(purple_conversations_get_handle(), "message-receipt", &failures, PURPLE_CALLBACK(receipt_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "writing-chat-msg", &failures, PURPLE_CALLBACK(writing_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "writing-im-msg", &failures, PURPLE_CALLBACK(writing_cb), NULL);
 
@@ -526,6 +608,7 @@ main(int argc, char **argv)
 	CHECK_STR(M("server-id"), "334385199974967042");
 	CHECK_STR(M("sender"), "Mason");
 	CHECK_STR(M("conv-type"), "chat");
+	CHECK_STR(M("markable"), "1");
 	CHECK(strstr(written->str, "[" CHANNEL_ID "|Mason|Supa Hot <img src=\"https://cdn.discordapp.com/emojis/41771983429993937.png?size=48\" alt=\":LUL:\" width=\"22\" height=\"22\"/>|0x2]") != NULL);
 	/* The history's reaction lines are still written (unknown reactors) */
 	CHECK(strstr(written->str, "reacted with") != NULL);
@@ -766,6 +849,7 @@ main(int argc, char **argv)
 	CHECK(!g_hash_table_contains(da->sent_message_ids, "424242"));
 	CHECK_STR(M("stanza-id"), "556");
 	CHECK(M("outgoing") == NULL);
+	CHECK(M("markable") == NULL);        /* our own */
 	CHECK_STR(M("sender"), "me@example.com");
 	CHECK(strstr(written->str, "|my reply|0x1]") != NULL);
 	fprintf(stderr, "written: %s\n", written->str);
@@ -834,6 +918,7 @@ main(int argc, char **argv)
 	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
 	json_object_unref(o);
 	CHECK_STR(M("outgoing"), "1");
+	CHECK(M("markable") == NULL);
 	CHECK_STR(M("sender"), "me@example.com");
 	CHECK(strstr(written->str, "|from my phone|0x") != NULL);
 
@@ -933,6 +1018,60 @@ main(int argc, char **argv)
 		g_free(html);
 	}
 
+	/* ---- read state ---- */
+	CHECK(purple_plugin_ipc_get_params(purple_find_prpl(DISCORD_PLUGIN_ID), "send-marker", NULL, NULL, NULL));
+	/* MESSAGE_ACK from another client: read elsewhere, from our account */
+	reset();
+	o = parse(message_ack);
+	discord_process_dispatch(da, "MESSAGE_ACK", o);
+	json_object_unref(o);
+	CHECK_STR(events->str, "receipt(" CHANNEL_ID ",334385199974967099,displayed,me@example.com);");
+	CHECK(discord_native_read_get(da, channel->id) == 334385199974967099ULL);
+	/* ... again (the echo of an ack): nothing */
+	reset();
+	o = parse(message_ack);
+	discord_process_dispatch(da, "MESSAGE_ACK", o);
+	json_object_unref(o);
+	CHECK_STR(events->str, "");
+	reset();
+	o = parse(message_ack_dm);
+	discord_process_dispatch(da, "MESSAGE_ACK", o);
+	json_object_unref(o);
+	CHECK_STR(events->str, "receipt(alice,555,displayed,me@example.com);");
+
+	/* send-marker: one ack per newly read message */
+	spin(60);       /* the earlier IPC requests go out (and fail) first */
+	capture_requests = TRUE;
+	reset();
+	CHECK(discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967100", NULL));
+	spin(60);
+	CHECK(strstr(requests->str, "POST https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974967100/ack {\"token\":null}") != NULL);
+	CHECK(discord_native_read_get(da, channel->id) == 334385199974967100ULL);
+	fprintf(stderr, "requests: %s", requests->str);
+	respond("{\"token\":\"ack-token-1\"}");
+	CHECK_STR(da->ack_token, "ack-token-1");
+	reset();
+	CHECK(discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967100", "displayed"));     /* again */
+	CHECK(discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967099", "displayed"));     /* older */
+	CHECK(!discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967101", "received"));    /* no such thing */
+	CHECK(!discord_ipc_send_marker(account, "nobody", "334385199974967101", NULL));
+	spin(60);
+	CHECK_STR(requests->str, "");
+	reset();
+	CHECK(discord_ipc_send_marker(account, "alice", "556", "acknowledged"));
+	spin(60);
+	CHECK(strstr(requests->str, "POST https://discord.com/api/v10/channels/" DM_ID "/messages/556/ack {\"token\":\"ack-token-1\"}") != NULL);
+	respond(NULL);
+	/* The conversation's unseen update no longer acks (send-marker does) */
+	reset();
+	discord_mark_conv_seen(purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, CHANNEL_ID, account),
+	                       PURPLE_CONV_UPDATE_UNSEEN);
+	spin(60);
+	CHECK_STR(requests->str, "");
+	capture_requests = FALSE;
+	g_free(da->ack_token);
+	da->ack_token = NULL;
+
 	/* ---- stock UI: the same payloads give the old output ---- */
 	{
 		DiscordAccount *stock = g_new0(DiscordAccount, 1);
@@ -970,6 +1109,22 @@ main(int argc, char **argv)
 		json_object_unref(o);
 		CHECK(meta_count == 0);
 		CHECK(strstr(written->str, "|Mason|Supa Hot :LUL:|") != NULL);   /* custom smiley path */
+		/* The unseen update acks the channel, MESSAGE_ACK is ignored */
+		capture_requests = TRUE;
+		reset();
+		discord_mark_conv_seen(purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, CHANNEL_ID, account),
+		                       PURPLE_CONV_UPDATE_UNSEEN);
+		spin(60);
+		CHECK(strstr(requests->str, "POST https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/") != NULL &&
+		      strstr(requests->str, "/ack ") != NULL);
+		respond(NULL);
+		reset();
+		o = parse(message_ack);
+		discord_process_dispatch(stock, "MESSAGE_ACK", o);
+		json_object_unref(o);
+		CHECK_STR(events->str, "");
+		capture_requests = FALSE;
+
 		/* Stickers, GIF and link embeds: the old lines and block */
 		reset();
 		o = parse(msg_stickers);

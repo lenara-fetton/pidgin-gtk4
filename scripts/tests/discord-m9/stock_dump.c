@@ -10,7 +10,7 @@
 #define STOCK_DUMP
 #include "test_discord.c"
 
-typedef enum { MSG, EDIT, DISPATCH, HISTORY } Kind;
+typedef enum { MSG, EDIT, DISPATCH, HISTORY, SEEN } Kind;
 
 typedef struct {
 	Kind kind;
@@ -36,6 +36,9 @@ static const Step steps[] = {
 	{ MSG, NULL, &msg_link },
 	{ MSG, NULL, &msg_link_bare },
 	{ DISPATCH, "MESSAGE_UPDATE", &msg_link_update },
+	{ DISPATCH, "MESSAGE_ACK", &message_ack },
+	{ DISPATCH, "MESSAGE_ACK", &message_ack_dm },
+	{ SEEN, "conversation-updated", &msg_create },
 #ifdef STOCK_DUMP_STEPS
 	STOCK_DUMP_STEPS
 #endif
@@ -102,10 +105,13 @@ main(int argc, char **argv)
 	seen_ids = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	events = g_string_new(NULL);
 	written = g_string_new(NULL);
+	requests = g_string_new(NULL);
+	capture_requests = TRUE;        /* and print the REST requests too */
 	purple_signal_connect(purple_conversations_get_handle(), "receiving-message-meta", &failures, PURPLE_CALLBACK(meta_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-corrected", &failures, PURPLE_CALLBACK(corrected_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-reaction", &failures, PURPLE_CALLBACK(reaction_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "message-retracted", &failures, PURPLE_CALLBACK(retracted_cb), NULL);
+	purple_signal_connect(purple_conversations_get_handle(), "message-receipt", &failures, PURPLE_CALLBACK(receipt_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "writing-chat-msg", &failures, PURPLE_CALLBACK(writing_cb), NULL);
 	purple_signal_connect(purple_conversations_get_handle(), "writing-im-msg", &failures, PURPLE_CALLBACK(writing_cb), NULL);
 
@@ -164,6 +170,10 @@ main(int argc, char **argv)
 		case DISPATCH:
 			discord_process_dispatch(da, steps[i].type, o);
 			break;
+		case SEEN:
+			discord_mark_conv_seen(purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, CHANNEL_ID, account),
+			                       PURPLE_CONV_UPDATE_UNSEEN);
+			break;
 		case HISTORY:
 			{
 				JsonNode *node = json_node_new(JSON_NODE_ARRAY);
@@ -175,9 +185,10 @@ main(int argc, char **argv)
 			break;
 		}
 		json_object_unref(o);
-		printf("step %u %s: meta=%d events=[%s]\n  written=%s\n", i,
+		spin(60);
+		printf("step %u %s: meta=%d events=[%s]\n  written=%s\n  requests=%s\n", i,
 		       steps[i].type ? steps[i].type : (steps[i].kind == EDIT ? "edit" : steps[i].kind == HISTORY ? "history" : "message"),
-		       meta_count, events->str, written->str);
+		       meta_count, events->str, written->str, requests->str);
 		dump_status(account, "alice");
 	}
 	{
