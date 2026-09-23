@@ -43,8 +43,11 @@
  *       sendbutton plugin does that). @markup is the HTML (or, with
  *       PIDGIN_FORMAT_STYLING, the escaped XEP-0393 text with <br>
  *       newlines). Return TRUE if the message was sent: the entry is then
- *       cleared and the markup added to the history. The spellchk plugin
- *       can connect before the default handler to rewrite the buffer.
+ *       cleared and the markup added to the history.
+ *   "pre-send"            gboolean (PidginComposeEntry *entry)
+ *       (M7) Emitted by pidgin_compose_entry_send() before the markup is
+ *       taken, so plugins (spellchk) can rewrite the buffer. Return TRUE
+ *       to hold the message back (the buffer is kept, nothing is sent).
  *   "typing-changed"      void (PidginComposeEntry *entry, PurpleTypingState state)
  *   "edit-last-requested" void (PidginComposeEntry *entry)
  *   "format-changed"      void (PidginComposeEntry *entry)

@@ -221,3 +221,23 @@ pidgin-format-toolbar button {
 .pidgin-conv-pane {
 	padding: 0 6px 6px 6px;
 }
+
+/* M7: rows added by plugins. The history plugin's rows are dimmed and end
+ * with a grey separator (the markerline's is red). Rows also carry the
+ * message type as msg-send, msg-recv, msg-nick, msg-system, msg-error,
+ * msg-whisper, msg-auto-resp and msg-delayed (convcolors styles those). */
+pidgin-message-row.history > box,
+pidgin-message-row.history > label {
+	opacity: 0.55;
+}
+
+pidgin-message-row.history-separator separator.pidgin-marker-line {
+	background-color: alpha(currentColor, 0.35);
+	min-height: 1px;
+}
+
+/* The timestamp plugin's periodic time rows. */
+pidgin-message-row.timestamp-plugin .body {
+	font-weight: bold;
+	opacity: 0.55;
+}

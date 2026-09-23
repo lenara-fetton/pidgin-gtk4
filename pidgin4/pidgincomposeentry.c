@@ -66,6 +66,7 @@ enum {
 	SIG_TYPING_CHANGED,
 	SIG_EDIT_LAST,
 	SIG_FORMAT_CHANGED,
+	SIG_PRE_SEND,
 	N_SIGNALS
 };
 
@@ -721,6 +722,12 @@ pidgin_compose_entry_send(PidginComposeEntry *entry)
 	if (pidgin_compose_entry_is_empty(entry))
 		return FALSE;
 
+	/* M7: plugins (spellchk) may rewrite the buffer first, or hold the
+	 * message back so the user sees the change. */
+	g_signal_emit(entry, signals[SIG_PRE_SEND], 0, &handled);
+	if (handled || pidgin_compose_entry_is_empty(entry))
+		return FALSE;
+
 	markup = pidgin_compose_entry_get_markup(entry);
 	g_signal_emit(entry, signals[SIG_MESSAGE_SEND], 0, markup, &handled);
 	if (handled) {
@@ -1050,6 +1057,11 @@ pidgin_compose_entry_class_init(PidginComposeEntryClass *klass)
 	signals[SIG_FORMAT_CHANGED] = g_signal_new("format-changed",
 		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0, NULL, NULL, NULL,
 		G_TYPE_NONE, 0);
+	/* M7: before "message-send", for plugins that edit the buffer. */
+	signals[SIG_PRE_SEND] = g_signal_new("pre-send",
+		G_TYPE_FROM_CLASS(klass), G_SIGNAL_RUN_LAST, 0,
+		g_signal_accumulator_true_handled, NULL, NULL,
+		G_TYPE_BOOLEAN, 0);
 
 	spelling_init();
 }

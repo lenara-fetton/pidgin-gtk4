@@ -273,6 +273,8 @@ struct _PidginMessageRow
 	GtkWidget *emoji;
 	double last_x, last_y;
 	gboolean click_on_body;
+
+	GStrv extra_classes;            /* M7: classes applied from the message */
 };
 
 G_DEFINE_FINAL_TYPE(PidginMessageRow, pidgin_message_row, GTK_TYPE_WIDGET)
@@ -868,6 +870,49 @@ update_menu(PidginMessageRow *row)
 		              row->plugin_section);
 }
 
+/*
+ * M7: row-level classes for styling plugins (convcolors): the message
+ * type as msg-send, msg-recv, msg-nick, msg-system, msg-error,
+ * msg-whisper, msg-auto-resp, msg-delayed, plus the message's own extra
+ * classes (pidgin_message_add_css_class(), e.g. "history").
+ */
+static void
+update_row_classes(PidginMessageRow *row)
+{
+	static const struct {
+		PurpleMessageFlags flag;
+		const char *name;
+	} types[] = {
+		{ PURPLE_MESSAGE_SEND, "msg-send" },
+		{ PURPLE_MESSAGE_RECV, "msg-recv" },
+		{ PURPLE_MESSAGE_NICK, "msg-nick" },
+		{ PURPLE_MESSAGE_SYSTEM, "msg-system" },
+		{ PURPLE_MESSAGE_ERROR, "msg-error" },
+		{ PURPLE_MESSAGE_WHISPER, "msg-whisper" },
+		{ PURPLE_MESSAGE_AUTO_RESP, "msg-auto-resp" },
+		{ PURPLE_MESSAGE_DELAYED, "msg-delayed" },
+	};
+	PurpleMessageFlags flags = row->msg ? pidgin_message_get_flags(row->msg) : 0;
+	const char * const *extra = row->msg ? pidgin_message_get_css_classes(row->msg) : NULL;
+	guint i;
+
+	for (i = 0; i < G_N_ELEMENTS(types); i++) {
+		if (flags & types[i].flag)
+			gtk_widget_add_css_class(GTK_WIDGET(row), types[i].name);
+		else
+			gtk_widget_remove_css_class(GTK_WIDGET(row), types[i].name);
+	}
+
+	for (i = 0; row->extra_classes && row->extra_classes[i]; i++)
+		gtk_widget_remove_css_class(GTK_WIDGET(row), row->extra_classes[i]);
+	g_clear_pointer(&row->extra_classes, g_strfreev);
+	if (extra != NULL) {
+		row->extra_classes = g_strdupv((char **)extra);
+		for (i = 0; extra[i]; i++)
+			gtk_widget_add_css_class(GTK_WIDGET(row), extra[i]);
+	}
+}
+
 static void
 row_update(PidginMessageRow *row)
 {
@@ -877,6 +922,7 @@ row_update(PidginMessageRow *row)
 		return;
 
 	marker = pidgin_message_get_kind(row->msg) == PIDGIN_MESSAGE_KIND_MARKER;
+	update_row_classes(row);
 	gtk_widget_set_visible(row->marker, marker);
 	gtk_widget_set_visible(row->main_box, !marker);
 	if (marker) {
@@ -945,6 +991,7 @@ pidgin_message_row_dispose(GObject *obj)
 	g_clear_object(&row->menu);
 	g_clear_object(&row->plugin_section);
 	g_clear_object(&row->link_section);
+	g_clear_pointer(&row->extra_classes, g_strfreev);
 	g_clear_weak_pointer(&row->view);
 
 	G_OBJECT_CLASS(pidgin_message_row_parent_class)->dispose(obj);
@@ -1321,6 +1368,13 @@ pidgin_message_view_set_marker(PidginMessageView *view)
 	g_list_store_append(view->store, view->marker);
 	if (stick)
 		pidgin_message_view_scroll_to_bottom(view);
+}
+
+PidginMessage *
+pidgin_message_view_get_marker(PidginMessageView *view)
+{
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE_VIEW(view), NULL);
+	return view->marker;
 }
 
 /**************************************************************************

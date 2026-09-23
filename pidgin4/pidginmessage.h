@@ -177,6 +177,17 @@ void pidgin_message_set_retracted(PidginMessage *msg, gboolean retracted);
 gint64 pidgin_message_get_index_id(PidginMessage *msg);
 void pidgin_message_set_index_id(PidginMessage *msg, gint64 id);
 
+/**
+ * Extra CSS classes for the message's row (M7: plugins, e.g. "history"
+ * for the history plugin's rows). The view adds them to the row widget;
+ * "notify::css-classes" follows changes. get_css_classes() returns a
+ * NULL-terminated array (or NULL), owned by the message.
+ */
+void pidgin_message_add_css_class(PidginMessage *msg, const char *css_class);
+void pidgin_message_remove_css_class(PidginMessage *msg, const char *css_class);
+gboolean pidgin_message_has_css_class(PidginMessage *msg, const char *css_class);
+const char * const *pidgin_message_get_css_classes(PidginMessage *msg);
+
 G_END_DECLS
 
 #endif /* _PIDGINMESSAGE_H_ */

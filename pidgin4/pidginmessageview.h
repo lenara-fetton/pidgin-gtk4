@@ -127,6 +127,8 @@ gboolean pidgin_message_view_is_at_bottom(PidginMessageView *view);
  */
 void pidgin_message_view_set_marker(PidginMessageView *view);
 void pidgin_message_view_remove_marker(PidginMessageView *view);
+/** The marker item, or NULL (M7: markerline's "Jump to markerline"). */
+PidginMessage *pidgin_message_view_get_marker(PidginMessageView *view);
 
 /** Find: the search bar (hidden until search mode is on). */
 GtkSearchBar *pidgin_message_view_get_search_bar(PidginMessageView *view);

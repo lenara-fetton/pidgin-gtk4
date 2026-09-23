@@ -133,6 +133,21 @@ pidgin_conv_window_get_gtkconvs(PidginWindow *win)
 	return win->gtkconvs;
 }
 
+/* M7: accessor for plugins (notify, markerline, iconaway). */
+GtkWidget *
+pidgin_conv_window_get_window(PidginWindow *win)
+{
+	g_return_val_if_fail(win != NULL, NULL);
+	return win->window;
+}
+
+GtkWidget *
+pidgin_conv_window_get_notebook(PidginWindow *win)
+{
+	g_return_val_if_fail(win != NULL, NULL);
+	return win->notebook;
+}
+
 guint
 pidgin_conv_window_get_gtkconv_count(PidginWindow *win)
 {

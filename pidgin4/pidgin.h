@@ -38,6 +38,13 @@
 #define PIDGIN_UI "gtk-gaim"
 
 /**
+ * The ui_requirement of pidgin4 UI plugins (M7). Pidgin 2 defines it in
+ * gtkplugin.h with the same value; the definitions are identical, so both
+ * headers may be included.
+ */
+#define PIDGIN_PLUGIN_TYPE PIDGIN_UI
+
+/**
  * The GTK 2 UI's pref subtree. pidgin4 only reads keys whose meaning is the
  * same in both UIs from here; it never writes GTK 2-specific keys.
  */

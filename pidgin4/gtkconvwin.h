@@ -103,6 +103,9 @@ gboolean pidgin_conv_window_is_active_conversation(const PurpleConversation *con
 gboolean pidgin_conv_window_has_focus(PidginWindow *win);
 GList *pidgin_conv_window_get_gtkconvs(PidginWindow *win);
 guint pidgin_conv_window_get_gtkconv_count(PidginWindow *win);
+/** M7: the GtkApplicationWindow and the GtkNotebook (for plugins). */
+GtkWidget *pidgin_conv_window_get_window(PidginWindow *win);
+GtkWidget *pidgin_conv_window_get_notebook(PidginWindow *win);
 PidginWindow *pidgin_conv_window_first_with_type(PurpleConversationType type);
 PidginWindow *pidgin_conv_window_last_with_type(PurpleConversationType type);
 

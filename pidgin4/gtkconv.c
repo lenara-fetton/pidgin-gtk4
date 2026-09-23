@@ -140,6 +140,21 @@ pidgin_conv_get_entry(PidginConversation *gtkconv)
 	return gtkconv->entry;
 }
 
+/* M7: the names the plugin README uses. */
+GtkWidget *
+pidgin_conv_get_compose_entry(PidginConversation *gtkconv)
+{
+	g_return_val_if_fail(gtkconv != NULL, NULL);
+	return gtkconv->entry;
+}
+
+GtkWidget *
+pidgin_conv_get_send_button(PidginConversation *gtkconv)
+{
+	g_return_val_if_fail(gtkconv != NULL, NULL);
+	return gtkconv->send_button;
+}
+
 GtkWidget *
 pidgin_conv_get_toolbar(PidginConversation *gtkconv)
 {
