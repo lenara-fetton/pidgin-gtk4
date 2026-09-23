@@ -155,7 +155,8 @@ pidgin_ui_init(void)
 	 *     still logged, and received IMs/chats are not shown;
 	 *   xfers, privacy, roomlist (TODO(M5)): transfers are neither offered
 	 *     nor shown, privacy and room list windows do not exist;
-	 *   sound, idle (TODO(M6)): see gtksound.c and gtkidle.c;
+	 *   (sound and idle are set since M6: gtksound.c, gtkidle.c; idle
+	 *   ops are NULL when no system idle source exists);
 	 *   whiteboard, media: dropped (no voice/video, no Doodle).
 	 * The blist ops (gtkblist.c) leave save_node/remove_node/
 	 * save_account NULL: libpurple then uses its own savers, which is

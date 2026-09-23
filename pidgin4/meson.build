@@ -314,6 +314,14 @@ test_idle = executable('test-idle',
 	install : false)
 test('idle', test_idle)
 
+test_sound = executable('test-sound',
+	'tests/test-sound.c', 'gtksound.c', 'gtkeventloop.c', test_support,
+	link_with : components_lib,
+	dependencies : pidgin4_deps,
+	build_rpath : purple_libdir,
+	install : false)
+test('sound', test_sound, env : test_env)
+
 # A stand-alone watcher for headless runs: under dbus-run-session, start
 # it before pidgin4 and the tray item registers with it.
 executable('fake-sni-watcher',
