@@ -27,9 +27,9 @@
 /*
  * GTK 4 port of the notify UI ops:
  *   - messages are GtkAlertDialogs;
- *   - formatted text and user info are windows with a selectable label
- *     (purple's HTML converted to Pango markup; TODO(M4): PidginRichLabel
- *     with images and the full markup);
+ *   - formatted text and user info are windows with a PidginRichLabel
+ *     (purple's HTML through PidginMarkup: formatting, links, smileys and
+ *     imgstore images such as buddy icons in user info);
  *   - search results are a GtkColumnView;
  *   - mail notifications are collected in one simple "New Mail" window
  *     (TODO(M5): the GTK 2 mail dialog with per-account grouping);
@@ -50,6 +50,7 @@
 
 #include "gtknotify.h"
 #include "gtkutils.h"
+#include "pidginrichlabel.h"
 
 /**************************************************************************
  * Messages
@@ -122,32 +123,15 @@ pidgin_notify_message(PurpleNotifyMsgType type, const char *title,
  * Rich text windows (formatted, userinfo)
  **************************************************************************/
 
-static gboolean
-activate_link_cb(GtkLabel *label, const char *uri, gpointer data)
-{
-	pidgin_open_uri(GTK_WINDOW(gtk_widget_get_root(GTK_WIDGET(label))), uri);
-	return TRUE;
-}
-
-/* Puts purple HTML into @label as Pango markup, falling back to plain
- * text when the conversion is not valid markup. */
+/* Puts purple HTML into a PidginRichLabel. Links are made clickable as
+ * GtkIMHtml did (purple_markup_linkify); smileys follow the theme. */
 static void
 set_label_html(GtkWidget *label, const char *html)
 {
-	char *linked, *markup;
+	char *linked = purple_markup_linkify(html ? html : "");
+	PidginMarkupOptions opts = { PIDGIN_MARKUP_NO_LINKIFY, NULL, NULL, NULL };
 
-	linked = purple_markup_linkify(html ? html : "");
-	markup = pidgin_html_to_pango_markup(linked);
-
-	if (pango_parse_markup(markup, -1, 0, NULL, NULL, NULL, NULL)) {
-		gtk_label_set_markup(GTK_LABEL(label), markup);
-	} else {
-		char *plain = purple_markup_strip_html(html ? html : "");
-		gtk_label_set_text(GTK_LABEL(label), plain);
-		g_free(plain);
-	}
-
-	g_free(markup);
+	pidgin_rich_label_set_html(PIDGIN_RICH_LABEL(label), linked, &opts);
 	g_free(linked);
 }
 
@@ -177,17 +161,12 @@ pidgin_notify_formatted(const char *title, const char *primary,
 	pidgin_dialog_add_message(window, NULL, primary, secondary, FALSE);
 
 	content = pidgin_dialog_get_content_area(window);
-	label = gtk_label_new(NULL);
-	gtk_label_set_wrap(GTK_LABEL(label), TRUE);
-	gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
-	gtk_label_set_selectable(GTK_LABEL(label), TRUE);
-	gtk_label_set_xalign(GTK_LABEL(label), 0.0);
-	gtk_label_set_yalign(GTK_LABEL(label), 0.0);
+	label = pidgin_rich_label_new();
+	gtk_widget_set_valign(label, GTK_ALIGN_START);
 	gtk_widget_set_margin_start(label, PIDGIN_HIG_BOX_SPACE);
 	gtk_widget_set_margin_end(label, PIDGIN_HIG_BOX_SPACE);
 	gtk_widget_set_margin_top(label, PIDGIN_HIG_BOX_SPACE);
 	gtk_widget_set_margin_bottom(label, PIDGIN_HIG_BOX_SPACE);
-	g_signal_connect(label, "activate-link", G_CALLBACK(activate_link_cb), NULL);
 	set_label_html(label, text);
 
 	sw = pidgin_make_scrollable(label, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC, 300, 250);

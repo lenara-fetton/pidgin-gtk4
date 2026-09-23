@@ -32,6 +32,12 @@
 #include "util.h"
 
 #include "gtkutils.h"
+#include "pidgincomposeentry.h"
+#include "pidginformattoolbar.h"
+#include "pidginmarkup.h"
+#include "pidginmessageindex.h"
+#include "pidginmessageview.h"
+#include "pidginsmileytheme.h"
 
 /**************************************************************************
  * PidginItem
@@ -966,14 +972,60 @@ pidgin_open_uri(GtkWindow *parent, const char *uri)
 	g_object_unref(launcher);
 }
 
+/**************************************************************************
+ * Message view and compose entry (M4)
+ **************************************************************************/
+
+GtkWidget *
+pidgin_create_message_view(void)
+{
+	pidgin_message_view_signals_init();
+	return pidgin_message_view_new();
+}
+
+GtkWidget *
+pidgin_create_compose_entry(PurpleConnectionFlags features, gboolean with_toolbar,
+                            GtkWidget **entry_ret, GtkWidget **toolbar_ret)
+{
+	GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	GtkWidget *entry = pidgin_compose_entry_new();
+	GtkWidget *toolbar = NULL;
+	GtkWidget *sw;
+
+	pidgin_compose_entry_setup(PIDGIN_COMPOSE_ENTRY(entry), features);
+	if (with_toolbar) {
+		toolbar = pidgin_format_toolbar_new(PIDGIN_COMPOSE_ENTRY(entry));
+		gtk_box_append(GTK_BOX(box), toolbar);
+	}
+	sw = pidgin_make_scrollable(entry, GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC, -1, -1);
+	gtk_widget_set_vexpand(sw, TRUE);
+	gtk_box_append(GTK_BOX(box), sw);
+
+	if (entry_ret)
+		*entry_ret = entry;
+	if (toolbar_ret)
+		*toolbar_ret = toolbar;
+	return box;
+}
+
 void
 pidgin_utils_init(void)
 {
+	/* M4 components: link schemes, smiley theme, the conversation UI
+	 * signals, the message index (and its backfill). */
+	pidgin_markup_init();
+	pidgin_smiley_themes_init();
+	pidgin_message_view_signals_init();
+	pidgin_message_index_ui_init();
 }
 
 void
 pidgin_utils_uninit(void)
 {
+	pidgin_message_index_ui_uninit();
+	pidgin_message_view_signals_uninit();
+	pidgin_smiley_themes_uninit();
+	pidgin_markup_uninit();
 }
 
 /**************************************************************************

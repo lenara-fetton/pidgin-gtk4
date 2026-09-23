@@ -57,6 +57,10 @@ DEFAULT_RULES = [
 	('changed', r'^prefs\.xml:/pref/pref\[pidgin\]/.*/pref\[(x|y|width|height|pane_pos)\]( |$)'),
 	# prefs.xml: pidgin4's own subtree (contract rule 2) may do anything.
 	('any', r'^prefs\.xml:/pref/pref\[pidgin4\]'),
+	# prefs.xml: libpurple plugins in the private prefix (e.g. omemo) register
+	# their own /plugins/core/<id> defaults on first load. Additive keys are
+	# allowed by contract rule 2; removals and changes are still caught.
+	('added', r'^prefs\.xml:/pref/pref\[plugins\]/pref\[core\]/'),
 	# accounts.xml: per-account presence (active flags, status messages).
 	('any', r'^accounts\.xml:/account/account\[[^]]*\]/statuses/'),
 	('any', r'^accounts\.xml:/account/account\[[^]]*\]/current_error'),

@@ -50,6 +50,8 @@
 
 #include "gtkrequest.h"
 #include "gtkutils.h"
+#include "pidgincomposeentry.h"
+#include "pidginformattoolbar.h"
 
 #define ICON_QUESTION "dialog-question"
 
@@ -164,33 +166,40 @@ add_button(PidginRequestData *data, const char *text, GCallback cb)
 	return pidgin_dialog_add_button(data->dialog, text ? text : "", cb, data);
 }
 
+/* Multi-line text: a PidginComposeEntry, plain unless it is an "html"
+ * input (then formatted, with a toolbar, and read back as HTML). */
 static char *
 text_view_get_text(GtkWidget *view)
 {
 	GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
 	GtkTextIter start, end;
 
+	if (pidgin_compose_entry_get_caps(PIDGIN_COMPOSE_ENTRY(view)) & PIDGIN_FORMAT_BOLD)
+		return pidgin_compose_entry_get_markup(PIDGIN_COMPOSE_ENTRY(view));
 	gtk_text_buffer_get_bounds(buffer, &start, &end);
 	return gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
 }
 
 static GtkWidget *
-text_view_new(const char *text, gboolean editable)
+text_view_new(const char *text, gboolean editable, gboolean html)
 {
-	GtkWidget *view = gtk_text_view_new();
+	GtkWidget *view = pidgin_compose_entry_new();
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(view);
 
-	gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD_CHAR);
+	/* Enter is a newline here; the dialog's buttons do the rest. */
+	pidgin_compose_entry_set_return_inserts_newline(entry, TRUE);
+	pidgin_compose_entry_set_caps(entry, html ? PIDGIN_FORMAT_HTML_ALL : 0);
 	gtk_text_view_set_editable(GTK_TEXT_VIEW(view), editable);
 	gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(view), editable);
-	gtk_text_view_set_left_margin(GTK_TEXT_VIEW(view), 4);
-	gtk_text_view_set_right_margin(GTK_TEXT_VIEW(view), 4);
-	gtk_text_view_set_top_margin(GTK_TEXT_VIEW(view), 4);
-	gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(view), 4);
-	/* TODO(M4): spell checking (libspelling) when
-	 * /pidgin/conversations/spellcheck is set. */
-	if (text != NULL)
-		gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)),
-		                         text, -1);
+	if (!editable)
+		pidgin_compose_entry_set_spellcheck(entry, FALSE);
+	if (text != NULL) {
+		if (html)
+			pidgin_compose_entry_set_markup(entry, text);
+		else
+			gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)),
+			                         text, -1);
+	}
 	return view;
 }
 
@@ -344,16 +353,7 @@ input_get_value(PidginRequestData *data)
 	if (data->u.input.multiline) {
 		char *text = text_view_get_text(data->u.input.entry);
 
-		if (purple_strequal(data->u.input.hint, "html")) {
-			/* TODO(M4): a rich-text editor (PidginComposeEntry). Until
-			 * then the plain text is sent as HTML. */
-			char *escaped = g_markup_escape_text(text, -1);
-			char *html = purple_strreplace(escaped, "\n", "<br>");
-
-			g_free(escaped);
-			g_free(text);
-			text = html;
-		}
+		/* "html" inputs are read back as HTML by text_view_get_text() */
 		return text;
 	}
 
@@ -421,7 +421,12 @@ pidgin_request_input(const char *title, const char *primary,
 	if (multiline) {
 		GtkWidget *sw;
 
-		entry = text_view_new(default_value, TRUE);
+		gboolean html = purple_strequal(hint, "html");
+
+		entry = text_view_new(default_value, TRUE, html);
+		if (html)
+			gtk_box_append(GTK_BOX(content),
+			               pidgin_format_toolbar_new(PIDGIN_COMPOSE_ENTRY(entry)));
 		sw = pidgin_make_scrollable(entry, GTK_POLICY_NEVER,
 		                            GTK_POLICY_AUTOMATIC, -1, -1);
 		/* min-content-width has no effect without a horizontal scrollbar */
@@ -764,7 +769,7 @@ create_string_field(PidginRequestData *data, PurpleRequestField *field)
 	 * (GtkEntryCompletion is deprecated; needs a completion popover). */
 
 	if (purple_request_field_string_is_multiline(field)) {
-		GtkWidget *view = text_view_new(value, editable);
+		GtkWidget *view = text_view_new(value, editable, FALSE);
 
 		connect_field(data, gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)),
 		              "changed", G_CALLBACK(field_string_buffer_changed_cb), field);
