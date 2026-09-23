@@ -770,6 +770,57 @@ Prefs, pounces, saved statuses, log viewer, privacy, room list, certificate mana
 - **Drop:** gestures, transparency, extplacement, ticker, pidginrc, themeedit, musicmessaging, gevolution, unity, vvconfig, Perl/Tcl/Mono loaders.
 - **Plugin API:** the pidgin plugin API is not preserved. PidginConversation etc. get accessors where the ported plugins need them.
 
+**Status: done; the checks that need signed-in accounts are left to the user** (the M7 section of `pidgin4/TESTING.md`). `pidgin4/plugins/README.md` lists the plugins, their prefs and what changed from Pidgin 2's plugin API.
+
+**Build and loading:**
+- `pidgin4/plugins/` is a Meson subdir. Every plugin is a shared module built with `-DPIDGIN4_PLUGIN`, linked against GTK 4, GLib and libpurple only (cap also links sqlite3; other libraries are header-only `partial_dependency`s), and installed as `<prefix>/lib/pidgin4/<name>.so` (`install_emptydir` keeps the directory). `pidgin_*` symbols resolve from the executable (`export_dynamic`).
+- `pidgin4-plugin.h` has the common includes, `PidginPluginUiInfo` until M5's `gtkplugin.h` is in the tree (it then includes M5's headers), weak declarations of M5's `pidgin_plugin_pref_frame_to_widget()`, `pidgin_plugin_get_config_frame()` and `pidgin_plugins_save()` (libpurple loads plugins with `RTLD_NOW`, so a hard reference to a missing symbol would make a plugin unloadable), and `pidgin4_plugin_show_config()`.
+- `PIDGIN_PLUGIN_TYPE` (`PIDGIN_UI`) is in `pidgin.h`, identical to M5's definition in `gtkplugin.h`.
+- Loading was already in place (`gtkmain.c`): the search paths of contract rule 3 and `/pidgin4/plugins/loaded`, loaded after the UI ops and the buddy list are set up and before the list is shown, as in Pidgin 2. M5 swaps `purple_plugins_load_saved()` for its `pidgin_plugins_load_saved()` (refuses GTK 2/3 `.so` files).
+
+**Ported** (ids and shared prefs are Pidgin 2's; pidgin4-only prefs under `/pidgin4/plugins/<name>/`):
+- **history**: the tail of the last log (`/pidgin4/plugins/history/lines`, default 100; Pidgin 2 showed the whole log) as `PidginMessage` rows parsed with PidginMarkup (colours dropped, as before), class `history` (dimmed), after a "Conversation with … on …" header and before a grey separator, prepended ahead of live messages. With the message index, only the log from the offset of the oldest wanted indexed line is read; otherwise (lines Pidgin 2 wrote and the index hasn't seen) the whole file. HTML and text logs.
+- **markerline**: the view's marker item after the last message when the window loses the focus (`notify::is-active`) or its tab is switched away from; "Jump to markerline" in Conversation → More; unloading removes the markers.
+- **timestamp_format**: `conversation-timestamp` and `log-timestamp` unchanged; "Timestamp Format Options" in every row's menu (the view's `populate-menu`, `app.timestamp-format-options`) opens the prefs.
+- **notify**: the title string and count (re-applied whenever gtkconv resets the window title), "Set attention" (window CSS class and a tray refresh; the tray is "pending" while there is unseen text: Wayland has no urgency hint and there is no X property), raise and present (`gtk_window_present()`), new `/pidgin4/plugins/notify/method_notification` (default off: `/pidgin4/notifications/new_message` already sends one) through `pidgin_notification_new_message()`. Removal on focus, click and typing with `GtkEventControllerFocus` on the page plus the window's `is-active`, a capture-phase `GtkGestureClick`, and a `GtkEventControllerKey` on the entry. Prefs as a `PurplePluginPrefFrame`.
+- **cap**: the SQLite statistics in `<profile>/pidgin4/cap.db` (rule 5), seeded once from a copy of Pidgin 2's `<profile>/cap.db`; the tooltip line through `drawing-tooltip`; a `GtkGrid` prefs frame. The inserts that used `now()` (which SQLite doesn't have, so they always failed) use `datetime('now')`.
+- **convcolors**: a `GtkCssProvider` styles the bodies of `msg-error`/`msg-nick`/`msg-system`/`msg-send`/`msg-recv` rows in views with the class `convcolors-ims`/`convcolors-chats` (from the IM/chat prefs); "Ignore incoming format" strips HTML in `displaying-*-msg` as before; GTK 4 frame with `GtkColorDialogButton`s.
+- **spellchk** (Text replacement): the buffer autocorrect is unchanged; the last word is checked in the entry's new `pre-send` signal, which holds the message back once after a replacement, as before. The word list is a `GListStore` and the editor a `GtkColumnView` (editable labels, check columns, multiple selection). `<profile>/dict` keeps Pidgin 2's format.
+- **sendbutton**: turns `/pidgin4/conversations/send_button` on while loaded (the previous value is kept in `/pidgin4/plugins/sendbutton/previous`) and keeps the button insensitive while the entry is empty.
+- **gtkbuddynote**: depends on and hides libpurple's buddynote (the `notes` node setting, "Edit Notes...", the multiline request); adds the note to the tooltip.
+- **iconaway**: hides the buddy list and `gtk_window_minimize()`s the conversation windows when a status stops being available (a no-op under Sway, which has no minimized state).
+- **relnot**: the daily check stays on `purple_util_fetch_url` (plugins link libpurple, not libsoup), with a `PidginMiniDialog`; like every plugin, off unless loaded.
+- **timestamp**: time rows (class `timestamp-plugin`, system, never logged) every interval; GTK 4 frame.
+- **xmppconsole**: `jabber-receiving-xmlnode`/`jabber-sending-text` pretty-printed as Pango markup in a `GtkTextView` (tinted per direction), a raw XML entry (Enter sends with `send_raw`, tinted while it doesn't parse), `<iq/>`/`<presence/>`/`<message/>` popovers, a `GtkDropDown` of the XMPP connections.
+- **xmppdisco**: `xmppdisco.c` unchanged; `gtkdisco.c` is a `GtkColumnView` over a `GtkTreeListModel` (expanding a row asks for its items), activate expands/registers/adds, a right-click menu, tooltips, a connected-accounts drop-down.
+
+**Dropped:** gestures, transparency, extplacement, ticker, pidginrc, themeedit, musicmessaging, gevolution, unity, vvconfig, mailchk, the Perl/Tcl/Mono loaders, disco's and the other win32 bits (also not ported: contact_priority, raw, gtk-signals-test).
+
+**Additions to pidgin4 (small, additive):**
+- `pidgin.h`: `PIDGIN_PLUGIN_TYPE`.
+- `gtkconv.[ch]`: `pidgin_conv_get_compose_entry()`, `pidgin_conv_get_send_button()`. `gtkconvwin.[ch]`: `pidgin_conv_window_get_window()`, `pidgin_conv_window_get_notebook()`.
+- `pidginmessage.[ch]`: per-message row CSS classes (`pidgin_message_add_css_class()`, `_remove_`, `_has_`, `_get_css_classes()`, property `css-classes`).
+- `pidginmessageview.[ch]`: rows carry the message type as `msg-*` classes plus the message's classes; `pidgin_message_view_get_marker()`.
+- `pidgincomposeentry.[ch]`: the `pre-send` signal.
+- `resources/style.css`: history rows, the history separator, timestamp rows.
+- `tests/selftest-prpl.[ch]`: M4b's in-process selftest protocol, factored out of `gtkconvselftest.c` and shared.
+- `pluginsselftest.[ch]` (`PIDGIN4_PLUGINS_SELFTEST`), called from `gtkmain.c`.
+
+**Verification done:**
+- **Build**: zero warnings (a clean rebuild); `scripts/build-pidgin4.sh --test` passes all 15 Meson tests (`msgview-selftest` on an Xvfb `PIDGIN4_TEST_DISPLAY`). Every plugin's undefined `pidgin_*` symbols are exported by the executable (the M5 ones are weak), and each links only GLib/GObject/GIO, GTK 4, libpurple (and sqlite3 for cap).
+- **`PIDGIN4_PLUGINS_SELFTEST=1` PASSES its 131 checks** on scratch copies of the dev profile, under Xvfb (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`, `dbus-run-session`, `-n`) and in a headless nested Sway (`GDK_BACKEND=wayland`, `GSK_RENDERER=cairo`), with the build tree's and the installed plugins. With `/pidgin4/plugins/loaded` listing the five plugins in use it reports them as loaded at startup ("Loading saved plugin" in the `-d` log) and passes. `PIDGIN4_CONV_SELFTEST` still passes its 114 checks.
+- **With M5**: a trial merge of `gtk4-port` (M5 merged) into this branch (branch `m7-trial`, two trivial conflicts in `gtkmain.c` and `meson.build`) builds with zero warnings; the plugins selftest passes (timestamp_format's options window then opens through M5's pref frames), and M5's `PIDGIN4_WINDOWS_SELFTEST` lists the 14 plugins and opens their configure windows.
+- **Profile round-trip**: `scripts/check-profile-compat.sh --pidgin4 ~/.local/pidgin4-m7/bin/pidgin4 --src <scratch copy of ~/.purple-gtk4 whose /pidgin4/plugins/loaded lists all 14 installed plugins>` **PASSES**: 12 allowed changes (the `/pidgin4/plugins/{history,notify,sendbutton}` prefs, M4b's `/pidgin4/conversations` keys, a transient status, the new `pidgin4/cap.db`); pidgin4 loaded its 14 plugins both times, Pidgin 2 loaded its own list, and `/pidgin/plugins/loaded` is unchanged.
+- **No account was signed in.**
+
+**Gaps and notes:**
+- XMPP console and disco were only opened without a connection (the dev profile's XMPP accounts stay disabled); raw traffic, the stanza popovers' sends, browsing, registering and adding are for the checklist.
+- Pidgin 2's history showed the whole last log; this shows its last `lines` lines. Starting mid-file, a log that crosses midnight may date the first lines by the file's day.
+- notify's "urgent" is not an urgency hint (none on Wayland): it is the tray's pending state; the X property method is gone.
+- convcolors' default received colour (`#000000`, Pidgin 2's) is unreadable on a dark theme; change it in the prefs.
+- relnot still asks `pidgin.im` for Pidgin 2 versions.
+- The M4b conversation window prints a GTK warning ("Error finding last focus widget of GtkPaned") when the selftest switches between two IM tabs of an unfocused window; it happens without any plugin loaded (not fatal, not a critical).
+
 ### M8: Modern XMPP and IRCv3 (protocol work can start after M1; UI parts need M4)
 **Additive libpurple API, signal-based**, so that prpl plugins built against it still load and run on stock libpurple 2.14.14 (see M9). There are no new exported functions for prpls to call, and no struct changes.
 
