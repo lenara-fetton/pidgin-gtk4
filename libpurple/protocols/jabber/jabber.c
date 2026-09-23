@@ -1382,8 +1382,12 @@ jabber_login(PurpleAccount *account)
 
 	jabber_hook_core_signals(purple_connection_get_prpl(gc));
 
+	/* M8: messages go out as XEP-0393 plain text (styling.c), so fonts,
+	 * sizes, colours, link texts and inline images aren't offered. */
 	gc->flags |= PURPLE_CONNECTION_HTML |
-		PURPLE_CONNECTION_ALLOW_CUSTOM_SMILEY;
+		PURPLE_CONNECTION_ALLOW_CUSTOM_SMILEY |
+		PURPLE_CONNECTION_NO_FONTSIZE | PURPLE_CONNECTION_NO_BGCOLOR |
+		PURPLE_CONNECTION_NO_URLDESC | PURPLE_CONNECTION_NO_IMAGES;
 	js = jabber_stream_new(account);
 	if (js == NULL)
 		return;
@@ -4389,6 +4393,7 @@ void jabber_plugin_init(PurplePlugin *plugin)
 	jabber_chat_selfping_init(plugin);
 	/* XEP-0352 (the IPC command; the signals are hooked at first login) */
 	jabber_csi_init(plugin);
+	jabber_message_semantics_init(plugin); /* M8: send-* IPC, features */
 
 	purple_signal_register(plugin, "jabber-receiving-iq",
 			purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
@@ -4422,6 +4427,7 @@ void jabber_plugin_uninit(PurplePlugin *plugin)
 	g_return_if_fail(plugin_ref > 0);
 
 	jabber_chat_selfping_uninit(plugin);
+	jabber_message_semantics_uninit();
 	purple_signals_unregister_by_instance(plugin);
 	purple_plugin_ipc_unregister_all(plugin);
 

@@ -9,6 +9,13 @@
 # path, MUC join/catch-up and bookmarks. Outgoing stanzas are captured from
 # jabber-sending-xmlnode.
 #
+# Message semantics: XEP-0184 receipts, 0333 markers, 0308 corrections,
+# 0444 reactions, 0461 replies, 0424/0425 retraction and moderation, 0393
+# styling of GTK 2 HTML, 0490 displayed sync, the send-* / mds-publish IPC
+# commands, the disco features and the jabber connection flags. Each is
+# checked with and without a "message-meta" UI and with handlers that do
+# and don't render the event.
+#
 # Usage: PIDGIN4_PREFIX=~/.local/pidgin4 scripts/tests/jabber-m8/run.sh
 set -e
 TREE=$(cd "$(dirname "$0")/../../.." && pwd)

@@ -172,4 +172,16 @@
 #define NS_CARBONS "urn:xmpp:carbons:2"
 #endif
 
+/* M8 message semantics */
+/* XEP-0393 Message Styling */
+#define NS_STYLING "urn:xmpp:styling:0"
+/* XEP-0424 v0.2/0.3 (retract:0 via XEP-0422 fastening) */
+#define NS_RETRACT_LEGACY "urn:xmpp:message-retract:0"
+#define NS_FASTEN "urn:xmpp:fasten:0"
+/* XEP-0425 Message Moderation */
+#define NS_MODERATE "urn:xmpp:message-moderate:1"
+#define NS_MODERATE_LEGACY "urn:xmpp:message-moderate:0"
+/* XEP-0490 Message Displayed Synchronization */
+#define NS_MDS "urn:xmpp:mds:displayed:0"
+
 #endif /* PURPLE_JABBER_NAMESPACES_H_ */

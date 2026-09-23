@@ -466,6 +466,10 @@ void jabber_chat_free(JabberChat *chat)
 	g_free(chat->handle);
 	g_hash_table_destroy(chat->members);
 	g_hash_table_destroy(chat->components);
+	if (chat->occupant_ids)
+		g_hash_table_destroy(chat->occupant_ids);
+	if (chat->occupant_keys)
+		g_queue_free_full(chat->occupant_keys, g_free);
 	g_free(chat);
 }
 
@@ -1375,6 +1379,13 @@ jabber_chat_disco_features_cb(JabberStream *js, const char *from,
 			chat->mam_supported = TRUE;
 		else if (purple_strequal(var, NS_OCCUPANT_ID))
 			chat->occupant_id_supported = TRUE;
+		else if (purple_strequal(var, "muc_nonanonymous"))
+			chat->nonanonymous = TRUE;
+		else if (purple_strequal(var, NS_MODERATE))
+			chat->moderation_ns = NS_MODERATE;
+		else if (purple_strequal(var, NS_MODERATE_LEGACY) &&
+		         chat->moderation_ns == NULL)
+			chat->moderation_ns = NS_MODERATE_LEGACY;
 	}
 
 	purple_debug_info("jabber", "Room %s@%s: MAM %s, occupant-id %s\n",
@@ -1701,4 +1712,62 @@ jabber_chat_selfping_uninit(PurplePlugin *plugin)
 		                         PURPLE_CALLBACK(jabber_chat_network_changed_cb));
 	selfping_network_connected = FALSE;
 	selfping_plugin = NULL;
+}
+
+/**************************************************************************
+ * M8 message semantics: XEP-0421 occupant ids of recent messages
+ **************************************************************************/
+
+#define JABBER_CHAT_OCCUPANT_CACHE 512
+
+static void
+occupant_note_one(JabberChat *chat, const char *id, const char *occupant_id)
+{
+	if (id == NULL || *id == '\0')
+		return;
+
+	if (g_hash_table_lookup(chat->occupant_ids, id) == NULL)
+		g_queue_push_tail(chat->occupant_keys, g_strdup(id));
+	g_hash_table_replace(chat->occupant_ids, g_strdup(id), g_strdup(occupant_id));
+
+	while (g_queue_get_length(chat->occupant_keys) > JABBER_CHAT_OCCUPANT_CACHE) {
+		char *old = g_queue_pop_head(chat->occupant_keys);
+		g_hash_table_remove(chat->occupant_ids, old);
+		g_free(old);
+	}
+}
+
+void
+jabber_chat_note_occupant(JabberChat *chat, const char *occupant_id,
+                          const char *id, const char *origin_id,
+                          const char *server_id)
+{
+	if (chat == NULL || occupant_id == NULL || *occupant_id == '\0')
+		return;
+
+	if (chat->occupant_ids == NULL) {
+		chat->occupant_ids = g_hash_table_new_full(g_str_hash, g_str_equal,
+		                                           g_free, g_free);
+		chat->occupant_keys = g_queue_new();
+	}
+
+	occupant_note_one(chat, id, occupant_id);
+	if (!purple_strequal(origin_id, id))
+		occupant_note_one(chat, origin_id, occupant_id);
+	if (!purple_strequal(server_id, id) && !purple_strequal(server_id, origin_id))
+		occupant_note_one(chat, server_id, occupant_id);
+}
+
+gboolean
+jabber_chat_occupant_mismatch(JabberChat *chat, const char *target_id,
+                              const char *occupant_id)
+{
+	const char *known;
+
+	if (chat == NULL || chat->occupant_ids == NULL || target_id == NULL ||
+	    occupant_id == NULL)
+		return FALSE;
+
+	known = g_hash_table_lookup(chat->occupant_ids, target_id);
+	return known != NULL && !purple_strequal(known, occupant_id);
 }
