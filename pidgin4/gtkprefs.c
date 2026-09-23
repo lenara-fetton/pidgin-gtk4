@@ -53,6 +53,7 @@
 #include "gtkutils.h"
 #include "pidginbackfill.h"
 #include "pidgincomposeentry.h"
+#include "pidginimageencode.h"
 #include "pidginmarkup.h"
 #include "pidginmessageindex.h"
 #include "pidginprefbinding.h"
@@ -166,6 +167,13 @@ prefs_register_pidgin4(void)
 	purple_prefs_add_none(CONV4_PREFS);
 	purple_prefs_add_string(CONV4_PREFS "/placement", "last");
 	purple_prefs_add_bool(CONV4_PREFS "/show_send_button", FALSE);
+
+	/* Pasted images: "auto" is JPEG for an opaque image whose JPEG is
+	 * smaller than its PNG, else PNG (pidginimageencode.c). */
+	purple_prefs_add_none(PIDGIN4_PREFS_ROOT "/images");
+	purple_prefs_add_string(PIDGIN4_PREFS_ROOT "/images/paste_format", "auto");
+	purple_prefs_add_int(PIDGIN4_PREFS_ROOT "/images/paste_jpeg_quality",
+	                     PIDGIN_IMAGE_ENCODE_DEFAULT_QUALITY);
 }
 
 /*
@@ -648,6 +656,15 @@ conv_page(void)
 
 	spin(vbox, _("Minimum input area height in lines:"),
 	     CONV_PREFS "/minimum_entry_lines", 1, 8, sg);
+	/* Pasted images (and dropped image data) */
+	dropdown_string(vbox, _("Send _pasted images as:"),
+	                PIDGIN4_PREFS_ROOT "/images/paste_format", sg,
+	                _("Automatic (JPEG for photos)"), "auto", _("PNG"), "png",
+	                _("JPEG"), "jpeg", NULL);
+	button = spin(vbox, _("_JPEG quality:"), PIDGIN4_PREFS_ROOT "/images/paste_jpeg_quality",
+	              50, 100, sg);
+	pidgin_pref_bind_insensitive_string(button, PIDGIN4_PREFS_ROOT "/images/paste_format",
+	                                    "png");
 	spin(vbox, _("_Scrollback (messages kept in a window):"),
 	     CONV_PREFS "/scrollback_lines", 100, 100000, sg);
 

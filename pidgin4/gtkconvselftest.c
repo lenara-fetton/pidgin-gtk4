@@ -260,6 +260,8 @@ set_steam_like(PurpleConversation *conv, gboolean steam)
 	pidgin_conv_update_buttons_by_protocol(conv);
 }
 
+static gboolean entry_has_anchor(PidginComposeEntry *entry);
+
 /* Drops a file on the conversation as a file manager would; returns the
  * buttons of the dialog it opened (NULL if none), and closes that. */
 static char *
@@ -354,7 +356,7 @@ test_images(PurpleConversation *conv)
 	pidgin_compose_entry_clear(entry);
 
 	/* Dropping an image: the prpl takes inline images, no file transfer,
-	 * the buddy isn't on the list */
+	 * the buddy isn't on the list. As a paste: inline, no question. */
 	id = add_test_image();
 	path = g_build_filename(purple_user_dir(), "selftest-drop.png", NULL);
 	CHECK(g_file_set_contents(path, purple_imgstore_get_data(purple_imgstore_find_by_id(id)),
@@ -362,8 +364,10 @@ test_images(PurpleConversation *conv)
 	      "writing %s", path);
 	purple_imgstore_unref_by_id(id);
 	buttons = drop_file(conv, path);
-	CHECK(purple_strequal(buttons, "Insert in Message|Cancel"), "drop offered %s", buttons);
+	CHECK(buttons == NULL, "drop asked %s", buttons);
+	CHECK(entry_has_anchor(entry), "the dropped image isn't in the entry");
 	g_free(buttons);
+	pidgin_compose_entry_clear(entry);
 
 	/* A protocol like Steam: no inline images (as Pidgin 2), and a drop
 	 * offers only the buddy icon */
@@ -577,6 +581,180 @@ test_send_to(PurpleConversation *conv)
 	pidgin_conv_window_update_menu(win);
 	CHECK(!win->send_to_shown && g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model)) ==
 	      (int)bar_items, "Send To left over");
+}
+
+/* Puts a 16x16 PNG texture on the clipboard, alone or with @text (a
+ * union provider, text first as apps offer it), and pastes as Ctrl+V. */
+static void
+paste_image_clipboard(PidginComposeEntry *entry, const char *text)
+{
+	GdkClipboard *clipboard = gtk_widget_get_clipboard(GTK_WIDGET(entry));
+	gsize len;
+	gpointer data = make_png(16, 16, &len);
+	GBytes *bytes = g_bytes_new_take(data, len);
+	GdkTexture *texture = gdk_texture_new_from_bytes(bytes, NULL);
+
+	if (text == NULL) {
+		gdk_clipboard_set_texture(clipboard, texture);
+	} else {
+		GdkContentProvider *providers[2];
+		GdkContentProvider *union_provider;
+
+		providers[0] = gdk_content_provider_new_typed(G_TYPE_STRING, text);
+		providers[1] = gdk_content_provider_new_typed(GDK_TYPE_TEXTURE, texture);
+		union_provider = gdk_content_provider_new_union(providers, 2);
+		gdk_clipboard_set_content(clipboard, union_provider);
+		g_object_unref(union_provider);
+	}
+	g_object_unref(texture);
+	g_bytes_unref(bytes);
+	spin(50);
+	g_signal_emit_by_name(entry, "paste-clipboard");
+	spin(400);
+}
+
+/* The files in <profile>/pidgin4/paste */
+static int
+count_paste_files(char **first)
+{
+	char *dir = g_build_filename(purple_user_dir(), "pidgin4", "paste", NULL);
+	GDir *d = g_dir_open(dir, 0, NULL);
+	const char *name;
+	int n = 0;
+
+	while (d != NULL && (name = g_dir_read_name(d)) != NULL) {
+		if (n++ == 0 && first != NULL)
+			*first = g_build_filename(dir, name, NULL);
+	}
+	if (d != NULL)
+		g_dir_close(d);
+	g_free(dir);
+	return n;
+}
+
+/* Pasting an image: (a) inline with OPT_PROTO_IM_IMAGE; (b) as a file
+ * transfer of <profile>/pidgin4/paste/pasted-*.png without it but with
+ * send_file (the file goes when the transfer ends); (c) a text paste
+ * with neither. Text next to the image wins unless it is blank. */
+static void
+test_paste_image(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
+	char *text, *path = NULL, *expect, *before;
+	PurpleXfer *xfer;
+	int files;
+
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+
+	/* (a) inline */
+	pidgin_selftest_prpl_set_caps(TRUE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(pidgin_compose_entry_get_paste_images(entry), "(a) images not pasted");
+	pidgin_compose_entry_clear(entry);
+	paste_image_clipboard(entry, NULL);
+	CHECK(entry_has_anchor(entry), "(a) no pasted image in the entry");
+	CHECK(pidgin_compose_entry_send(entry), "(a) send");
+	spin(300);
+	text = call("send-im") ? g_ascii_strdown(call("send-im"), -1) : NULL;
+	CHECK(text != NULL && strstr(text, "<img id=") != NULL, "(a) send-im: %s", call("send-im"));
+	g_free(text);
+
+	/* ... text next to the image wins; blank text doesn't */
+	pidgin_compose_entry_clear(entry);
+	paste_image_clipboard(entry, "cells as text");
+	text = pidgin_compose_entry_get_text(entry);
+	CHECK(purple_strequal(text, "cells as text") && !entry_has_anchor(entry),
+	      "(a) text and image pasted \"%s\"", text);
+	g_free(text);
+	pidgin_compose_entry_clear(entry);
+	paste_image_clipboard(entry, "  ");
+	CHECK(entry_has_anchor(entry), "(a) blank text and image: no image");
+	pidgin_compose_entry_clear(entry);
+
+	/* (b) a file transfer */
+	pidgin_selftest_prpl_set_caps(FALSE, TRUE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(pidgin_compose_entry_get_paste_images(entry), "(b) images not pasted");
+	files = count_paste_files(NULL);
+	paste_image_clipboard(entry, NULL);
+	CHECK(!entry_has_anchor(entry), "(b) image put inline");
+	CHECK(count_paste_files(&path) == files + 1, "(b) no pasted file");
+	{
+		char *base = path ? g_path_get_basename(path) : NULL;
+
+		CHECK(base != NULL && g_str_has_prefix(base, "pasted-") &&
+		      g_str_has_suffix(base, ".png"), "(b) pasted file %s", path);
+		g_free(base);
+	}
+	expect = g_strdup_printf(ST_BUDDY "|%s|", path);
+	CHECK(purple_strequal(call("send-file"), expect), "(b) send-file: %s (expected %s)",
+	      call("send-file"), expect);
+	g_free(expect);
+	{
+		/* ours, then libpurple's "Offering to send ..." */
+		gboolean status = FALSE;
+		guint i, n = n_messages(conv);
+
+		for (i = n > 3 ? n - 3 : 0; i < n; i++)
+			if (strstr(pidgin_message_get_html(nth_message(conv, i)),
+			           "Sending the image pasted-") != NULL)
+				status = TRUE;
+		CHECK(status, "(b) no status line");
+	}
+	xfer = pidgin_selftest_prpl_get_last_xfer();
+	CHECK(xfer != NULL, "(b) no transfer");
+	if (xfer != NULL) {
+		purple_xfer_cancel_local(xfer);
+		pidgin_selftest_prpl_forget_xfer();
+		spin(300);
+		CHECK(path == NULL || !g_file_test(path, G_FILE_TEST_EXISTS),
+		      "(b) %s left after the transfer ended", path);
+	}
+	g_free(path);
+	path = NULL;
+
+	/* ... encoded by /pidgin4/images/paste_format: JPEG, named .jpg */
+	purple_prefs_set_string(PIDGIN4_PREFS_ROOT "/images/paste_format", "jpeg");
+	files = count_paste_files(NULL);
+	paste_image_clipboard(entry, NULL);
+	CHECK(count_paste_files(&path) == files + 1 && g_str_has_suffix(path, ".jpg"),
+	      "(b) JPEG paste saved %s", path);
+	CHECK(call("send-file") != NULL && g_str_has_suffix(call("send-file"), ".jpg|"),
+	      "(b) JPEG send-file: %s", call("send-file"));
+	purple_prefs_set_string(PIDGIN4_PREFS_ROOT "/images/paste_format", "auto");
+	xfer = pidgin_selftest_prpl_get_last_xfer();
+	if (xfer != NULL) {
+		purple_xfer_cancel_local(xfer);
+		pidgin_selftest_prpl_forget_xfer();
+		spin(300);
+	}
+	CHECK(path == NULL || !g_file_test(path, G_FILE_TEST_EXISTS), "(b) %s left", path);
+	g_free(path);
+
+	/* (c) neither: the text paste, and nothing else */
+	pidgin_selftest_prpl_set_caps(FALSE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(!pidgin_compose_entry_get_paste_images(entry), "(c) images pasted");
+	before = g_strdup(call("send-file"));
+	files = count_paste_files(NULL);
+	pidgin_compose_entry_clear(entry);
+	paste_image_clipboard(entry, NULL);
+	CHECK(pidgin_compose_entry_is_empty(entry) && !entry_has_anchor(entry),
+	      "(c) something was pasted");
+	CHECK(count_paste_files(NULL) == files, "(c) a file was saved");
+	CHECK(purple_strequal(call("send-file"), before), "(c) send-file: %s", call("send-file"));
+	g_free(before);
+	pidgin_compose_entry_clear(entry);
+	paste_image_clipboard(entry, "just text");
+	text = pidgin_compose_entry_get_text(entry);
+	CHECK(purple_strequal(text, "just text"), "(c) text paste \"%s\"", text);
+	g_free(text);
+	pidgin_compose_entry_clear(entry);
+
+	pidgin_selftest_prpl_set_caps(TRUE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	hold("paste image");
 }
 
 static gboolean
@@ -1031,6 +1209,7 @@ selftest_run(gpointer data)
 	test_im(&im);
 	test_chat(&chat);
 	test_attention(im);
+	test_paste_image(im);
 	test_send_to(im);
 	spin(200);
 

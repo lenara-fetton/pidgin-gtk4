@@ -195,6 +195,7 @@ components_sources = files(
 	'pidginmessageindex.c',
 	'pidginbackfill.c',
 	'pidginimageloader.c',
+	'pidginimageencode.c',
 	'pidginmessageview.c',
 	'pidgincomposeentry.c',
 	'pidginformattoolbar.c',
@@ -293,6 +294,7 @@ component_tests = [
 	'messageindex',
 	'backfill',
 	'imageloader',
+	'imageencode',
 	'nickcolor',
 	'convmeta',
 ]

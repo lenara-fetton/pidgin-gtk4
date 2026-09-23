@@ -363,10 +363,19 @@ is best), another IRC client, the Discord web client.
 - [ ] Smileys: the toolbar's smiley picker inserts them; received
       shortcuts show as the theme's images.
 - [ ] Images: Insert Image (IM on protocols with images); dropping an
-      image file on an IM asks to send it as a file or insert it; any
-      other file is sent (HTTP upload on XMPP when the server has it).
-      Our own upload's URL, and images on the account's own XMPP domain,
-      show inline; Discord CDN images show inline.
+      image file on an IM does what a paste does (below); only where
+      neither works does it offer "Set as Buddy Icon"; any other file is
+      sent (HTTP upload on XMPP when the server has it). Our own upload's
+      URL, and images on the account's own XMPP domain, show inline;
+      Discord CDN images show inline.
+- [ ] Paste a screenshot (Ctrl+V, or right click → Paste Image) into an
+      XMPP chat: it uploads (HTTP upload; a "Sending the image
+      pasted-….png as a file." line, then the transfer lines), and
+      `~/.purple…/pidgin4/paste/` is empty again once it finished. Into
+      a Discord DM: the image appears in the entry inline. Copy
+      spreadsheet cells (text and an image on the clipboard): Ctrl+V
+      pastes the text. A photo pastes as `.jpg` with Preferences →
+      Conversations → "Send pasted images as" Automatic, `.png` with PNG.
 - [ ] `/help`, `/me waves`, `/clear`, `/debug version`, and a protocol
       command (`/topic`, `/nick`, `/op` on IRC; `/role` on XMPP).
 - [ ] Chat user list: ops first, then voiced, buddies bold; right click

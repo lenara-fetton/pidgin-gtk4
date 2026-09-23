@@ -247,6 +247,17 @@ void pidgin_conv_action(PidginConversation *gtkconv, const char *action);
 /** Fills Conversation → More: the prpl's extended menu. */
 void pidgin_conv_fill_more_menu(PidginConversation *gtkconv, GMenu *menu,
                                 GSimpleActionGroup *group);
+/**
+ * An image for @gtkconv (a paste, or a dropped image file), by one rule:
+ * inline in the message if the conversation takes inline images (as
+ * Insert Image), else sent as a file if the prpl can send this
+ * conversation one (as Send File; @png is saved as
+ * <profile>/pidgin4/paste/@filename and deleted once the transfer ends),
+ * else not taken. @png: the image (PNG for pastes); @filename: its name
+ * (e.g. pasted-<time>.png). Returns whether it was taken.
+ */
+gboolean pidgin_conv_offer_image(PidginConversation *gtkconv, GBytes *png, const char *filename);
+
 /** Whether @action ("send-file", "invite", ...) applies to @gtkconv now. */
 gboolean pidgin_conv_action_enabled(PidginConversation *gtkconv, const char *action);
 

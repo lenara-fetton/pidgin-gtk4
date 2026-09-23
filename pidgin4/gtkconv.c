@@ -32,12 +32,15 @@
 #include "pidgin-internal.h"
 #include "pidgin.h"
 
+#include <glib/gstdio.h>
+
 #include "account.h"
 #include "blist.h"
 #include "buddyicon.h"
 #include "cmds.h"
 #include "core.h"
 #include "debug.h"
+#include "ft.h"
 #include "idle.h"
 #include "imgstore.h"
 #include "log.h"
@@ -57,6 +60,7 @@
 #include "pidginanimation.h"
 #include "pidginblistmodel.h"
 #include "pidgincomposeentry.h"
+#include "pidginimageencode.h"
 #include "pidginconvmeta.h"
 #include "pidginformattoolbar.h"
 #include "pidginmarkup.h"
@@ -70,6 +74,8 @@
 #define BUDDY_ICON_SIZE 32          /* the infopane's, as Pidgin 2's */
 
 static void update_tab_and_infopane(PidginConversation *gtkconv);
+typedef enum { IMAGE_OFFER_NONE, IMAGE_OFFER_INLINE, IMAGE_OFFER_FILE } ImageOffer;
+static ImageOffer image_offer(PidginConversation *gtkconv);
 static void update_typing(PidginConversation *gtkconv);
 static void chat_users_update_count(PidginConversation *gtkconv);
 static void cancel_banner(PidginConversation *gtkconv);
@@ -1011,6 +1017,8 @@ update_features(PidginConversation *gtkconv)
 		(prpl_info && (prpl_info->options & OPT_PROTO_USE_POINTSIZE))
 			? PIDGIN_MARKUP_USE_POINTSIZE : 0);
 	pidgin_compose_entry_set_smiley_category(entry, purple_account_get_protocol_name(account));
+	/* a pasted image goes inline or as a file, if either (see offer_image) */
+	pidgin_compose_entry_set_paste_images(entry, image_offer(gtkconv) != IMAGE_OFFER_NONE);
 	if (gtkconv->toolbar != NULL) {
 		pidgin_format_toolbar_update(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar));
 		/* Pidgin 2's toolbar "Attention!" button, for IMs */
@@ -1697,28 +1705,272 @@ entry_key_cb(GtkEventControllerKey *ctl, guint keyval, guint keycode,
 }
 
 /**************************************************************************
- * Drag and drop
+ * Images: paste and drop (one rule)
+ *
+ * A pasted image and a dropped image file go the same way
+ * (pidgin_conv_offer_image()):
+ *  (a) inline in the message, if the conversation takes inline images
+ *      (an IM on a prpl with OPT_PROTO_IM_IMAGE whose connection doesn't
+ *      say PURPLE_CONNECTION_NO_IMAGES: what enables Insert Image);
+ *  (b) else as a file transfer, if the prpl can send this conversation a
+ *      file (IM: send_file and can_receive_file; chat: chat_send_file and
+ *      chat_can_receive_file: what enables Send File). XMPP sends it by
+ *      HTTP upload. A pasted image is saved first as
+ *      <profile>/pidgin4/paste/pasted-<time>.png (or .jpg: pasted and
+ *      dropped image data is encoded by the /pidgin4/images/paste_format
+ *      and paste_jpeg_quality prefs, see pidginimageencode.h), deleted when the
+ *      transfer completes or is cancelled (and, for transfers that never
+ *      end, at the next start once a day old); a dropped file is sent as
+ *      it is;
+ *  (c) else it is not taken: a paste pastes the clipboard's text, and a
+ *      drop offers, as Pidgin 2 did, to make it the buddy icon (IMs with
+ *      the buddy on the list), or does nothing.
  **************************************************************************/
 
-typedef enum
+#define PASTE_MAX_AGE (24 * 60 * 60)
+
+static ImageOffer
+image_offer(PidginConversation *gtkconv)
 {
-	DROP_FILE_TRANSFER,
-	DROP_IM_IMAGE,
-	DROP_BUDDY_ICON
-} DropChoice;
+	PurpleConversation *conv = gtkconv->active_conv;
+
+	if (purple_conversation_get_gc(conv) == NULL)
+		return IMAGE_OFFER_NONE;
+	if (pidgin_conv_action_enabled(gtkconv, "insert-image") &&
+	    !(conv->features & PURPLE_CONNECTION_NO_IMAGES))
+		return IMAGE_OFFER_INLINE;
+	if (pidgin_conv_action_enabled(gtkconv, "send-file"))
+		return IMAGE_OFFER_FILE;
+	return IMAGE_OFFER_NONE;
+}
+
+static char *
+paste_dir(void)
+{
+	return g_build_filename(purple_user_dir(), "pidgin4", "paste", NULL);
+}
+
+static gboolean
+is_paste_file(const char *path)
+{
+	char *dir = paste_dir();
+	char *parent = path ? g_path_get_dirname(path) : NULL;
+	gboolean ret = parent != NULL && purple_strequal(parent, dir);
+
+	g_free(parent);
+	g_free(dir);
+	return ret;
+}
+
+static gboolean
+unlink_paste_file(gpointer data)
+{
+	if (g_unlink(data) == 0)
+		purple_debug_info("gtkconv", "removed the pasted image %s\n", (char *)data);
+	return G_SOURCE_REMOVE;
+}
+
+/* file-send-complete / file-send-cancel: a pasted image's transfer ended */
+static void
+paste_xfer_done_cb(PurpleXfer *xfer, gpointer data)
+{
+	const char *path = purple_xfer_get_local_filename(xfer);
+
+	/* after the prpl's own handlers, which may still close the file */
+	if (is_paste_file(path))
+		g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, unlink_paste_file, g_strdup(path), g_free);
+}
+
+/* Pasted images whose transfer never ended (the prpl never made one, or
+ * pidgin4 quit first), once a day old. */
+static void
+paste_dir_cleanup(void)
+{
+	char *dir = paste_dir();
+	GDir *d = g_dir_open(dir, 0, NULL);
+	const char *name;
+	gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+
+	while (d != NULL && (name = g_dir_read_name(d)) != NULL) {
+		char *path = g_build_filename(dir, name, NULL);
+		GStatBuf st;
+
+		if (g_stat(path, &st) == 0 && S_ISREG(st.st_mode) &&
+		    now - (gint64)st.st_mtime > PASTE_MAX_AGE)
+			g_unlink(path);
+		g_free(path);
+	}
+	if (d != NULL)
+		g_dir_close(d);
+	g_free(dir);
+}
+
+/* <profile>/pidgin4/paste/<filename>, made unique */
+static char *
+save_paste_file(GBytes *data, const char *filename)
+{
+	char *dir = paste_dir();
+	char *base = g_path_get_basename(filename);
+	const char *dot = strrchr(base, '.');
+	char *stem = g_strndup(base, dot ? (gsize)(dot - base) : strlen(base));
+	char *path = g_build_filename(dir, base, NULL);
+	GError *error = NULL;
+	int i;
+
+	g_mkdir_with_parents(dir, 0700);
+	for (i = 2; g_file_test(path, G_FILE_TEST_EXISTS) && i < 1000; i++) {
+		char *name = g_strdup_printf("%s-%d%s", stem, i, dot ? dot : "");
+
+		g_free(path);
+		path = g_build_filename(dir, name, NULL);
+		g_free(name);
+	}
+	if (!g_file_set_contents(path, g_bytes_get_data(data, NULL), g_bytes_get_size(data),
+	                         &error)) {
+		purple_debug_error("gtkconv", "saving the pasted image: %s\n", error->message);
+		g_error_free(error);
+		g_clear_pointer(&path, g_free);
+	}
+	g_free(stem);
+	g_free(base);
+	g_free(dir);
+	return path;
+}
+
+static void
+send_file_now(PidginConversation *gtkconv, const char *path)
+{
+	PurpleConversation *conv = gtkconv->active_conv;
+	PurpleConnection *gc = purple_conversation_get_gc(conv);
+
+	if (gc == NULL)
+		return;
+	if (is_chat(gtkconv))
+		serv_chat_send_file(gc, purple_conv_chat_get_id(PURPLE_CONV_CHAT(conv)), path);
+	else
+		serv_send_file(gc, purple_conversation_get_name(conv), path);
+}
+
+/* The rule above. @source_path: the dropped file (sent as it is, and read
+ * only when inlined), or NULL for @data. */
+static gboolean
+offer_image(PidginConversation *gtkconv, GBytes *data, const char *filename,
+            const char *source_path)
+{
+	PurpleConversation *conv = gtkconv->active_conv;
+	ImageOffer offer = image_offer(gtkconv);
+
+	if (offer == IMAGE_OFFER_INLINE) {
+		GBytes *bytes = data ? g_bytes_ref(data) : NULL;
+		gsize len;
+		int id;
+
+		if (bytes == NULL) {
+			char *contents = NULL;
+
+			if (!g_file_get_contents(source_path, &contents, &len, NULL))
+				return FALSE;
+			bytes = g_bytes_new_take(contents, len);
+		}
+		len = g_bytes_get_size(bytes);
+		id = purple_imgstore_add_with_id(g_memdup2(g_bytes_get_data(bytes, NULL), len), len,
+		                                 filename);
+		g_bytes_unref(bytes);
+		if (id == 0)
+			return FALSE;
+		pidgin_compose_entry_insert_image(conv_entry(gtkconv), id);
+		purple_imgstore_unref_by_id(id);    /* the entry holds its own */
+		gtk_widget_grab_focus(gtkconv->entry);
+		return TRUE;
+	}
+
+	if (offer == IMAGE_OFFER_FILE) {
+		char *path = source_path ? g_strdup(source_path) : save_paste_file(data, filename);
+		char *base, *msg;
+
+		if (path == NULL)
+			return FALSE;
+		base = g_markup_escape_text(filename, -1);
+		msg = g_strdup_printf(_("Sending the image %s as a file."), base);
+		purple_conversation_write(conv, NULL, msg,
+		                          PURPLE_MESSAGE_SYSTEM | PURPLE_MESSAGE_NO_LOG, time(NULL));
+		g_free(msg);
+		g_free(base);
+		send_file_now(gtkconv, path);
+		g_free(path);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+gboolean
+pidgin_conv_offer_image(PidginConversation *gtkconv, GBytes *png, const char *filename)
+{
+	g_return_val_if_fail(gtkconv != NULL, FALSE);
+	g_return_val_if_fail(png != NULL && filename != NULL, FALSE);
+
+	return offer_image(gtkconv, png, filename, NULL);
+}
+
+/* A pasted (or dropped) image's data: encoded by the paste_format and
+ * paste_jpeg_quality prefs (pidginimageencode.c), named
+ * pasted-<time>.png or .jpg. */
+static gboolean
+offer_texture(PidginConversation *gtkconv, GdkTexture *texture)
+{
+	const char *ext = "png";
+	GBytes *data;
+	GDateTime *now;
+	char *stamp, *filename;
+	gboolean ret;
+
+	if (image_offer(gtkconv) == IMAGE_OFFER_NONE)
+		return FALSE;
+	data = pidgin_image_encode_for_paste(texture, &ext);
+	now = g_date_time_new_now_local();
+	stamp = g_date_time_format(now, "%Y%m%d-%H%M%S");
+	filename = g_strdup_printf("pasted-%s.%s", stamp, ext);
+	ret = pidgin_conv_offer_image(gtkconv, data, filename);
+	g_free(filename);
+	g_free(stamp);
+	g_date_time_unref(now);
+	g_bytes_unref(data);
+	return ret;
+}
+
+/* The compose entry's "paste-image" */
+static gboolean
+entry_paste_image_cb(PidginComposeEntry *entry, GdkTexture *texture,
+                     PidginConversation *gtkconv)
+{
+	return offer_texture(gtkconv, texture);
+}
+
+/* A dropped image file (its name, not its path, in the imgstore). */
+static gboolean
+offer_image_path(PidginConversation *gtkconv, const char *path)
+{
+	char *base = g_path_get_basename(path);
+	gboolean ret = offer_image(gtkconv, NULL, base, path);
+
+	g_free(base);
+	return ret;
+}
+
+/**************************************************************************
+ * Drag and drop
+ **************************************************************************/
 
 typedef struct
 {
 	PidginConversation *gtkconv;
 	char *path;
-	DropChoice choices[3];
-	int n_choices;
-} ImageDrop;
+} IconDrop;
 
 static void
-image_drop_cb(GObject *source, GAsyncResult *res, gpointer data)
+icon_drop_cb(GObject *source, GAsyncResult *res, gpointer data)
 {
-	ImageDrop *drop = data;
+	IconDrop *drop = data;
 	int button = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), res, NULL);
 	PurpleConversation *conv = NULL;
 	GList *l;
@@ -1728,24 +1980,7 @@ image_drop_cb(GObject *source, GAsyncResult *res, gpointer data)
 		if (PIDGIN_CONVERSATION((PurpleConversation *)l->data) == drop->gtkconv)
 			conv = l->data;
 
-	if (conv == NULL || button < 0 || button >= drop->n_choices) {
-		/* cancelled */
-	} else if (drop->choices[button] == DROP_FILE_TRANSFER) {
-		serv_send_file(purple_conversation_get_gc(conv), purple_conversation_get_name(conv),
-		               drop->path);
-	} else if (drop->choices[button] == DROP_IM_IMAGE) {
-		char *contents = NULL;
-		gsize len = 0;
-
-		if (g_file_get_contents(drop->path, &contents, &len, NULL)) {
-			char *base = g_path_get_basename(drop->path);
-			int id = purple_imgstore_add_with_id(contents, len, base);
-
-			pidgin_compose_entry_insert_image(conv_entry(drop->gtkconv), id);
-			purple_imgstore_unref_by_id(id);
-			g_free(base);
-		}
-	} else if (drop->choices[button] == DROP_BUDDY_ICON) {
+	if (conv != NULL && button == 0) {
 		PurpleBuddy *buddy = purple_find_buddy(purple_conversation_get_account(conv),
 		                                       purple_conversation_get_name(conv));
 
@@ -1762,69 +1997,29 @@ send_file_to(PidginConversation *gtkconv, const char *path)
 {
 	PurpleConversation *conv = gtkconv->active_conv;
 	PurpleConnection *gc = purple_conversation_get_gc(conv);
-	PurplePluginProtocolInfo *prpl_info = conv_prpl_info(conv);
 	const char *who = purple_conversation_get_name(conv);
-	gboolean ft, im, icon;
 	char *type;
 
-	if (gc == NULL || prpl_info == NULL)
+	if (gc == NULL || conv_prpl_info(conv) == NULL)
 		return;
-
-	if (is_chat(gtkconv)) {
-		serv_chat_send_file(gc, purple_conv_chat_get_id(PURPLE_CONV_CHAT(conv)), path);
-		return;
-	}
-
-	/* Images: what Pidgin 2 offered (pidgin_dnd_file_manage). A file
-	 * transfer if the prpl can send one, the message if the entry takes
-	 * images (only prpls with OPT_PROTO_IM_IMAGE), and the buddy icon. */
-	if (prpl_info->can_receive_file != NULL)
-		ft = prpl_info->can_receive_file(gc, who);
-	else
-		ft = prpl_info->send_file != NULL;
-	im = (pidgin_compose_entry_get_caps(conv_entry(gtkconv)) & PIDGIN_FORMAT_IMAGE) &&
-	     !(conv->features & PURPLE_CONNECTION_NO_IMAGES);
-	icon = purple_find_buddy(purple_conversation_get_account(conv), who) != NULL;
 
 	type = g_content_type_guess(path, NULL, 0, NULL);
-	if (type != NULL && g_content_type_is_a(type, "image/*") && (im || icon)) {
+	if (type == NULL || !g_content_type_is_a(type, "image/*")) {
+		send_file_now(gtkconv, path);
+	} else if (offer_image_path(gtkconv, path)) {
+		/* images: as a paste (see "Images: paste and drop") */
+	} else if (!is_chat(gtkconv) &&
+	           purple_find_buddy(purple_conversation_get_account(conv), who) != NULL) {
+		/* Neither inline nor as a file: Pidgin 2's third choice. */
 		GtkAlertDialog *dialog = gtk_alert_dialog_new(_("You have dragged an image"));
-		ImageDrop *drop = g_new0(ImageDrop, 1);
+		IconDrop *drop = g_new0(IconDrop, 1);
 		GCancellable *cancel;
-		const char *buttons[5];
-		int n = 0;
+		const char *buttons[] = { _("Set as Buddy Icon"), _("Cancel"), NULL };
 
-		if (ft) {
-			drop->choices[n] = DROP_FILE_TRANSFER;
-			buttons[n++] = _("Send Image File");
-		}
-		if (im) {
-			drop->choices[n] = DROP_IM_IMAGE;
-			buttons[n++] = _("Insert in Message");
-		}
-		if (icon) {
-			drop->choices[n] = DROP_BUDDY_ICON;
-			buttons[n++] = _("Set as Buddy Icon");
-		}
-		drop->n_choices = n;
-		buttons[n] = _("Cancel");
-		buttons[n + 1] = NULL;
-
-		if (ft && im)
-			gtk_alert_dialog_set_detail(dialog, _("You can send this image as a file "
-				"transfer, embed it into this message, or use it as the buddy icon for "
-				"this user."));
-		else if (ft)
-			gtk_alert_dialog_set_detail(dialog, _("You can send this image as a file "
-				"transfer, or use it as the buddy icon for this user."));
-		else if (im)
-			gtk_alert_dialog_set_detail(dialog, _("You can insert this image into this "
-				"message, or use it as the buddy icon for this user"));
-		else
-			gtk_alert_dialog_set_detail(dialog, _("Would you like to set it as the buddy "
-				"icon for this user?"));
+		gtk_alert_dialog_set_detail(dialog, _("Would you like to set it as the buddy "
+			"icon for this user?"));
 		gtk_alert_dialog_set_buttons(dialog, buttons);
-		gtk_alert_dialog_set_cancel_button(dialog, n);
+		gtk_alert_dialog_set_cancel_button(dialog, 1);
 		drop->gtkconv = gtkconv;
 		drop->path = g_strdup(path);
 		cancel = g_cancellable_new();
@@ -1834,11 +2029,9 @@ send_file_to(PidginConversation *gtkconv, const char *path)
 		g_object_set_data_full(G_OBJECT(gtkconv->tab_cont), "pidgin-image-drop-cancel",
 		                       g_object_ref(cancel), g_object_unref);
 		gtk_alert_dialog_choose(dialog, GTK_WINDOW(gtk_widget_get_root(gtkconv->tab_cont)),
-		                        cancel, image_drop_cb, drop);
+		                        cancel, icon_drop_cb, drop);
 		g_object_unref(cancel);
 		g_object_unref(dialog);
-	} else {
-		serv_send_file(gc, who, path);
 	}
 	g_free(type);
 }
@@ -1868,6 +2061,11 @@ conv_drop_cb(GtkDropTarget *target, const GValue *value, double x, double y,
 			                            purple_buddy_get_name(buddy));
 		return TRUE;
 	}
+
+	/* Image data (dragged out of a browser or an image viewer without a
+	 * file): as a paste. */
+	if (G_VALUE_HOLDS(value, GDK_TYPE_TEXTURE))
+		return offer_texture(gtkconv, g_value_get_object(value));
 
 	if (G_VALUE_HOLDS(value, GDK_TYPE_FILE_LIST)) {
 		GSList *files = g_value_get_boxed(value), *l;
@@ -2114,6 +2312,7 @@ setup_common_pane(PidginConversation *gtkconv)
 	g_signal_connect(entry, "message-send", G_CALLBACK(entry_send_cb), gtkconv);
 	g_signal_connect(entry, "typing-changed", G_CALLBACK(typing_changed_cb), gtkconv);
 	g_signal_connect(entry, "edit-last-requested", G_CALLBACK(edit_last_cb), gtkconv);
+	g_signal_connect(entry, "paste-image", G_CALLBACK(entry_paste_image_cb), gtkconv);
 	keys = gtk_event_controller_key_new();
 	gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
 	g_signal_connect(keys, "key-pressed", G_CALLBACK(entry_key_cb), gtkconv);
@@ -2226,7 +2425,8 @@ private_gtkconv_new(PurpleConversation *conv, gboolean hidden)
 	PurpleValue *value;
 	GtkWidget *pane;
 	GtkDropTarget *drop;
-	GType drop_types[] = { PIDGIN_TYPE_BLIST_NODE_ITEM, GDK_TYPE_FILE_LIST };
+	/* in order of preference: a file is sent as it is */
+	GType drop_types[] = { PIDGIN_TYPE_BLIST_NODE_ITEM, GDK_TYPE_FILE_LIST, GDK_TYPE_TEXTURE };
 
 	gtkconv = g_new0(PidginConversation, 1);
 	conv->ui_data = gtkconv;
@@ -3638,6 +3838,13 @@ pidgin_conversations_init(void)
 	purple_signal_connect_priority(conv_handle, "conversation-updated", handle,
 	                               PURPLE_CALLBACK(pidgin_conv_updated), NULL,
 	                               PURPLE_SIGNAL_PRIORITY_LOWEST);
+
+	/* pasted images sent as files (see "Images: paste and drop") */
+	purple_signal_connect(purple_xfers_get_handle(), "file-send-complete", handle,
+	                      PURPLE_CALLBACK(paste_xfer_done_cb), NULL);
+	purple_signal_connect(purple_xfers_get_handle(), "file-send-cancel", handle,
+	                      PURPLE_CALLBACK(paste_xfer_done_cb), NULL);
+	paste_dir_cleanup();
 }
 
 void

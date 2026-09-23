@@ -10,6 +10,7 @@
 #define _PIDGIN_SELFTEST_PRPL_H_
 
 #include "account.h"
+#include "ft.h"
 #include "plugin.h"
 
 #define PIDGIN_SELFTEST_PRPL_ID "prpl-pidgin4-selftest"
@@ -29,6 +30,22 @@ void pidgin_selftest_account_remove(PurpleAccount *account);
  * or of the "op" command ("cmd-op"), joined with '|', or NULL.
  */
 const char *pidgin_selftest_prpl_get_call(const char *command);
+
+/**
+ * Toggles OPT_PROTO_IM_IMAGE and file transfer (send_file,
+ * can_receive_file, chat_send_file, chat_can_receive_file; recorded as
+ * "send-file" and "chat-send-file"). The defaults: images, no files. Call
+ * pidgin_conv_update_buttons_by_protocol() after.
+ */
+void pidgin_selftest_prpl_set_caps(gboolean im_images, gboolean files);
+
+/**
+ * The transfer the last send_file / chat_send_file with a file started
+ * (accepted, never progressing), or NULL. The test ends it (e.g.
+ * purple_xfer_cancel_local()) and then calls forget_xfer().
+ */
+PurpleXfer *pidgin_selftest_prpl_get_last_xfer(void);
+void pidgin_selftest_prpl_forget_xfer(void);
 
 /** Runs the main loop for @ms milliseconds. */
 void pidgin_selftest_spin(guint ms);
