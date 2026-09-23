@@ -154,6 +154,8 @@ components_sources = files(
 	'pidginrichlabel.c',
 	'pidginnickcolor.c',
 	'pidginanimation.c',
+	# M6: the tray's menu exporter (GIO only).
+	'pidgindbusmenu.c',
 )
 
 components_lib = static_library('pidgin4-components',
@@ -251,6 +253,14 @@ selftest_env.set('PIDGIN4_MSGVIEW_SELFTEST', 'meson')
 selftest_env.set('GSETTINGS_BACKEND', 'memory')
 test('msgview-selftest', msgview_demo, env : selftest_env, timeout : 300,
      suite : 'gui')
+
+# M6: desktop integration tests. All run on a private bus (GTestDBus);
+# none needs a display or the session bus.
+test_dbusmenu = executable('test-dbusmenu',
+	'tests/test-dbusmenu.c', 'pidgindbusmenu.c',
+	dependencies : [glib_dep, gio_dep, gobject_dep],
+	install : false)
+test('dbusmenu', test_dbusmenu, timeout : 60)
 
 desktop_validate = find_program('desktop-file-validate', required : false)
 if desktop_validate.found()
