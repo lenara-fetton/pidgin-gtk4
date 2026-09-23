@@ -429,6 +429,64 @@ pidgin_compose_entry_clear_formatting(PidginComposeEntry *entry)
 }
 
 /**************************************************************************
+ * Spell checking
+ **************************************************************************/
+
+static void
+collect_error_tag(GtkTextTag *tag, gpointer data)
+{
+	char *name = NULL;
+	PangoUnderline underline = PANGO_UNDERLINE_NONE;
+
+	g_object_get(tag, "name", &name, "underline", &underline, NULL);
+	if (name == NULL && underline == PANGO_UNDERLINE_ERROR)
+		*(GSList **)data = g_slist_prepend(*(GSList **)data, tag);
+	g_free(name);
+}
+
+/* (Re)creates the libspelling adapter. It follows the buffer through
+ * GtkTextBuffer's commit notifications, which GTK 4.22 sends for text
+ * and for deletions, but not for inserted child anchors (images and
+ * smileys). Its region then gets shorter than the buffer, and deleting
+ * an anchor (clearing the entry after sending) aborts in libspelling
+ * ("_cjh_text_region_remove: assertion failed"). A new adapter starts
+ * from the buffer's current length, so this runs after each anchor. */
+static void
+spelling_setup(PidginComposeEntry *entry)
+{
+	GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry));
+	SpellingTextBufferAdapter *old = entry->spelling;
+	gboolean enabled;
+	GSList *stale = NULL, *l;
+
+	if (old != NULL) {
+		enabled = spelling_text_buffer_adapter_get_enabled(old);
+		/* its misspelling tag stays in the table otherwise */
+		gtk_text_tag_table_foreach(gtk_text_buffer_get_tag_table(buffer),
+		                           collect_error_tag, &stale);
+	} else {
+		enabled = pref_bool(PIDGIN_PREFS_ROOT "/conversations/spellcheck", TRUE);
+	}
+
+	entry->spelling = spelling_text_buffer_adapter_new(GTK_SOURCE_BUFFER(buffer),
+	                                                   spelling_checker_get_default());
+	gtk_text_view_set_extra_menu(GTK_TEXT_VIEW(entry),
+		spelling_text_buffer_adapter_get_menu_model(entry->spelling));
+	gtk_widget_insert_action_group(GTK_WIDGET(entry), "spelling",
+	                               G_ACTION_GROUP(entry->spelling));
+	spelling_text_buffer_adapter_set_enabled(entry->spelling, enabled);
+
+	if (old != NULL) {
+		/* disconnects it from the buffer even if something still holds it */
+		g_object_run_dispose(G_OBJECT(old));
+		g_object_unref(old);
+		for (l = stale; l != NULL; l = l->next)
+			gtk_text_tag_table_remove(gtk_text_buffer_get_tag_table(buffer), l->data);
+		g_slist_free(stale);
+	}
+}
+
+/**************************************************************************
  * Inline objects
  **************************************************************************/
 
@@ -466,6 +524,7 @@ insert_anchor(PidginComposeEntry *entry, GtkTextIter *iter, GdkPaintable *painta
 	gtk_text_buffer_insert_child_anchor(buffer, iter, anchor);
 	gtk_text_view_add_child_at_anchor(GTK_TEXT_VIEW(entry), picture, anchor);
 	g_object_unref(anchor);
+	spelling_setup(entry);
 }
 
 static GdkPaintable *
@@ -1096,13 +1155,7 @@ pidgin_compose_entry_init(PidginComposeEntry *entry)
 	g_signal_connect(buffer, "changed", G_CALLBACK(buffer_changed_cb), entry);
 
 	/* libspelling: suggestions in the context menu, the shared pref */
-	entry->spelling = spelling_text_buffer_adapter_new(buffer, spelling_checker_get_default());
-	gtk_text_view_set_extra_menu(GTK_TEXT_VIEW(entry),
-		spelling_text_buffer_adapter_get_menu_model(entry->spelling));
-	gtk_widget_insert_action_group(GTK_WIDGET(entry), "spelling",
-	                               G_ACTION_GROUP(entry->spelling));
-	spelling_text_buffer_adapter_set_enabled(entry->spelling,
-		pref_bool(PIDGIN_PREFS_ROOT "/conversations/spellcheck", TRUE));
+	spelling_setup(entry);
 
 	keys = gtk_event_controller_key_new();
 	gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);

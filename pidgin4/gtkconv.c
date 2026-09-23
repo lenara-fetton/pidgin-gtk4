@@ -1694,10 +1694,19 @@ entry_key_cb(GtkEventControllerKey *ctl, guint keyval, guint keycode,
  * Drag and drop
  **************************************************************************/
 
+typedef enum
+{
+	DROP_FILE_TRANSFER,
+	DROP_IM_IMAGE,
+	DROP_BUDDY_ICON
+} DropChoice;
+
 typedef struct
 {
 	PidginConversation *gtkconv;
 	char *path;
+	DropChoice choices[3];
+	int n_choices;
 } ImageDrop;
 
 static void
@@ -1713,10 +1722,12 @@ image_drop_cb(GObject *source, GAsyncResult *res, gpointer data)
 		if (PIDGIN_CONVERSATION((PurpleConversation *)l->data) == drop->gtkconv)
 			conv = l->data;
 
-	if (conv != NULL && button == 0) {
+	if (conv == NULL || button < 0 || button >= drop->n_choices) {
+		/* cancelled */
+	} else if (drop->choices[button] == DROP_FILE_TRANSFER) {
 		serv_send_file(purple_conversation_get_gc(conv), purple_conversation_get_name(conv),
 		               drop->path);
-	} else if (conv != NULL && button == 1) {
+	} else if (drop->choices[button] == DROP_IM_IMAGE) {
 		char *contents = NULL;
 		gsize len = 0;
 
@@ -1728,6 +1739,13 @@ image_drop_cb(GObject *source, GAsyncResult *res, gpointer data)
 			purple_imgstore_unref_by_id(id);
 			g_free(base);
 		}
+	} else if (drop->choices[button] == DROP_BUDDY_ICON) {
+		PurpleBuddy *buddy = purple_find_buddy(purple_conversation_get_account(conv),
+		                                       purple_conversation_get_name(conv));
+
+		if (buddy != NULL)
+			purple_buddy_icons_node_set_custom_icon_from_file(
+				(PurpleBlistNode *)purple_buddy_get_contact(buddy), drop->path);
 	}
 	g_free(drop->path);
 	g_free(drop);
@@ -1739,6 +1757,8 @@ send_file_to(PidginConversation *gtkconv, const char *path)
 	PurpleConversation *conv = gtkconv->active_conv;
 	PurpleConnection *gc = purple_conversation_get_gc(conv);
 	PurplePluginProtocolInfo *prpl_info = conv_prpl_info(conv);
+	const char *who = purple_conversation_get_name(conv);
+	gboolean ft, im, icon;
 	char *type;
 
 	if (gc == NULL || prpl_info == NULL)
@@ -1749,27 +1769,70 @@ send_file_to(PidginConversation *gtkconv, const char *path)
 		return;
 	}
 
-	/* Images: offer to put them in the message, as Pidgin 2 did. */
+	/* Images: what Pidgin 2 offered (pidgin_dnd_file_manage). A file
+	 * transfer if the prpl can send one, the message if the entry takes
+	 * images (only prpls with OPT_PROTO_IM_IMAGE), and the buddy icon. */
+	if (prpl_info->can_receive_file != NULL)
+		ft = prpl_info->can_receive_file(gc, who);
+	else
+		ft = prpl_info->send_file != NULL;
+	im = (pidgin_compose_entry_get_caps(conv_entry(gtkconv)) & PIDGIN_FORMAT_IMAGE) &&
+	     !(conv->features & PURPLE_CONNECTION_NO_IMAGES);
+	icon = purple_find_buddy(purple_conversation_get_account(conv), who) != NULL;
+
 	type = g_content_type_guess(path, NULL, 0, NULL);
-	if (type != NULL && g_content_type_is_a(type, "image/*") &&
-	    !(conv->features & PURPLE_CONNECTION_NO_IMAGES) &&
-	    (pidgin_compose_entry_get_caps(conv_entry(gtkconv)) & PIDGIN_FORMAT_IMAGE)) {
+	if (type != NULL && g_content_type_is_a(type, "image/*") && (im || icon)) {
 		GtkAlertDialog *dialog = gtk_alert_dialog_new(_("You have dragged an image"));
 		ImageDrop *drop = g_new0(ImageDrop, 1);
-		const char *buttons[] = { _("Send Image File"), _("Insert in Message"),
-			_("Cancel"), NULL };
+		GCancellable *cancel;
+		const char *buttons[5];
+		int n = 0;
 
-		gtk_alert_dialog_set_detail(dialog, _("You can send this image as a file "
-			"transfer, or embed it in this message."));
+		if (ft) {
+			drop->choices[n] = DROP_FILE_TRANSFER;
+			buttons[n++] = _("Send Image File");
+		}
+		if (im) {
+			drop->choices[n] = DROP_IM_IMAGE;
+			buttons[n++] = _("Insert in Message");
+		}
+		if (icon) {
+			drop->choices[n] = DROP_BUDDY_ICON;
+			buttons[n++] = _("Set as Buddy Icon");
+		}
+		drop->n_choices = n;
+		buttons[n] = _("Cancel");
+		buttons[n + 1] = NULL;
+
+		if (ft && im)
+			gtk_alert_dialog_set_detail(dialog, _("You can send this image as a file "
+				"transfer, embed it into this message, or use it as the buddy icon for "
+				"this user."));
+		else if (ft)
+			gtk_alert_dialog_set_detail(dialog, _("You can send this image as a file "
+				"transfer, or use it as the buddy icon for this user."));
+		else if (im)
+			gtk_alert_dialog_set_detail(dialog, _("You can insert this image into this "
+				"message, or use it as the buddy icon for this user"));
+		else
+			gtk_alert_dialog_set_detail(dialog, _("Would you like to set it as the buddy "
+				"icon for this user?"));
 		gtk_alert_dialog_set_buttons(dialog, buttons);
-		gtk_alert_dialog_set_cancel_button(dialog, 2);
+		gtk_alert_dialog_set_cancel_button(dialog, n);
 		drop->gtkconv = gtkconv;
 		drop->path = g_strdup(path);
+		cancel = g_cancellable_new();
+		/* the latest one, for the selftest */
+		g_object_set_data_full(G_OBJECT(gtkconv->tab_cont), "pidgin-image-drop-dialog",
+		                       g_object_ref(dialog), g_object_unref);
+		g_object_set_data_full(G_OBJECT(gtkconv->tab_cont), "pidgin-image-drop-cancel",
+		                       g_object_ref(cancel), g_object_unref);
 		gtk_alert_dialog_choose(dialog, GTK_WINDOW(gtk_widget_get_root(gtkconv->tab_cont)),
-		                        NULL, image_drop_cb, drop);
+		                        cancel, image_drop_cb, drop);
+		g_object_unref(cancel);
 		g_object_unref(dialog);
 	} else {
-		serv_send_file(gc, purple_conversation_get_name(conv), path);
+		serv_send_file(gc, who, path);
 	}
 	g_free(type);
 }

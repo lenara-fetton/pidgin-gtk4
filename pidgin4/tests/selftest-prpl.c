@@ -68,6 +68,8 @@ st_close(PurpleConnection *gc)
 {
 }
 
+static void record(const char *command, const char *a, const char *b, const char *c);
+
 static void
 emit_sending_meta(PurpleConnection *gc, const char *who, const char *type)
 {
@@ -86,6 +88,7 @@ static int
 st_send_im(PurpleConnection *gc, const char *who, const char *message,
            PurpleMessageFlags flags)
 {
+	record("send-im", who, message, NULL);
 	emit_sending_meta(gc, who, "im");
 	return 1;
 }
@@ -223,7 +226,7 @@ st_unload(PurplePlugin *plugin)
 }
 
 static PurplePluginProtocolInfo st_prpl_info = {
-	.options = OPT_PROTO_NO_PASSWORD | OPT_PROTO_CHAT_TOPIC,
+	.options = OPT_PROTO_NO_PASSWORD | OPT_PROTO_CHAT_TOPIC | OPT_PROTO_IM_IMAGE,
 	.list_icon = st_list_icon,
 	.status_types = st_status_types,
 	.login = st_login,

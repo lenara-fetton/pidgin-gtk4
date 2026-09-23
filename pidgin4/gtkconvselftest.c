@@ -22,11 +22,15 @@
 #include "pidgin-internal.h"
 #include "pidgin.h"
 
+#include <glib/gstdio.h>
+
 #include "account.h"
+#include "blist.h"
 #include "cmds.h"
 #include "connection.h"
 #include "conversation.h"
 #include "debug.h"
+#include "imgstore.h"
 #include "log.h"
 #include "plugin.h"
 #include "prefs.h"
@@ -201,6 +205,187 @@ static gboolean
 activate(PidginWindow *win, const char *action, GVariant *param)
 {
 	return gtk_widget_activate_action_variant(win->window, action, param);
+}
+
+/* A small PNG in the imgstore (the caller unrefs it) */
+static int
+add_test_image(void)
+{
+	guchar pixels[8 * 8 * 4];
+	GBytes *bytes, *png;
+	GdkTexture *texture;
+	gpointer data;
+	gsize len;
+	guint i;
+
+	for (i = 0; i < sizeof(pixels); i += 4) {
+		pixels[i] = 0xcc;
+		pixels[i + 1] = 0x22;
+		pixels[i + 2] = 0x22;
+		pixels[i + 3] = 0xff;
+	}
+	bytes = g_bytes_new(pixels, sizeof(pixels));
+	texture = gdk_memory_texture_new(8, 8, GDK_MEMORY_R8G8B8A8, bytes, 8 * 4);
+	png = gdk_texture_save_to_png_bytes(texture);
+	g_bytes_unref(bytes);
+	g_object_unref(texture);
+	data = g_bytes_unref_to_data(png, &len);
+	return purple_imgstore_add_with_id(data, len, "selftest.png");
+}
+
+/* Steam's prpl: no HTML, no OPT_PROTO_IM_IMAGE, no file transfer */
+static void
+set_steam_like(PurpleConversation *conv, gboolean steam)
+{
+	PurpleConnection *gc = purple_account_get_connection(st_account);
+	PurplePluginProtocolInfo *prpl_info = PURPLE_PLUGIN_PROTOCOL_INFO(gc->prpl);
+
+	if (steam) {
+		gc->flags &= ~PURPLE_CONNECTION_HTML;
+		prpl_info->options &= ~OPT_PROTO_IM_IMAGE;
+	} else {
+		gc->flags |= PURPLE_CONNECTION_HTML;
+		prpl_info->options |= OPT_PROTO_IM_IMAGE;
+	}
+	purple_conversation_set_features(conv, gc->flags);
+	pidgin_conv_update_buttons_by_protocol(conv);
+}
+
+/* Drops a file on the conversation as a file manager would; returns the
+ * buttons of the dialog it opened (NULL if none), and closes that. */
+static char *
+drop_file(PurpleConversation *conv, const char *path)
+{
+	GtkWidget *tab = PIDGIN_CONVERSATION(conv)->tab_cont;
+	GListModel *controllers = gtk_widget_observe_controllers(tab);
+	GtkDropTarget *target = NULL;
+	GValue value = G_VALUE_INIT;
+	GSList *files;
+	gboolean ret = FALSE;
+	char *buttons = NULL;
+	guint i;
+
+	for (i = 0; i < g_list_model_get_n_items(controllers) && target == NULL; i++) {
+		GObject *c = g_list_model_get_item(controllers, i);
+
+		if (GTK_IS_DROP_TARGET(c))
+			target = GTK_DROP_TARGET(c);
+		g_object_unref(c);
+	}
+	g_object_unref(controllers);
+	if (target == NULL)
+		return NULL;
+
+	g_object_set_data(G_OBJECT(tab), "pidgin-image-drop-dialog", NULL);
+	files = g_slist_append(NULL, g_file_new_for_path(path));
+	g_value_init(&value, GDK_TYPE_FILE_LIST);
+	g_value_take_boxed(&value, gdk_file_list_new_from_list(files));
+	g_slist_free_full(files, g_object_unref);
+	g_signal_emit_by_name(target, "drop", &value, 1.0, 1.0, &ret);
+	g_value_unset(&value);
+	spin(100);
+
+	if (g_object_get_data(G_OBJECT(tab), "pidgin-image-drop-dialog") != NULL) {
+		char **list = NULL;
+
+		g_object_get(g_object_get_data(G_OBJECT(tab), "pidgin-image-drop-dialog"),
+		             "buttons", &list, NULL);
+		buttons = list ? g_strjoinv("|", list) : g_strdup("");
+		g_strfreev(list);
+		g_cancellable_cancel(g_object_get_data(G_OBJECT(tab), "pidgin-image-drop-cancel"));
+		spin(100);
+	}
+	return buttons;
+}
+
+/* Sending an inline image (Insert Image, or a dropped image put in the
+ * message) crashed right after the send: the compose entry's image
+ * anchor upset libspelling when the entry was cleared. Both with an HTML
+ * protocol (the image goes out as <img id=N>) and one like Steam's. */
+static void
+test_images(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
+	PurpleBuddy *buddy;
+	char *path, *buttons;
+	guint n;
+	int id;
+
+	CHECK(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE, "no image caps");
+
+	/* Text and an image */
+	id = add_test_image();
+	CHECK(id > 0, "imgstore add");
+	pidgin_compose_entry_set_markup(entry, "look: ");
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);    /* the entry holds its own */
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "image send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "image message not shown (%u, %u)", n_messages(conv), n);
+	CHECK(call("send-im") != NULL && strstr(call("send-im"), "look:") != NULL,
+	      "send-im: %s", call("send-im"));
+	g_print("PIDGIN4_CONV_SELFTEST: image message: %s\n",
+	        pidgin_message_get_html(last_message(conv)));
+
+	/* An image alone */
+	id = add_test_image();
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "image-only send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "image-only message not shown (%u, %u)",
+	      n_messages(conv), n);
+
+	/* History: Up brings the sent image back */
+	pidgin_compose_entry_history_up(entry);
+	spin(100);
+	pidgin_compose_entry_clear(entry);
+
+	/* Dropping an image: the prpl takes inline images, no file transfer,
+	 * the buddy isn't on the list */
+	id = add_test_image();
+	path = g_build_filename(purple_user_dir(), "selftest-drop.png", NULL);
+	CHECK(g_file_set_contents(path, purple_imgstore_get_data(purple_imgstore_find_by_id(id)),
+	                          purple_imgstore_get_size(purple_imgstore_find_by_id(id)), NULL),
+	      "writing %s", path);
+	purple_imgstore_unref_by_id(id);
+	buttons = drop_file(conv, path);
+	CHECK(purple_strequal(buttons, "Insert in Message|Cancel"), "drop offered %s", buttons);
+	g_free(buttons);
+
+	/* A protocol like Steam: no inline images (as Pidgin 2), and a drop
+	 * offers only the buddy icon */
+	set_steam_like(conv, TRUE);
+	CHECK(!(pidgin_compose_entry_get_caps(entry) & PIDGIN_FORMAT_IMAGE),
+	      "images offered to a prpl without OPT_PROTO_IM_IMAGE");
+	buttons = drop_file(conv, path);
+	CHECK(buttons == NULL, "drop offered %s without a buddy", buttons);
+	g_free(buttons);
+	buddy = purple_buddy_new(st_account, ST_BUDDY, NULL);
+	purple_blist_add_buddy(buddy, NULL, NULL, NULL);
+	buttons = drop_file(conv, path);
+	CHECK(purple_strequal(buttons, "Set as Buddy Icon|Cancel"), "drop offered %s", buttons);
+	g_free(buttons);
+	purple_blist_remove_buddy(buddy);
+	g_unlink(path);
+	g_free(path);
+
+	/* ... and an image that got into the entry anyway (a pasted draft)
+	 * goes out stripped, as it did in Pidgin 2 */
+	id = add_test_image();
+	pidgin_compose_entry_set_markup(entry, "plain ");
+	pidgin_compose_entry_insert_image(entry, id);
+	purple_imgstore_unref_by_id(id);
+	n = n_messages(conv);
+	pidgin_compose_entry_send(entry);
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "plain image message not shown (%u, %u)",
+	      n_messages(conv), n);
+	set_steam_like(conv, FALSE);
+	hold("images");
 }
 
 /**************************************************************************
@@ -452,6 +637,9 @@ test_im(PurpleConversation **im_out)
 		CHECK(pidgin_message_index_count(idx) > rows_before + 5, "index rows %" G_GINT64_FORMAT,
 		      pidgin_message_index_count(idx) - rows_before);
 	}
+
+	/* Last: its waits let the view's scroll-back run out of history. */
+	test_images(conv);
 
 	g_free(akey);
 	g_free(ckey);

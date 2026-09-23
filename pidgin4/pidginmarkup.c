@@ -27,6 +27,7 @@
 #include "account.h"
 #include "connection.h"
 #include "debug.h"
+#include "prpl.h"
 #include "util.h"
 
 #include "gtkutils.h"
@@ -2121,6 +2122,7 @@ pidgin_format_caps_for_account(PurpleAccount *account)
 {
 	PurpleConnection *gc;
 	PurpleConnectionFlags features = 0;
+	PurplePlugin *prpl;
 
 	g_return_val_if_fail(account != NULL, 0);
 
@@ -2134,6 +2136,14 @@ pidgin_format_caps_for_account(PurpleAccount *account)
 			caps |= PIDGIN_FORMAT_CUSTOM_SMILEY;
 		return caps;
 	}
+
+	/* As Pidgin 2's gtkconv.c: no inline images for a prpl without
+	 * OPT_PROTO_IM_IMAGE (Steam, Discord, IRC) even if it doesn't set
+	 * PURPLE_CONNECTION_NO_IMAGES; it would drop the <img> anyway. */
+	prpl = purple_find_prpl(purple_account_get_protocol_id(account));
+	if (prpl != NULL && !(PURPLE_PLUGIN_PROTOCOL_INFO(prpl)->options & OPT_PROTO_IM_IMAGE))
+		features |= PURPLE_CONNECTION_NO_IMAGES;
+
 	return pidgin_format_caps_from_features(features);
 }
 
