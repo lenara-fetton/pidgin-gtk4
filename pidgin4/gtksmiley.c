@@ -138,7 +138,6 @@ choose_image_cb(GtkWidget *button, gpointer data)
 	GtkFileFilter *filter = gtk_file_filter_new();
 
 	gtk_file_filter_set_name(filter, _("Images"));
-	gtk_file_filter_add_pixbuf_formats(filter);
 	gtk_file_filter_add_mime_type(filter, "image/*");
 	g_list_store_append(filters, filter);
 	gtk_file_dialog_set_default_filter(fd, filter);
