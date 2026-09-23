@@ -157,7 +157,9 @@ pidgin4_sources = files(
 	# M6
 	'pidginidle-wayland.c',
 	'pidginnotify.c',
-	# the selftest protocol of gtkconvselftest.c (M7 shares it)
+	# M7: the plugins selftest and the selftest protocol it shares with
+	# gtkconvselftest.c
+	'pluginsselftest.c',
 	'tests/selftest-prpl.c',
 ) + idle_notify_sources
 
