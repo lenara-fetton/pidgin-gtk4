@@ -17,8 +17,14 @@ This tree is Pidgin 2.14.14. It is being upgraded into a personal GTK 4 build, w
     diff <(nm -D --defined-only /usr/lib64/libpurple.so.0.14.14 | awk '{print $3}' | sort) \
          <(nm -D --defined-only <prefix>/lib/libpurple.so.0 | awk '{print $3}' | sort) | grep '^<'   # must print nothing
     ```
-- **Never touch the system Pidgin or the real profile.** Install only into the private prefix (e.g. `~/.local/pidgin4`), never into `/usr`. Run test builds with a copied profile, `-c ~/.purple-gtk4`, and never against `~/.purple`.
-- **Work milestone by milestone** (M0–M8 in the plan). Don't pull later-milestone work forward unless asked.
+- **Never touch the system Pidgin or the real profile.** Install only into the private prefix (e.g. `~/.local/pidgin4`), never into `/usr`. Run test builds with a copied profile, `-c ~/.purple-gtk4`, and never against `~/.purple` until the user explicitly approves the cutover (see *Cutover gate* in the plan).
+- **`~/.purple` must stay loadable by Pidgin 2.14.14.** pidgin4 will eventually share it with Pidgin 2. Follow the plan's *Profile compatibility contract*:
+  - existing files keep their formats;
+  - new keys are additive only, and pidgin4-specific prefs go under `/pidgin4/…`;
+  - new files go only under `~/.purple/pidgin4/`;
+  - nothing new goes in `~/.purple/plugins`.
+- **The Discord and Steam plugins (`~/purple-discord`, `~/pidgin-opensteamworks`, the user's forks) must stay loadable in stock Pidgin 2.14.14.** Build them against the system `purple.pc` and use only 2.14 symbols. If a feature can't be done that way, drop it.
+- **Work milestone by milestone** (M0–M9 in the plan). Don't pull later-milestone work forward unless asked.
 
 ## Layout (per the plan; parts of it don't exist yet)
 
