@@ -37,6 +37,7 @@
 #include "chat.h"
 #include "google/google.h"
 #include "google/google_presence.h"
+#include "blocking.h"
 #include "presence.h"
 #include "iq.h"
 #include "jutil.h"
@@ -200,6 +201,19 @@ void jabber_presence_send(JabberStream *js, gboolean force)
 	if (js->state != JABBER_STREAM_CONNECTED) {
 		purple_debug_misc("jabber", "attempt to send presence before roster retrieved\n");
 		return;
+	}
+
+	/* XEP-0186: <invisible/> before the presence it hides, <visible/>
+	 * before the one that shows us again. */
+	switch (jabber_invisible_sync(js,
+			purple_strequal(purple_status_get_id(status), "invisible"))) {
+		case JABBER_INVISIBLE_HOLD:
+			return;
+		case JABBER_INVISIBLE_SEND_FORCED:
+			force = TRUE;
+			break;
+		case JABBER_INVISIBLE_SEND:
+			break;
 	}
 
 	purple_status_to_jabber(status, &state, &stripped, &priority);
@@ -1113,6 +1127,10 @@ void purple_status_to_jabber(const PurpleStatus *status, JabberBuddyState *state
 		if(state) {
 			status_id = purple_status_get_id(status);
 			*state = jabber_buddy_status_id_get_state(status_id);
+			/* XEP-0186: invisible is an available presence the server
+			 * doesn't broadcast (or, without XEP-0186, a plain one). */
+			if (purple_strequal(status_id, "invisible"))
+				*state = JABBER_BUDDY_STATE_ONLINE;
 		}
 
 		if(msg) {

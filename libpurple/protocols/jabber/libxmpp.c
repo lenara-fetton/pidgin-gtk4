@@ -34,6 +34,7 @@
 
 #include "iq.h"
 #include "jabber.h"
+#include "blocking.h"
 #include "chat.h"
 #include "disco.h"
 #include "message.h"
@@ -86,7 +87,7 @@ static PurplePluginProtocolInfo prpl_info =
 	jabber_add_deny,				/* add_deny */
 	NULL,							/* rem_permit */
 	jabber_rem_deny,				/* rem_deny */
-	NULL,							/* set_permit_deny */
+	jabber_set_permit_deny,			/* set_permit_deny */
 	jabber_chat_join,				/* join_chat */
 	NULL,							/* reject_chat */
 	jabber_get_chat_name,			/* get_chat_name */

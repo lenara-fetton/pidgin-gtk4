@@ -184,4 +184,27 @@
 /* XEP-0490 Message Displayed Synchronization */
 #define NS_MDS "urn:xmpp:mds:displayed:0"
 
+/* M8 server features round 2 */
+/* XEP-0186 Invisible Command */
+#define NS_INVISIBLE "urn:xmpp:invisible:0"
+/* XEP-0377 Spam Reporting */
+#define NS_REPORTING "urn:xmpp:reporting:1"
+#define JABBER_REPORTING_SPAM "urn:xmpp:reporting:spam"
+#define JABBER_REPORTING_ABUSE "urn:xmpp:reporting:abuse"
+/* XEP-0447 Stateless File Sharing, XEP-0446 File Metadata, XEP-0264
+ * thumbnails (v1), XEP-0300 hashes, XEP-0103 URL data, XEP-0385 SIMS
+ * (legacy, receive only) */
+#define NS_SFS "urn:xmpp:sfs:0"
+#define NS_FILE_METADATA "urn:xmpp:file:metadata:0"
+#define NS_THUMBS_1 "urn:xmpp:thumbs:1"
+#define NS_HASHES_2 "urn:xmpp:hashes:2"
+#define NS_URL_DATA "http://jabber.org/protocol/url-data"
+#define NS_REFERENCE "urn:xmpp:reference:0"
+#define NS_SIMS "urn:xmpp:sims:1"
+#define NS_JINGLE_FT_5 "urn:xmpp:jingle:apps:file-transfer:5"
+/* XEP-0380 Explicit Message Encryption */
+#define NS_EME "urn:xmpp:eme:0"
+/* XEP-0319 Last User Interaction in Presence */
+#define NS_IDLE "urn:xmpp:idle:1"
+
 #endif /* PURPLE_JABBER_NAMESPACES_H_ */

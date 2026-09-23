@@ -352,6 +352,13 @@ struct _JabberStream
 	gboolean csi_supported;
 	gboolean csi_sent_inactive;    /* last state sent was <inactive/> */
 	gboolean csi_ui_inactive;      /* UI said it isn't being looked at */
+
+	/* ---- M8 server features round 2 (blocking.c, sfs.c) ---- */
+	gboolean invisible_supported;  /* server lists urn:xmpp:invisible:0 */
+	gboolean invisible_active;     /* <invisible/> is in effect (or sent) */
+	gboolean invisible_pending;    /* <invisible/> sent, no result yet */
+	gboolean invisible_refused;    /* the server refused <invisible/> */
+	gboolean reporting_supported;  /* server lists urn:xmpp:reporting:1 */
 };
 
 typedef gboolean (JabberFeatureEnabled)(JabberStream *js, const gchar *namespace);

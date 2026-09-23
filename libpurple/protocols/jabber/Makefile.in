@@ -161,7 +161,8 @@ am__libjabber_la_SOURCES_DIST = adhoccommands.c adhoccommands.h auth.c \
 	usermood.h usernick.c usernick.h usertune.c usertune.h xdata.c \
 	xdata.h httpupload.c httpupload.h receipts.c receipts.h \
 	correction.c correction.h reactions.c reactions.h retraction.c \
-	retraction.h styling.c styling.h displayed.c displayed.h \
+	retraction.h styling.c styling.h displayed.c displayed.h blocking.c \
+	blocking.h \
 	auth_cyrus.c libxmpp.c
 @USE_CYRUS_SASL_TRUE@am__objects_1 = libjabber_la-auth_cyrus.lo
 am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
@@ -190,6 +191,7 @@ am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
 	libjabber_la-receipts.lo libjabber_la-correction.lo \
 	libjabber_la-reactions.lo libjabber_la-retraction.lo \
 	libjabber_la-styling.lo libjabber_la-displayed.lo \
+	libjabber_la-blocking.lo \
 	$(am__objects_1)
 @STATIC_JABBER_FALSE@am_libjabber_la_OBJECTS = $(am__objects_2)
 @STATIC_JABBER_TRUE@am_libjabber_la_OBJECTS = $(am__objects_2) \
@@ -245,6 +247,7 @@ am__depfiles_remade = ./$(DEPDIR)/libjabber_la-adhoccommands.Plo \
 	./$(DEPDIR)/libjabber_la-data.Plo \
 	./$(DEPDIR)/libjabber_la-disco.Plo \
 	./$(DEPDIR)/libjabber_la-displayed.Plo \
+	./$(DEPDIR)/libjabber_la-blocking.Plo \
 	./$(DEPDIR)/libjabber_la-gmail.Plo \
 	./$(DEPDIR)/libjabber_la-google.Plo \
 	./$(DEPDIR)/libjabber_la-google_presence.Plo \
@@ -629,7 +632,8 @@ JABBERSOURCES = adhoccommands.c adhoccommands.h auth.c auth.h \
 	usermood.h usernick.c usernick.h usertune.c usertune.h xdata.c \
 	xdata.h httpupload.c httpupload.h receipts.c receipts.h \
 	correction.c correction.h reactions.c reactions.h retraction.c \
-	retraction.h styling.c styling.h displayed.c displayed.h \
+	retraction.h styling.c styling.h displayed.c displayed.h blocking.c \
+	blocking.h \
 	$(am__append_1)
 AM_CFLAGS = $(st)
 libxmpp_la_LDFLAGS = -module -avoid-version
@@ -765,6 +769,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-data.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-disco.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-displayed.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-blocking.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-gmail.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-google.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-google_presence.Plo@am__quote@ # am--include-marker
@@ -1226,6 +1231,13 @@ libjabber_la-displayed.lo: displayed.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-displayed.lo `test -f 'displayed.c' || echo '$(srcdir)/'`displayed.c
 
+libjabber_la-blocking.lo: blocking.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-blocking.lo -MD -MP -MF $(DEPDIR)/libjabber_la-blocking.Tpo -c -o libjabber_la-blocking.lo `test -f 'blocking.c' || echo '$(srcdir)/'`blocking.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-blocking.Tpo $(DEPDIR)/libjabber_la-blocking.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='blocking.c' object='libjabber_la-blocking.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-blocking.lo `test -f 'blocking.c' || echo '$(srcdir)/'`blocking.c
+
 libjabber_la-auth_cyrus.lo: auth_cyrus.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-auth_cyrus.lo -MD -MP -MF $(DEPDIR)/libjabber_la-auth_cyrus.Tpo -c -o libjabber_la-auth_cyrus.lo `test -f 'auth_cyrus.c' || echo '$(srcdir)/'`auth_cyrus.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-auth_cyrus.Tpo $(DEPDIR)/libjabber_la-auth_cyrus.Plo
@@ -1392,6 +1404,7 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-data.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-disco.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-displayed.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-blocking.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-gmail.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_presence.Plo
@@ -1496,6 +1509,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-data.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-disco.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-displayed.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-blocking.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-gmail.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-google_presence.Plo
