@@ -31,6 +31,7 @@
 #include "bookmarks.h"
 #include "buddy.h"
 #include "carbons.h"
+#include "blocking.h"
 #include "disco.h"
 #include "google/google.h"
 #include "google/gmail.h"
@@ -386,6 +387,7 @@ jabber_disco_account_info_cb(JabberStream *js, const char *from,
 	                  js->mam_supported ? "yes" : "no");
 
 	jabber_mam_catchup(js);
+	jabber_mam_prefs_sync(js);  /* XEP-0313 default='always', once */
 	jabber_bookmarks_fetch(js);
 }
 
@@ -610,6 +612,9 @@ jabber_disco_server_info_result_cb(JabberStream *js, const char *from,
 		var = xmlnode_get_attrib(child, "var");
 		if (!var)
 			continue;
+
+		/* XEP-0186 invisibility, XEP-0377 spam reporting */
+		jabber_blocking_server_feature(js, var);
 
 		if (purple_strequal(NS_GOOGLE_MAIL_NOTIFY, var)) {
 			js->server_caps |= JABBER_CAP_GMAIL_NOTIFY;

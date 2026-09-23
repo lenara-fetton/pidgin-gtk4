@@ -627,6 +627,107 @@ mam_query_running(JabberStream *js, const char *archive,
 	return FALSE;
 }
 
+/**************************************************************************
+ * Preferences
+ **************************************************************************/
+
+#define MAM_PREFS_KV "mam/prefs-set"
+
+const char *
+jabber_mam_prefs_default(xmlnode *prefs)
+{
+	return prefs ? xmlnode_get_attrib(prefs, "default") : NULL;
+}
+
+xmlnode *
+jabber_mam_prefs_build_always(xmlnode *current)
+{
+	xmlnode *prefs = xmlnode_new("prefs");
+	xmlnode *child;
+
+	xmlnode_set_namespace(prefs, NS_MAM);
+	xmlnode_set_attrib(prefs, "default", "always");
+	/* The lists are part of the preferences: a set replaces them, so
+	 * send back what the server has. */
+	for (child = current ? current->child : NULL; child; child = child->next) {
+		if (child->type == XMLNODE_TYPE_TAG &&
+		    (purple_strequal(child->name, "always") ||
+		     purple_strequal(child->name, "never")))
+			xmlnode_insert_child(prefs, xmlnode_copy(child));
+	}
+	return prefs;
+}
+
+static void
+mam_prefs_set_cb(JabberStream *js, const char *from, JabberIqType type,
+                 const char *id, xmlnode *packet, gpointer data)
+{
+	if (type != JABBER_IQ_RESULT) {
+		purple_debug_warning("jabber", "MAM prefs: setting default='always' "
+		                     "failed\n");
+		return;
+	}
+	purple_debug_info("jabber", "MAM prefs: default is now 'always'\n");
+	jabber_kv_store(purple_connection_get_account(js->gc), MAM_PREFS_KV, "1");
+}
+
+static void
+mam_prefs_get_cb(JabberStream *js, const char *from, JabberIqType type,
+                 const char *id, xmlnode *packet, gpointer data)
+{
+	xmlnode *prefs = xmlnode_get_child_with_namespace(packet, "prefs", NS_MAM);
+	const char *def = jabber_mam_prefs_default(prefs);
+	JabberIq *iq;
+
+	if (type != JABBER_IQ_RESULT || prefs == NULL) {
+		purple_debug_info("jabber", "MAM prefs: the server has none\n");
+		return;
+	}
+
+	if (purple_strequal(def, "always")) {
+		purple_debug_info("jabber", "MAM prefs: default is already 'always'\n");
+		jabber_kv_store(purple_connection_get_account(js->gc), MAM_PREFS_KV, "1");
+		return;
+	}
+
+	purple_debug_info("jabber", "MAM prefs: default is '%s', setting 'always'\n",
+	                  def ? def : "(none)");
+	iq = jabber_iq_new(js, JABBER_IQ_SET);
+	xmlnode_insert_child(iq->node, jabber_mam_prefs_build_always(prefs));
+	jabber_iq_set_callback(iq, mam_prefs_set_cb, NULL);
+	jabber_iq_send(iq);
+}
+
+void
+jabber_mam_prefs_sync(JabberStream *js)
+{
+	PurpleAccount *account = purple_connection_get_account(js->gc);
+	JabberIq *iq;
+	char *done;
+	xmlnode *prefs;
+
+	if (!js->mam_supported)
+		return;
+	if (!purple_account_get_bool(account, "mam_prefs_always", TRUE)) {
+		purple_debug_info("jabber", "MAM prefs: left alone (mam_prefs_always "
+		                  "is off)\n");
+		return;
+	}
+	done = jabber_kv_load(account, MAM_PREFS_KV);
+	if (purple_strequal(done, "1")) {
+		purple_debug_info("jabber", "MAM prefs: already set once\n");
+		g_free(done);
+		return;
+	}
+	g_free(done);
+
+	iq = jabber_iq_new(js, JABBER_IQ_GET);
+	prefs = xmlnode_new_child(iq->node, "prefs");
+	xmlnode_set_namespace(prefs, NS_MAM);
+	jabber_iq_set_callback(iq, mam_prefs_get_cb, NULL);
+	jabber_iq_send(iq);
+}
+
 void
 jabber_mam_catchup(JabberStream *js)
 {

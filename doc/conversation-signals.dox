@@ -572,6 +572,15 @@ void (*receiving_message_meta)(PurpleAccount *account, const char *conv_name,
    - "mam": "1" for messages that come from a message archive; "mam-query"
      is "catchup" or "older" (the latter from an explicit scroll-back
      request; such messages are older than what the UI shows).
+   - "sfs-url", "sfs-name", "sfs-size" (bytes), "sfs-media-type",
+     "sfs-width", "sfs-height" (pixels), "sfs-desc", "sfs-hash"
+     ("algo:base64", e.g. "sha-256:..."), "sfs-thumbnail" (a data: URI, or
+     an unresolved cid: URI), "sfs-disposition" ("inline" or "attachment"),
+     "sfs-sims" ("1" for the legacy XEP-0385 form): a shared file's
+     metadata (XMPP XEP-0447/0446/0264/0300).  Each key is only present
+     when known; the body still carries the link.
+   - "eme-namespace", "eme-name": the message is encrypted (XEP-0380) with
+     a scheme that wasn't decrypted; the body is the sender's fallback text.
    A handler may insert "discard" = "1" to make the prpl drop the
    message (for example because it is a duplicate of an indexed one);
    it is then neither displayed nor logged.

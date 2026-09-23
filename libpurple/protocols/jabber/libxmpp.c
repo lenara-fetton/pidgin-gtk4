@@ -34,6 +34,7 @@
 
 #include "iq.h"
 #include "jabber.h"
+#include "blocking.h"
 #include "chat.h"
 #include "disco.h"
 #include "message.h"
@@ -86,7 +87,7 @@ static PurplePluginProtocolInfo prpl_info =
 	jabber_add_deny,				/* add_deny */
 	NULL,							/* rem_permit */
 	jabber_rem_deny,				/* rem_deny */
-	NULL,							/* set_permit_deny */
+	jabber_set_permit_deny,			/* set_permit_deny */
 	jabber_chat_join,				/* join_chat */
 	NULL,							/* reject_chat */
 	jabber_get_chat_name,			/* get_chat_name */
@@ -311,6 +312,8 @@ init_plugin(PurplePlugin *plugin)
 						  option);
 
 	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, purple_account_option_bool_new(_("Send files by HTTP upload (XEP-0363)"), "http_upload", TRUE));
+	/* XEP-0313: set the archive's default to "always" once */
+	prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, purple_account_option_bool_new(_("Ask the server to archive all messages (XEP-0313)"), "mam_prefs_always", TRUE));
 
 	option = purple_account_option_string_new(_("BOSH URL"),
 						  "bosh_url", NULL);

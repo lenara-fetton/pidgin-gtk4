@@ -16,6 +16,8 @@
 #include "eventloop.h"
 #include "plugin.h"
 #include "prefs.h"
+#include "privacy.h"
+#include "server.h"
 #include "signals.h"
 #include "util.h"
 #include "xmlnode.h"
@@ -31,7 +33,12 @@
 #include "displayed.h"
 #include "reactions.h"
 #include "styling.h"
+#include "blocking.h"
+#include "httpupload.h"
+#include "sfs.h"
 
+#include <glib/gstdio.h>
+#include <libsoup/soup.h>
 #include <string.h>
 
 static int failures = 0, checks = 0;
@@ -2079,7 +2086,9 @@ test_features_and_flags(void)
 		"urn:xmpp:receipts", "urn:xmpp:chat-markers:0", "urn:xmpp:message-correct:0",
 		"urn:xmpp:reactions:0", "urn:xmpp:message-retract:1",
 		"urn:xmpp:message-retract:0", "urn:xmpp:reply:0", "urn:xmpp:styling:0",
-		"urn:xmpp:mds:displayed:0+notify", NULL
+		"urn:xmpp:mds:displayed:0+notify",
+		/* round 2 */
+		"urn:xmpp:idle:1", "urn:xmpp:sfs:0", "urn:xmpp:eme:0", NULL
 	};
 	const char **e;
 	PurpleAccount *bad;
@@ -2115,6 +2124,856 @@ test_features_and_flags(void)
 	if (gc->disconnect_timeout)
 		purple_timeout_remove(gc->disconnect_timeout);
 	purple_account_set_connection(bad, NULL);
+}
+
+/**************************************************************************
+ * M8 server features round 2: XEP-0191/0186/0377, 0447/0446/0264/0300,
+ * MAM prefs, 0380, 0319
+ **************************************************************************/
+
+static gboolean
+deny_has(const char *who)
+{
+	GSList *l;
+
+	for (l = account->deny; l; l = l->next)
+		if (purple_strequal(l->data, who))
+			return TRUE;
+	return FALSE;
+}
+
+static int
+sent_index_containing(const char *needle)
+{
+	guint i;
+
+	for (i = 0; i < sent->len; i++)
+		if (strstr(g_ptr_array_index(sent, i), needle))
+			return (int)i;
+	return -1;
+}
+
+static char *
+ipc_modes(void)
+{
+	GList *modes = purple_plugin_ipc_call(jabber_plugin, "privacy-modes", NULL, account);
+	GString *s = g_string_new("");
+	GList *l;
+
+	for (l = modes; l; l = l->next)
+		g_string_append_printf(s, "%s%s", s->len ? "," : "", (char *)l->data);
+	g_list_free_full(modes, g_free);
+	return g_string_free(s, FALSE);
+}
+
+static void
+test_blocking(void)
+{
+	const char *str;
+	const char *jids[] = { "a@example.com", "b@example.com", NULL };
+	xmlnode *node;
+	char *xml, *iqid, *modes;
+	JabberCapabilities caps = js->server_caps;
+
+	/* pure: the stanzas */
+	node = jabber_blocking_build(TRUE, jids, NULL, NULL);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<block xmlns='urn:xmpp:blocking'><item jid='a@example.com'/>"
+	               "<item jid='b@example.com'/></block>");
+	g_free(xml);
+	xmlnode_free(node);
+	node = jabber_blocking_build(FALSE, NULL, NULL, NULL);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<unblock xmlns='urn:xmpp:blocking'/>");
+	g_free(xml);
+	xmlnode_free(node);
+	node = jabber_blocking_build(TRUE, jids + 1, JABBER_REPORTING_ABUSE, "go away");
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<block xmlns='urn:xmpp:blocking'><item jid='b@example.com'>"
+	               "<report xmlns='urn:xmpp:reporting:1' reason='urn:xmpp:reporting:abuse'>"
+	               "<text>go away</text></report></item></block>");
+	g_free(xml);
+	xmlnode_free(node);
+
+	/* the blocklist on connect replaces the local deny list */
+	js->server_caps |= JABBER_CAP_BLOCKING;
+	purple_privacy_deny_add(account, "stale@example.com", TRUE);
+	reset_capture();
+	jabber_request_block_list(js);
+	iqid = sent_id_containing("<blocklist xmlns='urn:xmpp:blocking'/>");
+	CHECK(iqid != NULL);
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='result' id='%s'>"
+		"<blocklist xmlns='urn:xmpp:blocking'><item jid='one@example.com'/>"
+		"<item jid='two@example.com'/><item/></blocklist></iq>", iqid);
+	reset_capture();
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	CHECK(deny_has("one@example.com") && deny_has("two@example.com"));
+	CHECK(!deny_has("stale@example.com"));
+	CHECK(g_slist_length(account->deny) == 2);
+	CHECK(sent->len == 0);   /* mirrored locally, nothing written back */
+
+	/* blocking a buddy sends <block/> */
+	reset_capture();
+	purple_privacy_deny_add(account, "Spammer@Example.com", FALSE);
+	str = sent_containing("<block xmlns='urn:xmpp:blocking'>");
+	CHECK(str && strstr(str, "type='set'") && strstr(str, "<item jid='spammer@example.com'/>"));
+
+	/* pushes, from our own account (no from) */
+	reset_capture();
+	feed("<iq xmlns='jabber:client' type='set' id='push1'><block xmlns='urn:xmpp:blocking'>"
+	     "<item jid='three@example.com'/></block></iq>");
+	CHECK(deny_has("three@example.com"));
+	CHECK(sent_containing("type='result'") && sent_containing("id='push1'"));
+	reset_capture();
+	feed("<iq xmlns='jabber:client' type='set' id='push2'><unblock xmlns='urn:xmpp:blocking'>"
+	     "<item jid='one@example.com'/></unblock></iq>");
+	CHECK(!deny_has("one@example.com") && deny_has("two@example.com"));
+	/* a push from someone else is refused */
+	reset_capture();
+	feed("<iq xmlns='jabber:client' type='set' id='push3' from='evil@example.com/x'>"
+	     "<block xmlns='urn:xmpp:blocking'><item jid='friend@example.net'/></block></iq>");
+	CHECK(!deny_has("friend@example.net"));
+	CHECK(sent_containing("<not-allowed") != NULL);
+
+	/* unblocking sends <unblock/> */
+	reset_capture();
+	purple_privacy_deny_remove(account, "two@example.com", FALSE);
+	str = sent_containing("<unblock xmlns='urn:xmpp:blocking'>");
+	CHECK(str && strstr(str, "<item jid='two@example.com'/>"));
+
+	/* unblock-all push */
+	feed("<iq xmlns='jabber:client' type='set' id='push4'>"
+	     "<unblock xmlns='urn:xmpp:blocking'/></iq>");
+	CHECK(account->deny == NULL);
+
+	/* privacy modes: 0191 only expresses allow-all and deny-users */
+	modes = ipc_modes();
+	CHECK_STR(modes, "allow-all,deny-users");
+	g_free(modes);
+	reset_capture();
+	account->perm_deny = PURPLE_PRIVACY_ALLOW_BUDDYLIST;
+	serv_set_permit_deny(purple_account_get_connection(account));
+	CHECK(sent->len == 0);   /* refused (no XEP-0016): nothing is sent */
+	account->perm_deny = PURPLE_PRIVACY_DENY_USERS;
+	serv_set_permit_deny(purple_account_get_connection(account));
+	CHECK(sent->len == 0);
+	account->perm_deny = PURPLE_PRIVACY_ALLOW_ALL;
+
+	/* XEP-0377 */
+	CHECK(!IPC_BOOL("report-spam-supported", account));
+	reset_capture();
+	CHECK(IPC_BOOL("report-spam", account, "bot@spam.example", "sells things", FALSE));
+	str = sent_containing("<block xmlns='urn:xmpp:blocking'>");
+	CHECK(str && strstr(str, "<item jid='bot@spam.example'/>"));   /* no report */
+	CHECK(sent_containing("urn:xmpp:reporting:1") == NULL);
+	js->reporting_supported = TRUE;
+	CHECK(IPC_BOOL("report-spam-supported", account));
+	reset_capture();
+	CHECK(IPC_BOOL("report-spam", account, "Bot@Spam.example/res", "sells things", FALSE));
+	str = sent_containing("<block xmlns='urn:xmpp:blocking'>");
+	CHECK(str && strstr(str, "type='set'"));
+	CHECK(str && strstr(str, "<item jid='bot@spam.example'><report "
+	                          "xmlns='urn:xmpp:reporting:1' reason='urn:xmpp:reporting:spam'>"
+	                          "<text>sells things</text></report></item>"));
+	reset_capture();
+	CHECK(IPC_BOOL("report-spam", account, "troll@example.com", NULL, TRUE));
+	str = sent_containing("<block xmlns='urn:xmpp:blocking'>");
+	CHECK(str && strstr(str, "reason='urn:xmpp:reporting:abuse'/>"));
+	CHECK(!IPC_BOOL("report-spam", account, "", NULL, FALSE));
+	CHECK(!IPC_BOOL("report-spam", account, "not a jid@@", NULL, FALSE));
+	CHECK(!IPC_BOOL("report-spam", NULL, "x@example.com", NULL, FALSE));
+
+	/* without XEP-0191 */
+	js->server_caps &= ~JABBER_CAP_BLOCKING;
+	modes = ipc_modes();
+	CHECK_STR(modes, "allow-all");
+	g_free(modes);
+	CHECK(!IPC_BOOL("report-spam-supported", account));
+	reset_capture();
+	CHECK(!IPC_BOOL("report-spam", account, "bot@spam.example", NULL, FALSE));
+	CHECK(sent->len == 0);
+
+	js->reporting_supported = FALSE;
+	js->server_caps = caps;
+	while (account->deny)
+		purple_privacy_deny_remove(account, account->deny->data, TRUE);
+}
+
+/* The test account isn't enabled, so libpurple doesn't pass status changes
+ * on to the prpl: do what it would. */
+static void
+set_status(const char *id)
+{
+	purple_account_set_status(account, id, TRUE, NULL);
+	jabber_set_status(account, purple_account_get_active_status(account));
+}
+
+static void
+test_invisible(void)
+{
+	const char *str;
+	char *iqid, *xml;
+	xmlnode *node;
+	int i_inv, i_pres;
+
+	node = jabber_invisible_build(TRUE);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<invisible xmlns='urn:xmpp:invisible:0' probe='true'/>");
+	g_free(xml);
+	xmlnode_free(node);
+	node = jabber_invisible_build(FALSE);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<visible xmlns='urn:xmpp:invisible:0'/>");
+	g_free(xml);
+	xmlnode_free(node);
+
+	/* what jabber_presence_fake_to_self() needs of a real connection */
+	purple_connection_set_display_name(purple_account_get_connection(account),
+	                                   "me@example.org/pidgin");
+	if (js->user_jb == NULL)
+		js->user_jb = jabber_buddy_find(js, "me@example.org", TRUE);
+
+	/* the status type exists */
+	CHECK(purple_account_get_status(account, "invisible") != NULL);
+	CHECK(purple_status_type_get_primitive(purple_status_get_type(
+		purple_account_get_status(account, "invisible"))) == PURPLE_STATUS_INVISIBLE);
+
+	/* a server without XEP-0186: sent as available, as before */
+	js->invisible_supported = FALSE;
+	CHECK(!IPC_BOOL("status-invisible-supported", account));
+	reset_capture();
+	set_status("invisible");
+	CHECK(sent_containing("urn:xmpp:invisible:0") == NULL);
+	str = sent_containing("<presence");
+	CHECK(str && !strstr(str, "type='unavailable'") && !strstr(str, "<show>"));
+	set_status("available");
+
+	/* with it: <invisible/> first, presence only after the result */
+	js->invisible_supported = TRUE;
+	CHECK(IPC_BOOL("status-invisible-supported", account));
+	reset_capture();
+	set_status("invisible");
+	str = sent_containing("<invisible xmlns='urn:xmpp:invisible:0' probe='true'/>");
+	CHECK(str && strstr(str, "type='set'"));
+	CHECK(sent_containing("<presence") == NULL);
+	iqid = sent_id_containing("<invisible ");
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='result' id='%s'/>", iqid);
+	reset_capture();
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	CHECK(sent_containing("<presence") != NULL);
+	CHECK(js->invisible_active && !js->invisible_pending);
+	/* a status message change while invisible: no second <invisible/> */
+	reset_capture();
+	jabber_presence_send(js, TRUE);
+	CHECK(sent_containing("urn:xmpp:invisible:0") == NULL);
+	CHECK(sent_containing("<presence") != NULL);
+
+	/* leaving it: <visible/>, then presence */
+	reset_capture();
+	set_status("available");
+	i_inv = sent_index_containing("<visible xmlns='urn:xmpp:invisible:0'/>");
+	i_pres = sent_index_containing("<presence");
+	CHECK(i_inv >= 0 && i_pres > i_inv);
+	CHECK(!js->invisible_active);
+
+	/* refused: nothing is broadcast while the status stays invisible */
+	reset_capture();
+	set_status("invisible");
+	iqid = sent_id_containing("<invisible ");
+	CHECK(iqid != NULL);
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='error' id='%s'>"
+		"<error type='cancel'><feature-not-implemented "
+		"xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>", iqid);
+	reset_capture();
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	CHECK(sent_containing("<presence") == NULL);
+	CHECK(js->invisible_refused && !js->invisible_active);
+	reset_capture();
+	jabber_presence_send(js, TRUE);
+	CHECK(sent->len == 0);
+	/* choosing another status sends presence again (no <visible/>) */
+	reset_capture();
+	set_status("available");
+	CHECK(sent_containing("urn:xmpp:invisible:0") == NULL);
+	CHECK(sent_containing("<presence") != NULL);
+	CHECK(!js->invisible_refused);
+
+	js->invisible_supported = FALSE;
+	CHECK(!IPC_BOOL("status-invisible-supported", NULL));
+}
+
+static void
+test_mam_prefs(void)
+{
+	const char *str;
+	char *iqid, *xml;
+	xmlnode *cur, *node;
+	gboolean mam = js->mam_supported;
+
+	/* pure */
+	cur = xmlnode_from_str("<prefs xmlns='urn:xmpp:mam:2' default='roster'>"
+		"<always><jid>a@example.com</jid></always><never><jid>b@example.com</jid></never>"
+		"</prefs>", -1);
+	CHECK_STR(jabber_mam_prefs_default(cur), "roster");
+	node = jabber_mam_prefs_build_always(cur);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<prefs xmlns='urn:xmpp:mam:2' default='always'><always>"
+		"<jid>a@example.com</jid></always><never><jid>b@example.com</jid></never></prefs>");
+	g_free(xml);
+	xmlnode_free(node);
+	xmlnode_free(cur);
+	node = jabber_mam_prefs_build_always(NULL);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<prefs xmlns='urn:xmpp:mam:2' default='always'/>");
+	g_free(xml);
+	xmlnode_free(node);
+
+	/* round trip: get, then set default='always', then the kv gate */
+	js->mam_supported = TRUE;
+	g_hash_table_remove(kv, "mam/prefs-set");
+	reset_capture();
+	jabber_mam_prefs_sync(js);
+	str = sent_containing("<prefs xmlns='urn:xmpp:mam:2'/>");
+	CHECK(str && strstr(str, "type='get'"));
+	iqid = sent_id_containing("<prefs xmlns='urn:xmpp:mam:2'/>");
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='result' id='%s'>"
+		"<prefs xmlns='urn:xmpp:mam:2' default='roster'><always/>"
+		"<never><jid>b@example.com</jid></never></prefs></iq>", iqid);
+	reset_capture();
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	str = sent_containing("default='always'");
+	CHECK(str && strstr(str, "type='set'") &&
+	      strstr(str, "<never><jid>b@example.com</jid></never>"));
+	CHECK(g_hash_table_lookup(kv, "mam/prefs-set") == NULL);  /* not before the result */
+	iqid = sent_id_containing("default='always'");
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='result' id='%s'/>", iqid);
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	CHECK_STR(g_hash_table_lookup(kv, "mam/prefs-set"), "1");
+	/* the next login doesn't ask again */
+	reset_capture();
+	jabber_mam_prefs_sync(js);
+	CHECK(sent_containing("urn:xmpp:mam:2") == NULL);
+
+	/* already "always": remembered, nothing set */
+	g_hash_table_remove(kv, "mam/prefs-set");
+	reset_capture();
+	jabber_mam_prefs_sync(js);
+	iqid = sent_id_containing("<prefs xmlns='urn:xmpp:mam:2'/>");
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='result' id='%s'>"
+		"<prefs xmlns='urn:xmpp:mam:2' default='always'/></iq>", iqid);
+	reset_capture();
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	CHECK(sent->len == 0);
+	CHECK_STR(g_hash_table_lookup(kv, "mam/prefs-set"), "1");
+
+	/* a failed set isn't remembered */
+	g_hash_table_remove(kv, "mam/prefs-set");
+	reset_capture();
+	jabber_mam_prefs_sync(js);
+	iqid = sent_id_containing("<prefs xmlns='urn:xmpp:mam:2'/>");
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='result' id='%s'>"
+		"<prefs xmlns='urn:xmpp:mam:2' default='never'/></iq>", iqid);
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	iqid = sent_id_containing("default='always'");
+	CHECK(iqid != NULL);
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='error' id='%s'><error type='cancel'>"
+		"<not-allowed xmlns='urn:ietf:params:xml:ns:xmpp-stanzas'/></error></iq>", iqid);
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+	CHECK(g_hash_table_lookup(kv, "mam/prefs-set") == NULL);
+
+	/* the account setting opts out; no archive: nothing */
+	purple_account_set_bool(account, "mam_prefs_always", FALSE);
+	reset_capture();
+	jabber_mam_prefs_sync(js);
+	CHECK(sent->len == 0);
+	purple_account_set_bool(account, "mam_prefs_always", TRUE);
+	js->mam_supported = FALSE;
+	jabber_mam_prefs_sync(js);
+	CHECK(sent->len == 0);
+
+	js->mam_supported = mam;
+	g_hash_table_remove(kv, "mam/prefs-set");
+}
+
+/* SHA-256("hello"), base64 */
+#define HELLO_SHA256 "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ="
+
+static void
+test_sfs_pure(void)
+{
+	static const guchar png[] = {
+		0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R',
+		0, 0, 0x02, 0x80, 0, 0, 0x01, 0xe0, 8, 2, 0, 0, 0
+	};
+	static const guchar gif[] = { 'G', 'I', 'F', '8', '9', 'a', 0x40, 0x01, 0xc8, 0x00, 0 };
+	static const guchar jpeg[] = {
+		0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 'J', 'F',
+		0xFF, 0xDB, 0x00, 0x03, 0x00,
+		0xFF, 0xC0, 0x00, 0x11, 0x08, 0x02, 0x58, 0x03, 0x20, 0x03
+	};
+	static const guchar webp[] = {
+		'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', 'X',
+		10, 0, 0, 0, 0x10, 0, 0, 0, 0x7f, 0x02, 0x00, 0xdf, 0x01, 0x00
+	};
+	int w = 0, h = 0;
+	xmlnode *msg, *node;
+	JabberSfsFile *f;
+	GHashTable *meta;
+	char *xml, *path;
+
+	CHECK(jabber_sfs_image_size(png, sizeof(png), &w, &h) && w == 640 && h == 480);
+	CHECK(jabber_sfs_image_size(gif, sizeof(gif), &w, &h) && w == 320 && h == 200);
+	CHECK(jabber_sfs_image_size(jpeg, sizeof(jpeg), &w, &h) && w == 800 && h == 600);
+	CHECK(jabber_sfs_image_size(webp, sizeof(webp), &w, &h) && w == 640 && h == 480);
+	CHECK(!jabber_sfs_image_size((const guchar *)"hello world, not an image", 25, &w, &h));
+	CHECK(!jabber_sfs_image_size(png, 10, &w, &h));
+
+	/* XEP-0447 with hashes, a BoB thumbnail carried in the message */
+	msg = xmlnode_from_str("<message xmlns='jabber:client' from='friend@example.net/phone'>"
+		"<body>https://files.example.org/abc/summit.jpg</body>"
+		"<file-sharing xmlns='urn:xmpp:sfs:0' disposition='inline'>"
+		"<file xmlns='urn:xmpp:file:metadata:0'>"
+		"<media-type>image/jpeg</media-type><name>../../summit.jpg</name>"
+		"<size>3032449</size><width>4096</width><height>2160</height>"
+		"<desc>Photo from the summit.</desc>"
+		"<hash xmlns='urn:xmpp:hashes:2' algo='sha3-256'>c3NoYTM=</hash>"
+		"<hash xmlns='urn:xmpp:hashes:2' algo='sha-256'> " HELLO_SHA256 " </hash>"
+		"<thumbnail xmlns='urn:xmpp:thumbs:1' uri='cid:sha1+abc@bob.xmpp.org' "
+		"media-type='image/png' width='128' height='96'/>"
+		"</file><sources>"
+		"<jinglepub xmlns='urn:xmpp:jinglepub:1'/>"
+		"<url-data xmlns='http://jabber.org/protocol/url-data' target='javascript:alert(1)'/>"
+		"<url-data xmlns='http://jabber.org/protocol/url-data' "
+		"target='https://files.example.org/abc/summit.jpg'/>"
+		"</sources></file-sharing>"
+		"<data xmlns='urn:xmpp:bob' cid='sha1+abc@bob.xmpp.org' type='image/png'>"
+		"iVBORw0K\n  GgoAAAA=</data></message>", -1);
+	f = jabber_sfs_parse(NULL, "friend@example.net/phone", msg);
+	CHECK(f != NULL);
+	if (f) {
+		CHECK_STR(f->url, "https://files.example.org/abc/summit.jpg");
+		CHECK_STR(f->name, "summit.jpg");
+		CHECK(f->size == 3032449);
+		CHECK_STR(f->media_type, "image/jpeg");
+		CHECK(f->width == 4096 && f->height == 2160);
+		CHECK_STR(f->desc, "Photo from the summit.");
+		CHECK_STR(f->hash, "sha-256:" HELLO_SHA256);
+		CHECK_STR(f->thumbnail, "data:image/png;base64,iVBORw0KGgoAAAA=");
+		CHECK_STR(f->disposition, "inline");
+		meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+		jabber_sfs_to_meta(f, meta);
+		CHECK_STR(g_hash_table_lookup(meta, "sfs-size"), "3032449");
+		CHECK_STR(g_hash_table_lookup(meta, "sfs-width"), "4096");
+		CHECK_STR(g_hash_table_lookup(meta, "sfs-height"), "2160");
+		CHECK_STR(g_hash_table_lookup(meta, "sfs-hash"), "sha-256:" HELLO_SHA256);
+		CHECK(g_hash_table_lookup(meta, "sfs-sims") == NULL);
+		g_hash_table_destroy(meta);
+		jabber_sfs_file_free(f);
+	}
+	xmlnode_free(msg);
+
+	/* data: thumbnail, unresolvable cid, http thumbnail dropped */
+	msg = xmlnode_from_str("<message xmlns='jabber:client'>"
+		"<file-sharing xmlns='urn:xmpp:sfs:0'><file xmlns='urn:xmpp:file:metadata:0'>"
+		"<name>a.png</name><thumbnail xmlns='urn:xmpp:thumbs:1' uri='data:image/png;base64,AAAA'/>"
+		"</file><sources/></file-sharing></message>", -1);
+	f = jabber_sfs_parse(NULL, NULL, msg);
+	CHECK(f && f->url == NULL && f->size == -1 && f->hash == NULL);
+	CHECK(f && purple_strequal(f->thumbnail, "data:image/png;base64,AAAA"));
+	jabber_sfs_file_free(f);
+	xmlnode_free(msg);
+	msg = xmlnode_from_str("<message xmlns='jabber:client'>"
+		"<file-sharing xmlns='urn:xmpp:sfs:0'><file xmlns='urn:xmpp:file:metadata:0'>"
+		"<thumbnail xmlns='urn:xmpp:thumbs:1' uri='cid:unknown@bob.xmpp.org'/></file>"
+		"</file-sharing></message>", -1);
+	f = jabber_sfs_parse(NULL, NULL, msg);
+	CHECK(f && purple_strequal(f->thumbnail, "cid:unknown@bob.xmpp.org"));
+	jabber_sfs_file_free(f);
+	xmlnode_free(msg);
+	msg = xmlnode_from_str("<message xmlns='jabber:client'>"
+		"<file-sharing xmlns='urn:xmpp:sfs:0'><file xmlns='urn:xmpp:file:metadata:0'>"
+		"<thumbnail xmlns='urn:xmpp:thumbs:1' uri='https://tracker.example/t.png'/></file>"
+		"</file-sharing></message>", -1);
+	f = jabber_sfs_parse(NULL, NULL, msg);
+	CHECK(f && f->thumbnail == NULL);
+	jabber_sfs_file_free(f);
+	xmlnode_free(msg);
+	/* no <file/>, other elements: nothing */
+	msg = xmlnode_from_str("<message xmlns='jabber:client'><file-sharing xmlns='urn:xmpp:sfs:0'/>"
+		"<reference xmlns='urn:xmpp:reference:0' type='mention' uri='xmpp:x@y'/></message>", -1);
+	CHECK(jabber_sfs_parse(NULL, NULL, msg) == NULL);
+	xmlnode_free(msg);
+
+	/* legacy SIMS (XEP-0385) */
+	msg = xmlnode_from_str("<message xmlns='jabber:client'>"
+		"<reference xmlns='urn:xmpp:reference:0' type='data' begin='0' end='10'>"
+		"<media-sharing xmlns='urn:xmpp:sims:1'>"
+		"<file xmlns='urn:xmpp:jingle:apps:file-transfer:5'><media-type>video/mp4</media-type>"
+		"<name>clip.mp4</name><size>1234</size>"
+		"<hash xmlns='urn:xmpp:hashes:2' algo='sha-1'>aGFzaA==</hash></file>"
+		"<sources><reference xmlns='urn:xmpp:reference:0' type='data' "
+		"uri='https://files.example.org/clip.mp4'/></sources>"
+		"</media-sharing></reference></message>", -1);
+	f = jabber_sfs_parse(NULL, NULL, msg);
+	CHECK(f && f->sims && f->size == 1234);
+	CHECK(f && purple_strequal(f->url, "https://files.example.org/clip.mp4"));
+	CHECK(f && purple_strequal(f->hash, "sha-1:aGFzaA=="));
+	CHECK(f && purple_strequal(f->media_type, "video/mp4"));
+	jabber_sfs_file_free(f);
+	xmlnode_free(msg);
+
+	/* local file metadata and the element built from it */
+	path = g_build_filename(purple_user_dir(), "sfs-hello.txt", NULL);
+	g_file_set_contents(path, "hello", 5, NULL);
+	f = jabber_sfs_file_from_path(path, NULL, "text/plain");
+	CHECK(f != NULL);
+	if (f) {
+		CHECK(f->size == 5);
+		CHECK_STR(f->hash, "sha-256:" HELLO_SHA256);
+		CHECK_STR(f->name, "sfs-hello.txt");
+		CHECK(f->width == 0 && f->disposition == NULL);
+		f->url = g_strdup("https://files.example.org/x/sfs-hello.txt");
+		node = jabber_sfs_build(f);
+		xml = xmlnode_to_str(node, NULL);
+		CHECK_STR(xml, "<file-sharing xmlns='urn:xmpp:sfs:0'>"
+			"<file xmlns='urn:xmpp:file:metadata:0'><media-type>text/plain</media-type>"
+			"<name>sfs-hello.txt</name><size>5</size>"
+			"<hash xmlns='urn:xmpp:hashes:2' algo='sha-256'>" HELLO_SHA256 "</hash></file>"
+			"<sources><url-data xmlns='http://jabber.org/protocol/url-data' "
+			"target='https://files.example.org/x/sfs-hello.txt'/></sources></file-sharing>");
+		g_free(xml);
+		xmlnode_free(node);
+		jabber_sfs_file_free(f);
+	}
+	g_file_set_contents(path, (const char *)png, sizeof(png), NULL);
+	f = jabber_sfs_file_from_path(path, "shot.png", "image/png");
+	CHECK(f && f->width == 640 && f->height == 480 && purple_strequal(f->disposition, "inline"));
+	CHECK(f && purple_strequal(f->name, "shot.png"));
+	jabber_sfs_file_free(f);
+	g_unlink(path);
+	CHECK(jabber_sfs_file_from_path(path, NULL, NULL) == NULL);
+	g_free(path);
+}
+
+static void
+test_sfs_receive(void)
+{
+	GHashTable *meta;
+	Written *w;
+
+	reset_capture();
+	feed("<message xmlns='jabber:client' from='friend@example.net/phone' "
+	     "to='me@example.org/pidgin' type='chat' id='sfs1'>"
+	     "<body>https://files.example.org/abc/cat.png</body>"
+	     "<x xmlns='jabber:x:oob'><url>https://files.example.org/abc/cat.png</url></x>"
+	     "<file-sharing xmlns='urn:xmpp:sfs:0' disposition='inline'>"
+	     "<file xmlns='urn:xmpp:file:metadata:0'><media-type>image/png</media-type>"
+	     "<name>cat.png</name><size>2048</size><width>64</width><height>48</height>"
+	     "<hash xmlns='urn:xmpp:hashes:2' algo='sha-256'>" HELLO_SHA256 "</hash>"
+	     "<thumbnail xmlns='urn:xmpp:thumbs:1' uri='data:image/png;base64,QUJD' "
+	     "media-type='image/png' width='32' height='24'/></file>"
+	     "<sources><url-data xmlns='http://jabber.org/protocol/url-data' "
+	     "target='https://files.example.org/abc/cat.png'/></sources></file-sharing></message>");
+	meta = last_meta();
+	CHECK_STR(meta_get(meta, "stanza-id"), "sfs1");
+	CHECK_STR(meta_get(meta, "sfs-url"), "https://files.example.org/abc/cat.png");
+	CHECK_STR(meta_get(meta, "sfs-name"), "cat.png");
+	CHECK_STR(meta_get(meta, "sfs-size"), "2048");
+	CHECK_STR(meta_get(meta, "sfs-media-type"), "image/png");
+	CHECK_STR(meta_get(meta, "sfs-width"), "64");
+	CHECK_STR(meta_get(meta, "sfs-height"), "48");
+	CHECK_STR(meta_get(meta, "sfs-hash"), "sha-256:" HELLO_SHA256);
+	CHECK_STR(meta_get(meta, "sfs-thumbnail"), "data:image/png;base64,QUJD");
+	CHECK_STR(meta_get(meta, "sfs-disposition"), "inline");
+	CHECK(meta_get(meta, "sfs-desc") == NULL);
+	/* the body still is the link, for old UIs and the log */
+	w = last_written();
+	CHECK(w && strstr(w->message, "https://files.example.org/abc/cat.png"));
+
+	/* a plain message has no sfs keys */
+	reset_capture();
+	feed("<message xmlns='jabber:client' from='friend@example.net/phone' "
+	     "to='me@example.org/pidgin' type='chat' id='sfs2'><body>hi</body></message>");
+	CHECK(meta_get(last_meta(), "sfs-url") == NULL);
+}
+
+/* The upload test's PUT target */
+static int put_count = 0;
+
+static void
+put_handler(SoupServer *server, SoupServerMessage *msg, const char *path,
+            GHashTable *query, gpointer data)
+{
+	put_count++;
+	soup_server_message_set_status(msg,
+		purple_strequal(soup_server_message_get_method(msg), "PUT") ? 201 : 405, NULL);
+}
+
+static void
+test_sfs_upload(void)
+{
+	static const guchar png[] = {
+		0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R',
+		0, 0, 0x00, 0x20, 0, 0, 0x00, 0x10, 8, 2, 0, 0, 0
+	};
+	SoupServer *server;
+	GError *error = NULL;
+	GSList *uris;
+	guint port;
+	PurpleXfer *xfer;
+	char *path, *iqid, *xml, *sha_b64;
+	const char *str;
+	GChecksum *sha;
+	guint8 digest[32];
+	gsize dlen = sizeof(digest);
+	gint64 deadline;
+
+	server = soup_server_new(NULL, NULL);
+	soup_server_add_handler(server, "/put", put_handler, NULL, NULL);
+	if (!soup_server_listen_local(server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error)) {
+		fprintf(stderr, "soup server: %s\n", error->message);
+		g_error_free(error);
+		failures++;
+		g_object_unref(server);
+		return;
+	}
+	uris = soup_server_get_uris(server);
+	port = g_uri_get_port(uris->data);
+	g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+
+	path = g_build_filename(purple_user_dir(), "upload.png", NULL);
+	g_file_set_contents(path, (const char *)png, sizeof(png), NULL);
+	sha = g_checksum_new(G_CHECKSUM_SHA256);
+	g_checksum_update(sha, png, sizeof(png));
+	g_checksum_get_digest(sha, digest, &dlen);
+	g_checksum_free(sha);
+	sha_b64 = g_base64_encode(digest, dlen);
+
+	jabber_http_upload_set_service(purple_account_get_connection(account),
+	                               "upload.example.org", 0);
+	xfer = purple_xfer_new(account, PURPLE_XFER_SEND, "friend@example.net/phone");
+	purple_xfer_set_local_filename(xfer, path);
+	purple_xfer_set_filename(xfer, "upload.png");
+	purple_xfer_set_size(xfer, sizeof(png));
+
+	reset_capture();
+	CHECK(jabber_http_upload_send_xfer(js, xfer, NULL));
+	iqid = sent_id_containing("urn:xmpp:http:upload:0");
+	CHECK(iqid != NULL);
+	xml = g_strdup_printf("<iq xmlns='jabber:client' type='result' from='upload.example.org' "
+		"id='%s'><slot xmlns='urn:xmpp:http:upload:0'>"
+		"<put url='http://127.0.0.1:%u/put/upload.png'/>"
+		"<get url='https://files.example.org/get/upload.png'/></slot></iq>", iqid, port);
+	reset_capture();
+	feed(xml);
+	g_free(xml);
+	g_free(iqid);
+
+	deadline = g_get_monotonic_time() + 10 * G_USEC_PER_SEC;
+	while (sent_containing("<file-sharing") == NULL &&
+	       g_get_monotonic_time() < deadline)
+		g_main_context_iteration(NULL, TRUE);
+
+	CHECK(put_count == 1);
+	str = sent_containing("<file-sharing");
+	CHECK(str != NULL);
+	if (str) {
+		char *hash = g_strdup_printf("<hash xmlns='urn:xmpp:hashes:2' algo='sha-256'>%s</hash>",
+		                             sha_b64);
+		CHECK(strstr(str, "<body>https://files.example.org/get/upload.png</body>") != NULL);
+		CHECK(strstr(str, "<x xmlns='jabber:x:oob'><url>https://files.example.org/get/upload.png"
+		                  "</url></x>") != NULL);
+		CHECK(strstr(str, "<file-sharing xmlns='urn:xmpp:sfs:0' disposition='inline'>"
+		                  "<file xmlns='urn:xmpp:file:metadata:0'><media-type>image/png"
+		                  "</media-type><name>upload.png</name><size>29</size>"
+		                  "<width>32</width><height>16</height>") != NULL);
+		CHECK(strstr(str, hash) != NULL);
+		CHECK(strstr(str, "<sources><url-data xmlns='http://jabber.org/protocol/url-data' "
+		                  "target='https://files.example.org/get/upload.png'/></sources>") != NULL);
+		g_free(hash);
+	}
+	g_unlink(path);
+	g_free(path);
+	g_free(sha_b64);
+	g_object_unref(server);
+}
+
+static void
+test_eme(void)
+{
+	GHashTable *meta;
+	Written *w;
+
+	CHECK_STR(jabber_eme_name("eu.siacs.conversations.axolotl", NULL), "OMEMO");
+	CHECK_STR(jabber_eme_name("urn:xmpp:openpgp:0", ""), "OpenPGP for XMPP");
+	CHECK_STR(jabber_eme_name("urn:xmpp:otr:0", "My OTR"), "My OTR");
+	CHECK_STR(jabber_eme_name("urn:example:new", NULL), "urn:example:new");
+	CHECK(jabber_eme_is_fallback_body("I sent you an OMEMO encrypted message but your client "
+		"doesn't seem to support that. Find more information on https://conversations.im/omemo",
+		"OMEMO"));
+	CHECK(jabber_eme_is_fallback_body(" [This message is OMEMO encrypted] ", "OMEMO"));
+	CHECK(jabber_eme_is_fallback_body("?OTRv23?", "OTR"));
+	CHECK(jabber_eme_is_fallback_body("This message is encrypted with Foo Crypt.", "Foo Crypt"));
+	CHECK(!jabber_eme_is_fallback_body("see you at 5", "OMEMO"));
+	CHECK(!jabber_eme_is_fallback_body(NULL, "OMEMO"));
+
+	/* GTK 2 UI: the boilerplate becomes a clear notice */
+	set_meta_ui(FALSE);
+	reset_capture();
+	feed("<message xmlns='jabber:client' from='friend@example.net/phone' "
+	     "to='me@example.org/pidgin' type='chat' id='eme1'>"
+	     "<body>I sent you an OMEMO encrypted message but your client doesn't seem to support that.</body>"
+	     "<encrypted xmlns='eu.siacs.conversations.axolotl'><header sid='1'/></encrypted>"
+	     "<encryption xmlns='urn:xmpp:eme:0' namespace='eu.siacs.conversations.axolotl' name='OMEMO'/>"
+	     "</message>");
+	w = last_written();
+	CHECK(w && purple_strequal(w->message,
+		"[Encrypted with OMEMO, which this client does not support]"));
+	/* a real text next to the element is kept */
+	reset_capture();
+	feed("<message xmlns='jabber:client' from='friend@example.net/phone' "
+	     "to='me@example.org/pidgin' type='chat' id='eme2'><body>plain words</body>"
+	     "<openpgp xmlns='urn:xmpp:openpgp:0'>xyz</openpgp>"
+	     "<encryption xmlns='urn:xmpp:eme:0' namespace='urn:xmpp:openpgp:0'/></message>");
+	w = last_written();
+	CHECK(w && purple_strequal(w->message, "plain words"));
+	CHECK(metas->len == 0);
+	set_meta_ui(TRUE);
+
+	/* message-meta UI: the metadata, the body untouched */
+	reset_capture();
+	feed("<message xmlns='jabber:client' from='friend@example.net/phone' "
+	     "to='me@example.org/pidgin' type='chat' id='eme3'>"
+	     "<body>[This message is OpenPGP encrypted]</body>"
+	     "<openpgp xmlns='urn:xmpp:openpgp:0'>xyz</openpgp>"
+	     "<encryption xmlns='urn:xmpp:eme:0' namespace='urn:xmpp:openpgp:0'/></message>");
+	meta = last_meta();
+	CHECK_STR(meta_get(meta, "eme-namespace"), "urn:xmpp:openpgp:0");
+	CHECK_STR(meta_get(meta, "eme-name"), "OpenPGP for XMPP");
+	w = last_written();
+	CHECK(w && purple_strequal(w->message, "[This message is OpenPGP encrypted]"));
+
+	/* decrypted by the OMEMO plugin (no <encrypted/> left): nothing */
+	reset_capture();
+	feed("<message xmlns='jabber:client' from='friend@example.net/phone' "
+	     "to='me@example.org/pidgin' type='chat' id='eme4'><body>secret text</body>"
+	     "<encryption xmlns='urn:xmpp:eme:0' namespace='eu.siacs.conversations.axolotl'/>"
+	     "</message>");
+	meta = last_meta();
+	CHECK(meta && meta_get(meta, "eme-namespace") == NULL);
+	/* OMEMO the plugin didn't handle: reported */
+	reset_capture();
+	feed("<message xmlns='jabber:client' from='friend@example.net/phone' "
+	     "to='me@example.org/pidgin' type='chat' id='eme5'><body>x</body>"
+	     "<encrypted xmlns='eu.siacs.conversations.axolotl'/>"
+	     "<encryption xmlns='urn:xmpp:eme:0' namespace='eu.siacs.conversations.axolotl'/>"
+	     "</message>");
+	CHECK_STR(meta_get(last_meta(), "eme-name"), "OMEMO");
+}
+
+static char *
+iso_time(time_t t)
+{
+	char buf[32];
+	strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&t));
+	return g_strdup(buf);
+}
+
+static void
+test_idle(void)
+{
+	PurpleBuddy *buddy;
+	PurplePresence *presence;
+	xmlnode *node;
+	char *xml, *since;
+	time_t now = time(NULL), t;
+
+	/* pure */
+	node = jabber_idle_build(1700000000);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK_STR(xml, "<idle xmlns='urn:xmpp:idle:1' since='2023-11-14T22:13:20Z'/>");
+	g_free(xml);
+	CHECK(jabber_idle_parse(node) == 1700000000);
+	xmlnode_free(node);
+	node = xmlnode_from_str("<idle xmlns='urn:xmpp:idle:1' since='2023-11-14T23:13:20+01:00'/>", -1);
+	CHECK(jabber_idle_parse(node) == 1700000000);
+	xmlnode_free(node);
+	node = xmlnode_from_str("<idle xmlns='urn:xmpp:idle:1'/>", -1);
+	CHECK(jabber_idle_parse(node) == 0);
+	xmlnode_free(node);
+	since = iso_time(now + 3600);  /* clock skew */
+	xml = g_strdup_printf("<idle xmlns='urn:xmpp:idle:1' since='%s'/>", since);
+	node = xmlnode_from_str(xml, -1);
+	t = jabber_idle_parse(node);
+	CHECK(t >= now && t <= now + 2);
+	xmlnode_free(node);
+	g_free(xml);
+	g_free(since);
+
+	/* incoming presence feeds the buddy list's idle state */
+	buddy = purple_buddy_new(account, "idler@example.net", NULL);
+	purple_blist_add_buddy(buddy, NULL, NULL, NULL);
+	presence = purple_buddy_get_presence(buddy);
+	since = iso_time(now - 600);
+	xml = g_strdup_printf("<presence xmlns='jabber:client' from='idler@example.net/laptop' "
+		"to='me@example.org/pidgin'><show>away</show>"
+		"<idle xmlns='urn:xmpp:idle:1' since='%s'/></presence>", since);
+	feed(xml);
+	g_free(xml);
+	CHECK(purple_presence_is_idle(presence));
+	t = purple_presence_get_idle_time(presence);
+	CHECK(t >= now - 602 && t <= now - 598);
+	/* delayed presence: since stays absolute; it wins over XEP-0256 */
+	xml = g_strdup_printf("<presence xmlns='jabber:client' from='idler@example.net/laptop' "
+		"to='me@example.org/pidgin'><query xmlns='jabber:iq:last' seconds='5'/>"
+		"<delay xmlns='urn:xmpp:delay' stamp='2020-01-01T00:00:00Z'/>"
+		"<idle xmlns='urn:xmpp:idle:1' since='%s'/></presence>", since);
+	feed(xml);
+	g_free(xml);
+	t = purple_presence_get_idle_time(presence);
+	CHECK(purple_presence_is_idle(presence) && t >= now - 602 && t <= now - 598);
+	g_free(since);
+	/* no <idle/>: not idle any more */
+	feed("<presence xmlns='jabber:client' from='idler@example.net/laptop' "
+	     "to='me@example.org/pidgin'/>");
+	CHECK(!purple_presence_is_idle(presence));
+
+	/* our own presence carries it while idle, next to XEP-0256 */
+	js->idle = now - 300;
+	node = jabber_presence_create_js(js, JABBER_BUDDY_STATE_AWAY, NULL, 0);
+	xml = xmlnode_to_str(node, NULL);
+	since = iso_time(now - 300);
+	{
+		char *expect = g_strdup_printf("<idle xmlns='urn:xmpp:idle:1' since='%s'/>", since);
+		CHECK(strstr(xml, expect) != NULL);
+		g_free(expect);
+	}
+	CHECK(strstr(xml, "<query xmlns='jabber:iq:last' seconds='") != NULL);
+	g_free(since);
+	g_free(xml);
+	xmlnode_free(node);
+	js->idle = 0;
+	node = jabber_presence_create_js(js, JABBER_BUDDY_STATE_ONLINE, NULL, 0);
+	xml = xmlnode_to_str(node, NULL);
+	CHECK(strstr(xml, "urn:xmpp:idle:1") == NULL);
+	g_free(xml);
+	xmlnode_free(node);
 }
 
 /**************************************************************************/
@@ -2214,6 +3073,16 @@ main(int argc, char **argv)
 	test_styling_meta();
 	test_displayed_sync();
 	test_features_and_flags();
+
+	/* M8 server features round 2 */
+	test_blocking();
+	test_invisible();
+	test_mam_prefs();
+	test_sfs_pure();
+	test_sfs_receive();
+	test_sfs_upload();
+	test_eme();
+	test_idle();
 
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

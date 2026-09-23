@@ -64,6 +64,7 @@
 #include "message.h"
 #include "parser.h"
 #include "presence.h"
+#include "blocking.h"
 #include "jabber.h"
 #include "roster.h"
 #include "ping.h"
@@ -2242,9 +2243,13 @@ static void jabber_blocklist_parse(JabberStream *js, const char *from,
 	item = xmlnode_get_child(blocklist, "item");
 	while (item != NULL) {
 		const char *jid = xmlnode_get_attrib(item, "jid");
-		purple_privacy_deny_add(account, jid, TRUE);
+		if (jid && *jid)
+			purple_privacy_deny_add(account, jid, TRUE);
 		item = xmlnode_get_next_twin(item);
 	}
+	purple_debug_info("jabber", "XEP-0191: blocklist has %d entr%s\n",
+	                  g_slist_length(account->deny),
+	                  g_slist_length(account->deny) == 1 ? "y" : "ies");
 }
 
 void jabber_request_block_list(JabberStream *js)
@@ -2804,10 +2809,15 @@ GList *jabber_status_types(PurpleAccount *account)
 			NULL);
 	types = g_list_prepend(types, type);
 
-	/*
-	if(js->protocol_version == JABBER_PROTO_0_9)
-		"Invisible"
-	*/
+	/* XEP-0186: <invisible/> when the server supports it, otherwise sent
+	 * as available (see blocking.c) */
+	priority_value = purple_value_new(PURPLE_TYPE_INT);
+	purple_value_set_int(priority_value, 1);
+	type = purple_status_type_new_with_attrs(PURPLE_STATUS_INVISIBLE,
+			"invisible", NULL, TRUE, TRUE, FALSE,
+			"priority", _("Priority"), priority_value,
+			NULL);
+	types = g_list_prepend(types, type);
 
 	type = purple_status_type_new_with_attrs(PURPLE_STATUS_OFFLINE,
 			jabber_buddy_state_get_status_id(JABBER_BUDDY_STATE_UNAVAILABLE),
@@ -4206,6 +4216,7 @@ jabber_do_init(void)
 
 	/* initialize jabber_features list */
 	jabber_add_feature(NS_LAST_ACTIVITY, 0);
+	jabber_add_feature(NS_IDLE, 0); /* XEP-0319 */
 	jabber_add_feature(NS_OOB_IQ_DATA, 0);
 	jabber_add_feature(NS_ENTITY_TIME, 0);
 	jabber_add_feature("jabber:iq:version", 0);
@@ -4394,6 +4405,9 @@ void jabber_plugin_init(PurplePlugin *plugin)
 	/* XEP-0352 (the IPC command; the signals are hooked at first login) */
 	jabber_csi_init(plugin);
 	jabber_message_semantics_init(plugin); /* M8: send-* IPC, features */
+	/* M8 round 2: privacy-modes, status-invisible-supported, report-spam,
+	 * report-spam-supported IPC */
+	jabber_blocking_init(plugin);
 
 	purple_signal_register(plugin, "jabber-receiving-iq",
 			purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,

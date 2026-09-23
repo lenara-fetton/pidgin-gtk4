@@ -27,6 +27,7 @@
 #include "buddy.h"
 #include "chat.h"
 #include "jabber.h"
+#include "sfs.h"
 #include "xmlnode.h"
 
 /** Where a parsed message came from (M8: carbons and MAM unwrap to these). */
@@ -122,6 +123,11 @@ typedef struct _JabberMessage {
 	char *retract_reason;     /**< XEP-0425 <reason/> */
 	gboolean unstyled;        /**< XEP-0393 <unstyled/> */
 	gboolean store_hint;      /**< outgoing: XEP-0334 <store/> */
+
+	/* M8 server features round 2 */
+	JabberSfsFile *sfs;       /**< XEP-0447 (or XEP-0385) file metadata */
+	char *eme_ns;             /**< XEP-0380 namespace we couldn't decrypt */
+	char *eme_name;           /**< its display name */
 } JabberMessage;
 
 /**
@@ -209,6 +215,18 @@ char *jabber_fallback_ranges_to_string(GList *fallbacks);
  */
 char *jabber_fallback_strip(const char *body, GList *fallbacks,
 		const char * const *namespaces);
+
+/**
+ * XEP-0380: a display name for the encryption @a ns (@a name, the <encryption
+ * name=''/> attribute, if given; else a known name; else @a ns itself).
+ */
+const char *jabber_eme_name(const char *ns, const char *name);
+
+/**
+ * XEP-0380: TRUE if @a body is (or looks like) the standard "your client
+ * can't decrypt this" text that clients put next to encrypted payloads.
+ */
+gboolean jabber_eme_is_fallback_body(const char *body, const char *name);
 
 /** The namespaces whose fallback we strip when the UI renders them natively. */
 extern const char * const jabber_native_fallback_namespaces[];
