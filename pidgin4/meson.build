@@ -207,6 +207,9 @@ executable('pidgin4',
 	install_rpath : purple_libdir,
 	install : true)
 
+# M7: the UI plugins, installed into <prefix>/lib/pidgin4.
+subdir('plugins')
+
 # Desktop entry and icons in <prefix>/share. scripts/build-pidgin4.sh
 # --desktop-integration also links them into ~/.local/share.
 desktop_conf = configuration_data()
@@ -349,5 +352,6 @@ summary({
 	'libpurple prefix' : purple_prefix,
 	'libpurple plugin dir' : purple_plugindir,
 	'pidgin4 plugin dir' : libdir / 'pidgin4',
+	'UI plugins' : ported_plugins.keys(),
 	'locale dir' : purple_datadir / 'locale',
 })
