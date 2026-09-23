@@ -82,4 +82,7 @@ const char *pidgin_user_dir(void);
  */
 void pidgin_application_quit(void);
 
+/** The process exit status once the application quits (selftests). */
+void pidgin_application_set_exit_status(int status);
+
 #endif /* _PIDGIN_H_ */

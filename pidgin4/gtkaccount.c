@@ -59,6 +59,7 @@
 #include "util.h"
 
 #include "gtkaccount.h"
+#include "gtkdialogs.h"
 #include "gtkblist.h"
 #include "gtkutils.h"
 #include "pidginminidialog.h"
@@ -2325,6 +2326,12 @@ free_auth_request(struct auth_request *ar)
 }
 
 static void
+auth_send_im_cb(PidginMiniDialog *md, GtkButton *button, struct auth_request *ar)
+{
+	pidgin_dialogs_im_with_user(ar->account, ar->username);
+}
+
+static void
 authorize_and_add_cb(PidginMiniDialog *md, GtkButton *button, struct auth_request *ar)
 {
 	ar->answered = TRUE;
@@ -2428,7 +2435,8 @@ pidgin_accounts_request_authorization(PurpleAccount *account,
 	g_signal_connect(pidgin_mini_dialog_get_description_label(PIDGIN_MINI_DIALOG(win)),
 	                 "activate-link", G_CALLBACK(auth_activate_link_cb), aa);
 
-	/* TODO(M4): "Send Instant Message" needs the conversation window. */
+	pidgin_mini_dialog_add_non_closing_button(PIDGIN_MINI_DIALOG(win),
+		_("Send Instant Message"), (PidginMiniDialogCallback)auth_send_im_cb, aa);
 	pidgin_mini_dialog_add_button(PIDGIN_MINI_DIALOG(win), _("_Authorize"),
 		(PidginMiniDialogCallback)authorize_and_add_cb, aa);
 	pidgin_mini_dialog_add_button(PIDGIN_MINI_DIALOG(win), _("_Deny"),

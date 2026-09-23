@@ -425,7 +425,7 @@ Then port `gtkconv.c`:
 - Typing and infopane.
 - Drag-and-drop file send.
 
-**Status (components): done (M4a).** Items 1–6 above, the message index with its backfill, the remote-image loader and the construction helpers are in `pidgin4/`, tested, and used by notify and request. `gtkconv.c` is not ported yet: that is M4b.
+**Status (components): done (M4a).** Items 1–6 above, the message index with its backfill, the remote-image loader and the construction helpers are in `pidgin4/`, tested, and used by notify and request. `gtkconv.c` is not ported yet: that is M4b (see *Status (gtkconv)* below).
 
 **Build and layout:**
 - `meson.build` now needs gtksourceview-5, libspelling-1, libsoup-3.0 and sqlite3 (FTS5).
@@ -545,6 +545,165 @@ Then port `gtkconv.c`:
   - It uses the system proxy (GProxyResolver), not libpurple's per-account proxy.
   - The successful aesgcm decrypt path is untested until the OMEMO plugin provides the IPC below.
 - **Not covered by tests:** the context-menu actions (save image, emoji chooser) and the toolbar dialogs (font, colour, file) were built but only exercised in the demo, not by the selftest.
+
+**Status (gtkconv): done (M4b), except the checks with accounts signed in, which are left to the user** (the M4 section of `pidgin4/TESTING.md`). With it M4 is done and pidgin4 can be used for chatting. Left for later milestones: the log viewer and pounce editor behind View Log / Add Buddy Pounce (M5), sounds and notifications (M6, which gets the `make_sound` field and the conversation signals), and the ported plugins (M7).
+
+**What's in `pidgin4/`:**
+- **`gtkconv.[ch]`**: the conversation pane and the full `PurpleConversationUiOps`. `write_chat`/`write_im` pass through to `purple_conversation_write()`, as in Pidgin 2.
+  - A pane has:
+    - the infopane: buddy icon (an animated `GtkPicture`, if `/pidgin/conversations/im/show_buddy_icons`), name, status or topic, protocol icon, and a spinner while history loads;
+    - the chat topic entry;
+    - the `PidginMessageView`;
+    - for chats, a `GtkListView` of the users;
+    - the typing line;
+    - a "Replying to"/"Editing" banner;
+    - the compose area from `pidgin_create_compose_entry()`, plus a Send button (`/pidgin4/conversations/send_button`; Pidgin 2 has no such pref, only the sendbutton plugin).
+  - `write_conv`:
+    - linkifies, and emits `displaying-*-msg`, which may cancel or rewrite;
+    - builds a `PidginMessage` with parse options: the incoming-formatting pref, XEP-0393 for XMPP unless the meta says `unstyled`, point sizes, the protocol's smiley category, and our custom smileys on sent messages;
+    - applies the pending metadata;
+    - appends it, or queues it for a `mam-query=older` page;
+    - indexes it, updates the unseen state and emits `displayed-*-msg`.
+
+    Lines without SEND/RECV show without a name.
+  - The entry:
+    - `/` commands through `purple_cmd_do_command()` with Pidgin 2's status messages, and the built-in `say`, `me`, `debug`, `clear`, `clearall` and `help`;
+    - `NO_NEWLINES` splits a message into lines;
+    - typing notifications through `serv_send_typing()`, with the type-again interval;
+    - Up in an empty entry edits the last message;
+    - Tab completes nicks in chats (`chat-nick-autocomplete` first);
+    - Escape cancels the banner.
+  - Chat users are `PidginChatUser` objects in a `GListStore`, sorted as in Pidgin 2 (rank, then buddies, then alias).
+    - Rows have flag icons, nick colours from the same scheme as the view, bold buddies and yourself, and struck-out ignored users.
+    - Double click (or `chat-nick-clicked`) opens an IM.
+    - The context menu has IM, Send File, Ignore, Info, Get Away Message and Add/Remove; then Op/Deop/Voice/Devoice/Kick/Ban, for whichever of those commands the prpl registered for the conversation; then the buddy's own menu (`pidgin_blist_build_node_menu()`).
+  - Unseen state:
+    - `PIDGIN_UNSEEN_*` on the struct, and as the `unseen-count`/`unseen-state` conversation data (as in Pidgin 2);
+    - `pidgin_conv_set_unseen()`, `pidgin_conversations_find_unseen_list()`, `pidgin_conversations_get_unseen_count()`, and `pidgin_conversations_fill_menu()` (a `GMenu` with `app.pidgin4-present-conv`, for the M6 tray).
+
+    Seeing a tab in the active window clears it and sends read markers.
+  - `hide_new` (`always`/`away`) puts new IMs into a hidden window. Presenting a conversation, or a change of `hide_new`, attaches it.
+  - Drops:
+    - files are sent (`serv_send_file`; `serv_chat_send_file` in chats);
+    - an image dropped on an IM asks "Send Image File" or "Insert in Message" (`GtkAlertDialog`);
+    - a buddy dragged from the list opens an IM, or is invited into a chat.
+  - Menu actions:
+    - Find, Save As (HTML), Clear, Send File, Get Attention, Get Info;
+    - Invite (`purple_conv_chat_invite_user`, with its own dialog);
+    - Alias, Block (confirmed) and Unblock, Add and Remove;
+    - Insert Link (request fields) and Insert Image (`GtkFileDialog`);
+    - Close, and More (the `conversation-extended-menu` actions via `pidginmenu`);
+    - Enable Logging (the `enable-logging` node setting is written only when it differs from the pref, as in Pidgin 2) and Enable Sounds (`gtk-mute-sound`);
+    - the toolbar and timestamp prefs.
+  - Signals on `pidgin_conversations_get_handle()` (which is the message view's handle): `conversation-switched`, `conversation-hiding`, `conversation-displayed`, `chat-nick-autocomplete` and `chat-nick-clicked`, with Pidgin 2's signatures. They sit beside the view's `conversation-timestamp` and `displaying-`/`displayed-im-msg`/`-chat-msg`. `conversation-dragging` is dropped.
+  - Accessors for the M7 plugins: `pidgin_conv_get_window()`, `_get_message_view()`, `_get_entry()`, `_get_toolbar()`, `_get_tab_container()` and `_get_conversation()`; `pidgin_conv_get_tab_icon()` (a `GIcon` now), `pidgin_conv_is_hidden()`, `pidgin_conv_present_conversation()`, `pidgin_conv_attach_to_conversation()` and `pidgin_conversations_get_conv_ui_ops()`. `PidginConversation` keeps Pidgin 2's member names where they still mean something: `imhtml` is the message view, `entry` the compose entry, and `toolbar`, `tab_cont` and `u.chat->list` are what they were.
+  - Remote custom smileys (XHTML-IM BoB) are not supported. `custom_smiley_add` returns FALSE, so the prpl doesn't fetch them and the shortcut stays text. `send_confirm` puts the message back in the entry, as in Pidgin 2.
+- **`gtkconvwin.[ch]`**: `PidginWindow`, a `GtkApplicationWindow` with a `GtkPopoverMenuBar` and a `GtkNotebook`.
+  - The menubar is a `GMenuModel` of Pidgin 2's `menu_items[]` over a `conv` action group. Items that don't apply are disabled, or hidden (Invite, Block/Unblock, Add/Remove).
+  - Accelerators, set with `gtk_application_set_accels_for_action()`:
+    - Ctrl+M new IM, Ctrl+F find, Ctrl+L clear, Ctrl+O info, Ctrl+W close;
+    - Ctrl+Tab / Ctrl+Shift+Tab: the next/previous tab with unread text, else the next/previous tab;
+    - Ctrl+PgDn/PgUp and Ctrl+] / Ctrl+[: the next/previous tab;
+    - Alt+1..9: tab N;
+    - Ctrl+, / Ctrl+.: move the tab.
+  - Tabs are reorderable and detachable. The notebooks share a group, so tabs move between windows by drag, and "create-window" makes a new window.
+    - The window's `gtkconvs` list follows the notebook's `page-added`, `-removed` and `-reordered`; an emptied window goes.
+    - Tab labels have a status/typing icon, the title, and a close button (`close_on_tabs`). The title's colours for the unseen states and typing are Pidgin 2's defaults, as CSS classes.
+    - Middle click closes a tab. The context menu has Close other tabs, Detach and Close.
+    - There is no tab bar with one conversation. `tab_side` sets the tab position; the rotated variants map to left/right.
+  - Placement: Pidgin 2's API, and the functions `last`, `im_chat`, `new`, `group` and `account`, from `/pidgin/conversations/placement`. With `/pidgin/conversations/tabs` off, each conversation gets its own window.
+  - The window size is kept in `/pidgin4/conversations/width|height` (Wayland gives no position).
+  - Presenting uses `gtk_window_present()`, which passes an xdg-activation token when GTK has one; otherwise Sway marks the window urgent.
+- **`pidginconvmeta.[ch]`** (in the components library): the M8 glue. pidgin4's ui_info now has `message-meta` = `1`.
+  - Pending metadata:
+    - `receiving-message-meta` and `sending-message-meta` tables are kept per conversation (account + normalized name), and taken by the next `write_conv` with SEND/RECV. The sending table goes only to SEND.
+    - A table that isn't taken is dropped on the next idle.
+    - A sending table with `correction-of` is not kept, since no write follows it.
+  - Dedup against `messages.db`:
+    - a server-id hit sets `discard` = `1`;
+    - a stanza-id or origin-id hit does so only for MAM results, or for prpls whose ids come from the server (IRC msgid; not XMPP);
+    - a MAM result without an id hit is matched fuzzily (±2 min; the nick in rooms, any sender in IMs; the text) in `writing-im-msg`/`writing-chat-msg`, which cancels the write before libpurple logs it;
+    - a scroll-back page still shows its duplicates, from the index row.
+  - Indexing: every logged message, and any message with ids, is inserted with:
+    - its account and conversation keys, time, the logged alias as sender, and the plain text;
+    - its ids, and its reply and correction targets;
+    - its log file and the offset of its line.
+
+    libpurple's common log writer doesn't record the file name, so it is read from `/proc/self/fd/<fileno>`. The offset is the `ftell()` taken in `writing-*-msg` before the write, or the last line's start for a log that was just opened.
+  - Events:
+    - `message-corrected`: the sender is checked (bare JID in IMs, nick in rooms);
+    - `message-reaction`: identities are bare JIDs in IMs and nicks in rooms; an add we already have is a no-op;
+    - `message-receipt`: `displayed` covers earlier sent messages, and one from our own bare JID clears the unseen state (XEP-0490);
+    - `message-retracted`: in a room, a different sender means moderation.
+
+    Each handler finds the target in the view, and updates it and the index. If the target isn't shown, it returns FALSE, so the prpl writes its fallback; reactions and receipts still update the index.
+  - Contract rule 7: corrections, reactions and retractions write straight into the conversation's `PurpleLog`, as system lines that are never displayed and that `writing-*` plugins don't see:
+    - `X edited: …`;
+    - `X reacted 👍 to: <40 chars>` or `X removed the reaction 👍 from: …`;
+    - `X retracted a message`, or `mod removed a message[: reason]`.
+
+    A correction also gets an index row (with `correction_of`), so the new text is searchable.
+  - Actions go over the prpl's IPC, and are offered only when the prpl has the command and is connected (`pidgin_message_view_set_message_actions()`):
+    - reactions: `send-reaction`, with our complete new set;
+    - reply: `send-reply`, with the target's plain text as the quote and, in rooms, `room/nick` as the JID;
+    - edit: `send-correction`, with the entry's text as plain 0393;
+    - delete: `send-retraction`; or `send-moderation` for others' messages, in rooms where we are op, founder or halfop.
+
+    Nothing is jabber-specific beyond the command names, so Discord (M9) works by registering the same commands.
+  - Read state: a conversation is seen when its tab is current in the active window, or when a message arrives while it is. If `/pidgin4/conversations/send_markers` is on (the default), for the newest incoming message it then sends:
+    - `send-marker` `displayed`, if the message was `markable` (its stanza-id in IMs, its server-id in rooms);
+    - `mds-publish` with its server-id.
+
+    Each goes out once per message.
+  - Scroll-back (the view's new `top-reached`) takes:
+    - first the index (`get_recent` before the oldest shown message): any prpl, offline too, as plain text;
+    - then `mam-fetch-older`, with the oldest shown server-id. That page's messages (`mam-query=older`) are queued and prepended on `mam-query-done` (30 s timeout).
+  - Inline images: a body that is a lone http(s) or aesgcm image URL is shown with an `IMG` when the image loader allows the host.
+    - The jabber prpl doesn't expose its XEP-0363 service, so the host is **learnt from our own uploads**: the SEND echo whose body is the GET URL.
+    - Beyond that, **hosts on the account's own XMPP domain** (e.g. `upload.example.net`) are allowed: our server sees our address anyway.
+    - Contacts' upload hosts elsewhere stay links (the plan's allowlist).
+- **`pidginmessageview`** gained `top-reached`, `pidgin_message_view_set_message_actions()` and `pidgin_message_view_refresh()`.
+- **Buddy list**: rows whose conversation has unread text are bold, with the count. The authorize mini-dialog has "Send Instant Message" again. IM, Join and double click already presented the conversation; that now opens a window.
+
+**Prefs:**
+- `pidgin_prefs_init()` registers them through `pidgin_conversations_prefs_init()`. That includes every `/pidgin/conversations/*` key that Pidgin 2's `gtkconv.c` registers, with its type and default, so a profile Pidgin 2 has used gains nothing.
+- Read:
+  - `close_on_tabs`, `show_incoming_formatting`, `show_timestamps`, `show_formatting_toolbar`, `spellcheck`;
+  - `placement`, `tabs`, `tab_side`, `scrollback_lines`;
+  - `chat/entry_height`, `chat/userlist_width`, `im/entry_height`, `im/show_buddy_icons`, `im/hide_new`;
+  - and, in the entry, the font and colour ones.
+- Not used: the GTK 2 window positions and sizes, `use_smooth_scrolling`, `minimum_entry_lines`, `resize_custom_smileys`, `custom_smileys_size`, `placement_number`, `im/animate_buddy_icons` (animations always play) and `im/close_immediately` (always immediate).
+- New: `/pidgin4/conversations/{width,height}` (640×480), `send_button` (FALSE) and `send_markers` (TRUE).
+
+**Verification done:**
+- **Build**: zero warnings.
+- **Unit tests**: `meson test` passes all 11. That includes the new `convmeta`, which covers:
+  - discard by server-id;
+  - client ids with and without MAM, and for server-assigned ids;
+  - the fuzzy match's time window, sender and text;
+  - the fallback texts and the helpers.
+
+  It also includes `msgview-selftest` on Xvfb (`PIDGIN4_TEST_DISPLAY`).
+- **`PIDGIN4_CONV_SELFTEST=1`** PASSES its 114 checks on a scratch copy of the dev profile, in two setups:
+  - under Xvfb (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`, `dbus-run-session`, `-n`);
+  - under a headless nested Sway (`GDK_BACKEND=wayland`, `GSK_RENDERER=cairo`).
+
+  pidgin4 logged no criticals or GTK warnings, apart from libpurple's usual presence assertions for accounts whose prpl is missing.
+- **Real keys** (xdotool on Xvfb, during `PIDGIN4_CONV_SELFTEST_HOLD`): Alt+1, Ctrl+PgDn and Ctrl+Tab switch tabs and Ctrl+W closes one, even with the focus in the compose entry.
+- **Screenshots** of the IM and chat tabs looked right: names, colours, receipts, deleted and edited rows, the user list's order and icons, and the topic.
+- **Profile round-trip**: `scripts/check-profile-compat.sh --pidgin4 ~/.local/pidgin4-m4b/bin/pidgin4` **PASSES** (0 unexpected changes; 6 or 7 allowed ones, depending on the run), with no extra allowance.
+- **No account was signed in.** Nothing was tested against a real server or another client.
+
+**Gaps and notes:**
+- There is one `PurpleConversation` per tab: Pidgin 2's "Send To" (several buddies of a contact in one tab) is gone.
+- Remote custom smileys aren't shown (see above).
+- The buddy icon's context menu (save, set a custom icon) and inline alias editing in the infopane are dropped; Alias is in the menu.
+- Tab completion completes nicks only (no `/command` completion), and shows the candidates as a NO_LOG line.
+- The log viewer, the pounce editor and the file transfer window are M5; View Log and Add Buddy Pounce are disabled until then.
+- libpurple logs a MAM scroll-back page into the current log file (the M8 design); the index keeps the real times.
+- Index scroll-back shows plain text (the index keeps no markup), and only rows older than the oldest shown message.
+- The fallback log lines are system lines (`(time) <b>text</b>`); the backfill indexes them like any other line.
+- The status box's message is still a plain text view (an M3 TODO for M4, not done here).
 
 ### M5: Remaining windows
 Prefs, pounces, saved statuses, log viewer, privacy, room list, certificate manager, file transfers, smiley manager, plugins dialog, about/build info, join chat.

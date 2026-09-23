@@ -170,3 +170,54 @@ pidgin-format-toolbar button {
 	min-height: 24px;
 	padding: 2px;
 }
+
+/* M4b: conversation windows (gtkconv.c, gtkconvwin.c). Tab label colours
+ * are Pidgin 2's defaults for the unseen states and typing. */
+.pidgin-tab-label.unseen-text {
+	color: #DF421E;
+}
+
+.pidgin-tab-label.unseen-nick {
+	color: #3465A4;
+	font-weight: bold;
+}
+
+.pidgin-tab-label.unseen-event,
+.pidgin-tab-label.unseen-no-log {
+	color: #868272;
+}
+
+.pidgin-tab-label.typing {
+	color: #4E9A06;
+}
+
+.pidgin-tab-close {
+	min-width: 16px;
+	min-height: 16px;
+	padding: 0;
+}
+
+.pidgin-conv-infopane {
+	padding: 4px 6px;
+}
+
+.pidgin-conv-buddy-icon {
+	border-radius: 4px;
+}
+
+.pidgin-conv-status,
+.pidgin-conv-typing,
+.pidgin-conv-user-count {
+	font-size: smaller;
+	opacity: 0.7;
+}
+
+.pidgin-conv-banner {
+	padding: 2px 6px;
+	border-radius: 4px;
+	background-color: alpha(currentColor, 0.08);
+}
+
+.pidgin-conv-pane {
+	padding: 0 6px 6px 6px;
+}

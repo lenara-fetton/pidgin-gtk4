@@ -24,6 +24,7 @@
 
 #include "prefs.h"
 
+#include "gtkconv.h"
 #include "gtkprefs.h"
 
 /*
@@ -58,4 +59,7 @@ pidgin_prefs_init(void)
 	 * every start; handy when reading a profile that both UIs share. */
 	purple_prefs_add_string(PIDGIN4_PREFS_ROOT "/last_version", "");
 	purple_prefs_set_string(PIDGIN4_PREFS_ROOT "/last_version", VERSION);
+
+	/* M4b: /pidgin/conversations (Pidgin 2's) and /pidgin4/conversations. */
+	pidgin_conversations_prefs_init();
 }

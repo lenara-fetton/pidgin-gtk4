@@ -61,6 +61,8 @@ G_DECLARE_FINAL_TYPE(PidginMessageView, pidgin_message_view, PIDGIN, MESSAGE_VIE
  *   "reply-requested"   (PidginMessage *msg)
  *   "edit-requested"    (PidginMessage *msg)    own messages only
  *   "retract-requested" (PidginMessage *msg)    own messages only
+ *   "top-reached"       ()
+ *       The view was scrolled to its top (M4b loads older history).
  *   "populate-menu"     (PidginMessage *msg, GMenu *section)
  *       Emitted when a row is bound, to let plugins add items to the
  *       row's context menu (replaces GtkTextView "populate-popup" hooks,
@@ -133,6 +135,18 @@ void pidgin_message_view_set_search_mode(PidginMessageView *view, gboolean on);
 void pidgin_message_view_set_search_text(PidginMessageView *view, const char *text);
 /** Messages shown with the current filter. */
 guint pidgin_message_view_get_n_visible(PidginMessageView *view);
+
+/**
+ * Whether the row menu offers Reply, React, Edit and Delete (the
+ * conversation's prpl implements the M8 IPC). Default TRUE; with TRUE only
+ * messages with an id get them. @can_moderate also offers Delete on
+ * others' messages that have a server id (XEP-0425 moderation).
+ */
+void pidgin_message_view_set_message_actions(PidginMessageView *view, gboolean enabled,
+                                             gboolean can_moderate);
+
+/** Updates every visible row (e.g. after the show_timestamps pref changed). */
+void pidgin_message_view_refresh(PidginMessageView *view);
 
 /**
  * Maximum number of messages kept (0: unlimited). Defaults to the shared

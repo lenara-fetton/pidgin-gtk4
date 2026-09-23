@@ -135,6 +135,9 @@ pidgin4_sources = files(
 	'gtkaccount.c',
 	'gtkblist.c',
 	'gtkconn.c',
+	'gtkconv.c',
+	'gtkconvselftest.c',
+	'gtkconvwin.c',
 	'gtkdebug.c',
 	'gtkdialogs.c',
 	'gtkdocklet.c',
@@ -184,6 +187,7 @@ components_sources = files(
 	# M6: the tray's menu exporter (GIO only).
 	'pidgindbusmenu.c',
 	'pidginsni.c',
+	'pidginconvmeta.c',
 )
 
 components_lib = static_library('pidgin4-components',
@@ -266,6 +270,7 @@ component_tests = [
 	'backfill',
 	'imageloader',
 	'nickcolor',
+	'convmeta',
 ]
 foreach name : component_tests
 	test_exe = executable('test-' + name,
