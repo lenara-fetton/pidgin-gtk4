@@ -160,6 +160,12 @@ test_menu = executable('test-pidginmenu',
 	install : false)
 test('pidginmenu', test_menu)
 
+test_singleui = executable('test-singleui',
+	'tests/test-singleui.c', 'pidginsingleui.c',
+	dependencies : [glib_dep, purple_dep],
+	install : false)
+test('singleui', test_singleui)
+
 desktop_validate = find_program('desktop-file-validate', required : false)
 if desktop_validate.found()
 	test('desktop-file', desktop_validate,

@@ -328,7 +328,6 @@ conflict_dialog_cb(GObject *source, GAsyncResult *result, gpointer data)
 {
 	gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), result, NULL);
 
-	exit_status = 1;
 	pidgin_application_quit();
 }
 
@@ -346,6 +345,11 @@ check_single_ui(void)
 
 	g_printerr("pidgin4: Pidgin 2 is using the profile %s (%s); exiting.\n",
 	           purple_user_dir(), conflict);
+
+	/* However we leave (the dialog or a signal), it is a failure. */
+	exit_status = 1;
+	g_application_hold(G_APPLICATION(application));
+	app_held = TRUE;
 
 	detail = g_strdup_printf(_("Pidgin 2 is running with the same settings "
 		"directory (%s):\n%s\n\nOnly one of them can use a settings "
