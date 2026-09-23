@@ -186,6 +186,7 @@ pidgin_quit(void)
 	pidgin_notify_uninit();
 	pidgin_connection_uninit();
 	pidgin_docklet_uninit();
+	pidgin_idle_uninit();
 	pidgin_blist_uninit();
 	pidgin_account_uninit();
 	pidgin_debug_uninit();

@@ -40,6 +40,13 @@
  */
 PurpleIdleUiOps *pidgin_idle_get_ui_ops(void);
 
+/**
+ * pidgin4: stops the idle sources (ext-idle-notify, the Mutter poll).
+ * The first pidgin_idle_get_ui_ops() registers /pidgin4/idle/method
+ * ("system", "purple" or "none"); see gtkidle.c.
+ */
+void pidgin_idle_uninit(void);
+
 /*@}*/
 
 #endif /* _PIDGIN_IDLE_H_ */

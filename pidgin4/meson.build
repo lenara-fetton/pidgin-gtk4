@@ -45,6 +45,13 @@ gtksourceview_dep = dependency('gtksourceview-5', version : '>= 5.0')
 spelling_dep = dependency('libspelling-1', version : '>= 0.2')
 soup_dep = dependency('libsoup-3.0', version : '>= 3.0')
 sqlite_dep = dependency('sqlite3', version : '>= 3.35')
+# M6: idle time (ext-idle-notify-v1) and sounds.
+wayland_client_dep = dependency('wayland-client')
+gtk_wayland_dep = dependency('gtk4-wayland')
+wayland_protocols_dep = dependency('wayland-protocols', version : '>= 1.27')
+wayland_scanner = find_program(dependency('wayland-scanner', native : true)
+                               .get_variable(pkgconfig : 'wayland_scanner'))
+gsound_dep = dependency('gsound', version : '>= 1.0')
 m_dep = cc.find_library('m', required : false)
 
 # Everything libpurple-related (translations, its plugin dir, the rpath)
@@ -92,6 +99,20 @@ resources = gnome.compile_resources('pidgin4-resources',
 	source_dir : 'resources',
 	c_name : 'pidgin4')
 
+# M6: the ext-idle-notify-v1 client code (pidginidle-wayland.c).
+idle_notify_xml = wayland_protocols_dep.get_variable(pkgconfig : 'pkgdatadir') / \
+	'staging' / 'ext-idle-notify' / 'ext-idle-notify-v1.xml'
+idle_notify_sources = [
+	custom_target('ext-idle-notify-v1-client-protocol.h',
+		input : idle_notify_xml,
+		output : 'ext-idle-notify-v1-client-protocol.h',
+		command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@']),
+	custom_target('ext-idle-notify-v1-protocol.c',
+		input : idle_notify_xml,
+		output : 'ext-idle-notify-v1-protocol.c',
+		command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@']),
+]
+
 add_project_arguments(
 	'-DHAVE_CONFIG_H',
 	'-DPURPLE_DISABLE_DEPRECATED',
@@ -130,11 +151,14 @@ pidgin4_sources = files(
 	'pidginminidialog.c',
 	'pidginsingleui.c',
 	'stubs.c',
-)
+	# M6
+	'pidginidle-wayland.c',
+) + idle_notify_sources
 
 pidgin4_deps = [glib_dep, gio_dep, gio_unix_dep, gobject_dep, gmodule_dep,
                 gtk_dep, purple_dep, gtksourceview_dep, spelling_dep, soup_dep,
-                sqlite_dep, m_dep]
+                sqlite_dep, m_dep,
+                wayland_client_dep, gtk_wayland_dep, gsound_dep]
 
 # Reusable widgets and stores (M4 GtkIMHtml replacement, helpers). Built as
 # a static library so the unit tests and the demo can link them without
@@ -283,6 +307,12 @@ test_sni = executable('test-sni',
 	dependencies : [glib_dep, gio_dep, gobject_dep, gtk_dep],
 	install : false)
 test('sni', test_sni, timeout : 60)
+
+test_idle = executable('test-idle',
+	'tests/test-idle.c', 'pidginidle-wayland.c', idle_notify_sources,
+	dependencies : [glib_dep, gtk_dep, gtk_wayland_dep, wayland_client_dep],
+	install : false)
+test('idle', test_idle)
 
 # A stand-alone watcher for headless runs: under dbus-run-session, start
 # it before pidgin4 and the tray item registers with it.
