@@ -1,4 +1,4 @@
-# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status, M4 conversations, M5 windows, M6 desktop integration, M9 Discord and Steam)
+# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status, M4 conversations, M5 windows, M6 desktop integration, M7 plugins, M9 Discord and Steam)
 
 The automated checks (unit tests, the headless selftests and
 `scripts/check-profile-compat.sh`) never sign an account in. The checks
@@ -607,6 +607,66 @@ in a DM and in a small server channel.
 - [ ] Steam Guard and login are unchanged; Pidgin 2 shows friends' games
       as before.
 
+## M7: plugins (with accounts signed in)
+
+The plugins install into `<prefix>/lib/pidgin4`. Load them in Tools →
+Plugins (M5), or, before M5, by listing their paths in
+`/pidgin4/plugins/loaded` in the scratch profile's `prefs.xml`. pidgin4
+never loads anything from `/pidgin/plugins/loaded`.
+
+### The plugins in use
+- [ ] With cap, history, markerline, notify and timestamp_format loaded,
+      quit and start again: all five are loaded (`-d` log: "Loading saved
+      plugin …/lib/pidgin4/…"), and Pidgin 2 on the same profile still
+      loads its own list.
+- [ ] **history**: open an IM with someone you talked to before: the end
+      of the last conversation is shown dimmed, with a header and a grey
+      line, before anything new. The same for a chat you have a log of.
+      With logging off for IMs the plugin warns once and shows nothing.
+- [ ] **markerline**: with a conversation open, focus another window;
+      have someone write: a red line separates what arrived while you
+      were away. Switching tabs moves it too. Conversation → More →
+      Jump to markerline scrolls to it. The IM/chat prefs switch it.
+- [ ] **timestamp_format**: set "24 hour" and dates "Always": row
+      timestamps change at once (e.g. `(2026-09-23 14:05:09)`), and new
+      log lines use the log format. Right click a message → Timestamp
+      Format Options opens the prefs.
+- [ ] **notify**: with "Prepend string" and "Insert count" on, a message
+      in an unfocused conversation window makes its title
+      `(*)[1] name`; focusing, clicking or typing in it (per the prefs)
+      or sending a message clears it. "Raise"/"Present" bring the window
+      up (Sway marks it urgent instead of focusing it). "Show a desktop
+      notification" sends one per conversation (mako/GNOME).
+- [ ] **cap**: after messaging a buddy and getting an answer, their
+      tooltip shows "Response Probability"; `<profile>/pidgin4/cap.db`
+      grows; Pidgin 2's `<profile>/cap.db` is untouched.
+
+### The other ports
+- [ ] **convcolors**: sent/received/system/error/highlighted bodies take
+      the configured colours and styles; "Ignore incoming format" drops
+      a buddy's fonts and colours; the colour buttons open the GTK
+      colour chooser.
+- [ ] **spellchk**: typing `teh ` gives `the `; ending a message with a
+      listed word corrects it and needs a second Enter; the editor adds,
+      edits (double click a cell) and deletes words, and `<profile>/dict`
+      reads back in Pidgin 2.
+- [ ] **sendbutton**: a Send button appears (insensitive while the entry
+      is empty) and goes away when the plugin is unloaded.
+- [ ] **gtkbuddynote**: a buddy's menu has Edit Notes...; the note shows
+      in the tooltip and in Pidgin 2.
+- [ ] **timestamp**: time rows appear between messages at the interval.
+- [ ] **iconaway**: going Away hides the buddy list (GNOME also
+      minimizes the conversation windows; Sway doesn't minimize).
+- [ ] **xmppconsole** (Tools → XMPP Console, with an XMPP account
+      signed in): stanzas scroll by, tinted by direction; the popovers
+      fill in stanzas; Enter sends; invalid XML turns the entry red; the
+      account drop-down appears with two XMPP accounts.
+- [ ] **xmppdisco** (Tools → XMPP Service Discovery): Browse asks for a
+      server and lists its services; expanding a row loads its items;
+      Register and Add to Buddy List work (buttons and right click).
+- [ ] Unload every plugin in the dialog with conversations open: no
+      criticals, and the markers, time rows' styling and send button go.
+
 ## Developer aids
 
 For headless test runs only:
@@ -667,6 +727,22 @@ For headless test runs only:
   `scripts/run-pidgin4-selftest.sh BIN PROFILE [TIMEOUT]` runs a binary
   this way on a private Xvfb (or, with `PIDGIN4_SELFTEST_WAYLAND=1`, on
   the current Wayland session).
+
+- `PIDGIN4_PLUGINS_SELFTEST=1` (M7) loads every ported plugin from
+  `<prefix>/lib/pidgin4` (or `PIDGIN4_PLUGINS_SELFTEST_DIR`, e.g.
+  `build-pidgin4/plugins`; `PIDGIN4_PLUGINS_SELFTEST_SKIP=a,b` leaves
+  some out), reports the ones `/pidgin4/plugins/loaded` loaded at
+  startup, and on the selftest protocol checks: history rows from a
+  conversation's last log (whole, and the tail through the index), the
+  marker after a tab switch and a focus change, timestamp_format in a
+  row's label and its menu item, notify's title prefix and its removal,
+  cap rows in `<profile>/pidgin4/cap.db` and the tooltip line,
+  buddynote's menu item and tooltip, spellchk (typing and on send),
+  sendbutton, convcolors' classes, timestamp's rows, the XMPP console and
+  disco windows, every config frame, unloading, and that
+  `/pidgin/plugins/loaded` did not change. It restores the prefs it set
+  and quits with status 0 ("PASS (N checks)"). Scratch profile only: it
+  writes logs, index rows and `cap.db`.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
 for the Xvfb setup (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`,

@@ -77,6 +77,7 @@
 #include "pidginomemo.h"
 #include "pidginselftest.h"
 #include "pidginsingleui.h"
+#include "pluginsselftest.h"
 
 /* Command line options (parsed by GApplication in the local instance). */
 static struct {
@@ -544,6 +545,8 @@ startup_cb(GApplication *app, gpointer data)
 		pidgin_request_selftest();
 	/* No-op unless PIDGIN4_CONV_SELFTEST is set (gtkconvselftest.c). */
 	pidgin_conversations_selftest();
+	/* M7: no-op unless PIDGIN4_PLUGINS_SELFTEST is set (pluginsselftest.c). */
+	pidgin_ported_plugins_selftest();
 
 	/* M6 developer aids (no-ops unless their variable is set). */
 	pidgin_docklet_selftest();

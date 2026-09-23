@@ -170,6 +170,10 @@ pidgin4_sources = files(
 	'pidginabout.c',
 	'pidginomemo.c',
 	'pidginselftest.c',
+	# M7: the plugins selftest and the selftest protocol it shares with
+	# gtkconvselftest.c
+	'pluginsselftest.c',
+	'tests/selftest-prpl.c',
 ) + idle_notify_sources
 
 pidgin4_deps = [glib_dep, gio_dep, gio_unix_dep, gobject_dep, gmodule_dep,
@@ -221,6 +225,9 @@ executable('pidgin4',
 	build_rpath : purple_libdir,
 	install_rpath : purple_libdir,
 	install : true)
+
+# M7: the UI plugins, installed into <prefix>/lib/pidgin4.
+subdir('plugins')
 
 # Desktop entry and icons in <prefix>/share. scripts/build-pidgin4.sh
 # --desktop-integration also links them into ~/.local/share.
@@ -381,5 +388,6 @@ summary({
 	'libpurple prefix' : purple_prefix,
 	'libpurple plugin dir' : purple_plugindir,
 	'pidgin4 plugin dir' : libdir / 'pidgin4',
+	'UI plugins' : ported_plugins.keys(),
 	'locale dir' : purple_datadir / 'locale',
 })

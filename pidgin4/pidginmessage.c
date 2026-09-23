@@ -57,6 +57,8 @@ struct _PidginMessage
 	GList *reaction_order;          /* emoji, owned by the table keys */
 	gboolean retracted;
 	gint64 index_id;
+
+	GPtrArray *css_classes;         /* M7: extra row classes (plugins) */
 };
 
 enum {
@@ -79,6 +81,7 @@ enum {
 	PROP_RECEIPT,
 	PROP_RETRACTED,
 	PROP_INDEX_ID,
+	PROP_CSS_CLASSES,
 	N_PROPS
 };
 
@@ -127,6 +130,9 @@ pidgin_message_get_property(GObject *obj, guint prop_id, GValue *value,
 		case PROP_RECEIPT: g_value_set_int(value, msg->receipt); break;
 		case PROP_RETRACTED: g_value_set_boolean(value, msg->retracted); break;
 		case PROP_INDEX_ID: g_value_set_int64(value, msg->index_id); break;
+		case PROP_CSS_CLASSES:
+			g_value_set_boxed(value, msg->css_classes ? msg->css_classes->pdata : NULL);
+			break;
 		default:
 			G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
 	}
@@ -182,6 +188,7 @@ pidgin_message_finalize(GObject *obj)
 	g_clear_pointer(&msg->history, g_ptr_array_unref);
 	g_list_free(msg->reaction_order);
 	g_clear_pointer(&msg->reactions, g_hash_table_destroy);
+	g_clear_pointer(&msg->css_classes, g_ptr_array_unref);
 
 	G_OBJECT_CLASS(pidgin_message_parent_class)->finalize(obj);
 }
@@ -216,6 +223,7 @@ pidgin_message_class_init(PidginMessageClass *klass)
 	                                       0, rw);
 	props[PROP_RETRACTED] = g_param_spec_boolean("retracted", NULL, NULL, FALSE, rw);
 	props[PROP_INDEX_ID] = g_param_spec_int64("index-id", NULL, NULL, 0, G_MAXINT64, 0, rw);
+	props[PROP_CSS_CLASSES] = g_param_spec_boxed("css-classes", NULL, NULL, G_TYPE_STRV, ro);
 	g_object_class_install_properties(obj_class, N_PROPS, props);
 
 	/**
@@ -651,4 +659,65 @@ pidgin_message_set_index_id(PidginMessage *msg, gint64 id)
 		return;
 	msg->index_id = id;
 	g_object_notify_by_pspec(G_OBJECT(msg), props[PROP_INDEX_ID]);
+}
+
+/* ---- M7: extra CSS classes for the row (plugins) ---- */
+
+void
+pidgin_message_add_css_class(PidginMessage *msg, const char *css_class)
+{
+	g_return_if_fail(PIDGIN_IS_MESSAGE(msg));
+	g_return_if_fail(css_class != NULL && *css_class != '\0');
+
+	if (pidgin_message_has_css_class(msg, css_class))
+		return;
+	if (msg->css_classes == NULL) {
+		msg->css_classes = g_ptr_array_new_with_free_func(g_free);
+		g_ptr_array_add(msg->css_classes, NULL);
+	}
+	/* keep it NULL-terminated */
+	msg->css_classes->pdata[msg->css_classes->len - 1] = g_strdup(css_class);
+	g_ptr_array_add(msg->css_classes, NULL);
+	g_object_notify_by_pspec(G_OBJECT(msg), props[PROP_CSS_CLASSES]);
+}
+
+void
+pidgin_message_remove_css_class(PidginMessage *msg, const char *css_class)
+{
+	guint i;
+
+	g_return_if_fail(PIDGIN_IS_MESSAGE(msg));
+
+	if (msg->css_classes == NULL || css_class == NULL)
+		return;
+	for (i = 0; i + 1 < msg->css_classes->len; i++) {
+		if (g_str_equal(msg->css_classes->pdata[i], css_class)) {
+			g_ptr_array_remove_index(msg->css_classes, i);
+			g_object_notify_by_pspec(G_OBJECT(msg), props[PROP_CSS_CLASSES]);
+			return;
+		}
+	}
+}
+
+gboolean
+pidgin_message_has_css_class(PidginMessage *msg, const char *css_class)
+{
+	guint i;
+
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE(msg), FALSE);
+
+	if (msg->css_classes == NULL || css_class == NULL)
+		return FALSE;
+	for (i = 0; i + 1 < msg->css_classes->len; i++)
+		if (g_str_equal(msg->css_classes->pdata[i], css_class))
+			return TRUE;
+	return FALSE;
+}
+
+const char * const *
+pidgin_message_get_css_classes(PidginMessage *msg)
+{
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE(msg), NULL);
+
+	return msg->css_classes ? (const char * const *)msg->css_classes->pdata : NULL;
 }

@@ -228,6 +228,10 @@ GtkWidget *pidgin_conv_get_entry(PidginConversation *gtkconv);
 GtkWidget *pidgin_conv_get_toolbar(PidginConversation *gtkconv);
 GtkWidget *pidgin_conv_get_tab_container(PidginConversation *gtkconv);
 PurpleConversation *pidgin_conv_get_conversation(PidginConversation *gtkconv);
+/** M7: the PidginComposeEntry (same as pidgin_conv_get_entry()). */
+GtkWidget *pidgin_conv_get_compose_entry(PidginConversation *gtkconv);
+/** M7: the Send button (shown by /pidgin4/conversations/send_button). */
+GtkWidget *pidgin_conv_get_send_button(PidginConversation *gtkconv);
 
 /** Called by the window when a tab becomes current or the window gets focus. */
 void pidgin_conv_seen(PidginConversation *gtkconv);
