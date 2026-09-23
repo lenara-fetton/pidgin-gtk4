@@ -4394,6 +4394,7 @@ void jabber_plugin_init(PurplePlugin *plugin)
 	/* XEP-0352 (the IPC command; the signals are hooked at first login) */
 	jabber_csi_init(plugin);
 	jabber_message_semantics_init(plugin); /* M8: send-* IPC, features */
+	jabber_http_upload_ipc_init(plugin); /* M8: http-upload-* IPC */
 
 	purple_signal_register(plugin, "jabber-receiving-iq",
 			purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,

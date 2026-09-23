@@ -685,6 +685,19 @@ jabber_http_upload_available(PurpleConnection *gc)
 	return service && service->jid && account_enabled(gc);
 }
 
+/* The UI may offer more (pidgin4: Insert Image by upload) once the service
+ * is known: tell the account's open conversations their features changed. */
+static void
+features_changed(PurpleConnection *gc)
+{
+	PurpleAccount *account = purple_connection_get_account(gc);
+	GList *l;
+
+	for (l = purple_get_conversations(); l != NULL; l = l->next)
+		if (purple_conversation_get_account(l->data) == account)
+			purple_conversation_update(l->data, PURPLE_CONV_UPDATE_FEATURES);
+}
+
 void
 jabber_http_upload_set_service(PurpleConnection *gc, const char *jid,
                                goffset max_file_size)
@@ -699,6 +712,8 @@ jabber_http_upload_set_service(PurpleConnection *gc, const char *jid,
 	g_free(service->jid);
 	service->jid = g_strdup(jid);
 	service->max_file_size = max_file_size;
+	if (jid != NULL)
+		features_changed(gc);
 }
 
 static void
@@ -721,6 +736,7 @@ disco_info_cb(JabberStream *js, const char *from, JabberIqType type,
 	service->max_file_size = max;
 	purple_debug_info("jabber", "http-upload: service %s, max-file-size %"
 	                  G_GINT64_FORMAT "\n", from, (gint64)max);
+	features_changed(js->gc);
 }
 
 static void
@@ -1198,6 +1214,58 @@ connect_signals_cb(gpointer data)
 	purple_signal_connect(purple_connections_get_handle(), "signing-off",
 	                      &handle, PURPLE_CALLBACK(signing_off_cb), NULL);
 	return FALSE;
+}
+
+/**************************************************************************
+ * IPC (for UIs)
+ **************************************************************************/
+
+static PurpleConnection *
+ipc_connection(PurpleAccount *account)
+{
+	PurpleConnection *gc = account ? purple_account_get_connection(account) : NULL;
+
+	if (gc == NULL || !PURPLE_CONNECTION_IS_CONNECTED(gc))
+		return NULL;
+	return gc;
+}
+
+/* gboolean http-upload-available(PurpleAccount *) */
+static gboolean
+ipc_available(PurpleAccount *account)
+{
+	PurpleConnection *gc = ipc_connection(account);
+
+	return gc != NULL && jabber_http_upload_available(gc);
+}
+
+/* guint64 http-upload-max-size(PurpleAccount *), as a pointer: 0 when
+ * unknown (no service, or no stated limit) */
+static gpointer
+ipc_max_size(PurpleAccount *account)
+{
+	PurpleConnection *gc = ipc_connection(account);
+	JabberHttpUploadService *service;
+
+	if (gc == NULL || !jabber_http_upload_available(gc))
+		return NULL;
+	service = service_find(gc);
+	return GSIZE_TO_POINTER((gsize)MAX(service->max_file_size, 0));
+}
+
+void
+jabber_http_upload_ipc_init(PurplePlugin *plugin)
+{
+	purple_plugin_ipc_register(plugin, "http-upload-available",
+			PURPLE_CALLBACK(ipc_available),
+			purple_marshal_BOOLEAN__POINTER,
+			purple_value_new(PURPLE_TYPE_BOOLEAN), 1,
+			purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT));
+	purple_plugin_ipc_register(plugin, "http-upload-max-size",
+			PURPLE_CALLBACK(ipc_max_size),
+			purple_marshal_POINTER__POINTER,
+			purple_value_new(PURPLE_TYPE_UINT64), 1,
+			purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT));
 }
 
 void

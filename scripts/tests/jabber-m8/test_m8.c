@@ -24,6 +24,7 @@
 #include "bookmarks.h"
 #include "carbons.h"
 #include "chat.h"
+#include "httpupload.h"
 #include "iq.h"
 #include "mam.h"
 #include "message.h"
@@ -2117,6 +2118,102 @@ test_features_and_flags(void)
 	purple_account_set_connection(bad, NULL);
 }
 
+/**************************************************************************
+ * HTTP upload IPC (XEP-0363)
+ **************************************************************************/
+
+static int features_updates = 0;
+static PurpleConversation *features_conv = NULL;
+
+static void
+conv_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type, gpointer data)
+{
+	/* the account's other conversations (earlier tests) get it too */
+	if (type == PURPLE_CONV_UPDATE_FEATURES && conv == features_conv)
+		features_updates++;
+}
+
+static void
+test_http_upload_ipc(void)
+{
+	PurpleConversation *conv;
+	gboolean ok = FALSE;
+	char *id;
+	char *reply;
+	PurpleConnectionState state;
+
+	/* the signal hookup is deferred to the event loop */
+	while (g_main_context_iteration(NULL, FALSE))
+		;
+	purple_signal_connect(purple_conversations_get_handle(), "conversation-updated",
+	                      &features_updates, PURPLE_CALLBACK(conv_updated_cb), NULL);
+	conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, account, "upload-friend@example.net");
+	features_conv = conv;
+
+	/* no service yet */
+	CHECK(!GPOINTER_TO_INT(purple_plugin_ipc_call(jabber_plugin, "http-upload-available",
+	                                               &ok, account)));
+	CHECK(ok);
+	ok = FALSE;
+	CHECK(GPOINTER_TO_SIZE(purple_plugin_ipc_call(jabber_plugin, "http-upload-max-size",
+	                                              &ok, account)) == 0);
+	CHECK(ok);
+	CHECK(!GPOINTER_TO_INT(purple_plugin_ipc_call(jabber_plugin, "http-upload-available",
+	                                               NULL, NULL)));
+
+	/* sign-on discovery: disco#info on the server finds the service */
+	reset_capture();
+	features_updates = 0;
+	purple_signal_emit(purple_connections_get_handle(), "signed-on", js->gc);
+	id = sent_id_containing("http://jabber.org/protocol/disco#info");
+	CHECK(id != NULL);
+	CHECK(features_updates == 0);
+	reply = g_strdup_printf(
+		"<iq xmlns='jabber:client' type='result' from='example.org' id='%s'>"
+		"<query xmlns='http://jabber.org/protocol/disco#info'>"
+		"<identity category='store' type='file' name='HTTP File Upload'/>"
+		"<feature var='urn:xmpp:http:upload:0'/>"
+		"<x xmlns='jabber:x:data' type='result'>"
+		"<field var='FORM_TYPE' type='hidden'><value>urn:xmpp:http:upload:0</value></field>"
+		"<field var='max-file-size'><value>5242880</value></field>"
+		"</x></query></iq>", id ? id : "");
+	feed(reply);
+	g_free(reply);
+	g_free(id);
+	CHECK(features_updates == 1);
+	CHECK(GPOINTER_TO_INT(purple_plugin_ipc_call(jabber_plugin, "http-upload-available",
+	                                              NULL, account)));
+	CHECK(GPOINTER_TO_SIZE(purple_plugin_ipc_call(jabber_plugin, "http-upload-max-size",
+	                                              NULL, account)) == 5242880);
+
+	/* the account switch turns it off */
+	purple_account_set_bool(account, "http_upload", FALSE);
+	CHECK(!GPOINTER_TO_INT(purple_plugin_ipc_call(jabber_plugin, "http-upload-available",
+	                                               NULL, account)));
+	CHECK(GPOINTER_TO_SIZE(purple_plugin_ipc_call(jabber_plugin, "http-upload-max-size",
+	                                              NULL, account)) == 0);
+	purple_account_set_bool(account, "http_upload", TRUE);
+
+	/* not connected: unavailable */
+	state = js->gc->state;
+	js->gc->state = PURPLE_CONNECTING;
+	CHECK(!GPOINTER_TO_INT(purple_plugin_ipc_call(jabber_plugin, "http-upload-available",
+	                                               NULL, account)));
+	js->gc->state = state;
+
+	/* no stated limit: 0 */
+	jabber_http_upload_set_service(js->gc, "upload.example.org", 0);
+	CHECK(features_updates == 2);
+	CHECK(GPOINTER_TO_INT(purple_plugin_ipc_call(jabber_plugin, "http-upload-available",
+	                                              NULL, account)));
+	CHECK(GPOINTER_TO_SIZE(purple_plugin_ipc_call(jabber_plugin, "http-upload-max-size",
+	                                              NULL, account)) == 0);
+
+	purple_signals_disconnect_by_handle(&features_updates);
+	features_conv = NULL;
+	purple_conversation_destroy(conv);
+}
+
 /**************************************************************************/
 
 int
@@ -2214,6 +2311,7 @@ main(int argc, char **argv)
 	test_styling_meta();
 	test_displayed_sync();
 	test_features_and_flags();
+	test_http_upload_ipc();
 
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
