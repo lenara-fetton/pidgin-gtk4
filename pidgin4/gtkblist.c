@@ -1227,6 +1227,10 @@ row_expanded_cb(GtkTreeListRow *row, GParamSpec *pspec, BlistRow *r)
 {
 	gpointer item;
 
+	/* Nothing to record while the buddy list is being destroyed. */
+	if (gtkblist == NULL)
+		return;
+
 	/* A row whose item left the model notifies "expanded" (now FALSE)
 	 * too; that is not the user collapsing it. */
 	item = gtk_tree_list_row_get_item(row);
@@ -1551,6 +1555,14 @@ static GdkDragAction
 row_drop_motion_cb(GtkDropTarget *target, double x, double y, BlistRow *r)
 {
 	DropPosition pos = drop_position(r->expander, y);
+	GdkDrop *drop = gtk_drop_target_get_current_drop(target);
+	GdkDragAction action = GDK_ACTION_COPY;
+
+	/* Nodes move, files are copied (sent). One action only. */
+	if (drop != NULL &&
+	    gdk_content_formats_contain_gtype(gdk_drop_get_formats(drop),
+	                                      PIDGIN_TYPE_BLIST_NODE_ITEM))
+		action = GDK_ACTION_MOVE;
 
 	row_clear_drop_highlight(r);
 	if (pos == DROP_BEFORE)
@@ -1559,7 +1571,7 @@ row_drop_motion_cb(GtkDropTarget *target, double x, double y, BlistRow *r)
 		gtk_widget_add_css_class(r->expander, "pidgin-blist-drop-after");
 	else
 		gtk_widget_add_css_class(r->expander, "pidgin-blist-drop-into");
-	return GDK_ACTION_MOVE | GDK_ACTION_COPY;
+	return action;
 }
 
 static void
@@ -3503,8 +3515,12 @@ generic_error_reconnect_cb(PidginMiniDialog *md, GtkButton *button, PurpleAccoun
 static void
 generic_error_destroy_cb(GtkWidget *dialog, PurpleAccount *account)
 {
-	if (gtkblist != NULL &&
-	    g_hash_table_lookup(gtkblist->error_dialogs, account) == dialog)
+	/* The buddy list is being destroyed (quitting): the error is saved
+	 * state and stays, as in Pidgin 2. */
+	if (gtkblist == NULL)
+		return;
+
+	if (g_hash_table_lookup(gtkblist->error_dialogs, account) == dialog)
 		g_hash_table_remove(gtkblist->error_dialogs, account);
 	/* Dismissed by the user (not replaced because the error changed):
 	 * the error is dealt with. */
@@ -3624,10 +3640,20 @@ enable_account(PurpleAccount *account)
 	purple_account_set_enabled(account, purple_core_get_ui(), TRUE);
 }
 
+/* Both buttons close the dialog and clear the accounts' errors. (Pidgin 2
+ * did that from "destroy"; in GTK 4 the contents are gone by then, and it
+ * must not happen when quitting.) */
 static void
 reconnect_elsewhere_accounts(PidginMiniDialog *md, GtkButton *button, gpointer unused)
 {
 	elsewhere_foreach_account(md, enable_account);
+	elsewhere_foreach_account(md, purple_account_clear_current_error);
+}
+
+static void
+dismiss_elsewhere_accounts(PidginMiniDialog *md, GtkButton *button, gpointer unused)
+{
+	elsewhere_foreach_account(md, purple_account_clear_current_error);
 }
 
 static void
@@ -3635,8 +3661,6 @@ elsewhere_destroy_cb(PidginMiniDialog *md, gpointer unused)
 {
 	if (gtkblist != NULL && gtkblist->signed_on_elsewhere == md)
 		gtkblist->signed_on_elsewhere = NULL;
-	if (g_object_get_data(G_OBJECT(md), DO_NOT_CLEAR_ERROR) == NULL)
-		elsewhere_foreach_account(md, purple_account_clear_current_error);
 }
 
 static void
@@ -3651,7 +3675,6 @@ update_signed_on_elsewhere_title(void)
 
 	accounts = pidgin_mini_dialog_get_num_children(md);
 	if (accounts == 0) {
-		g_object_set_data(G_OBJECT(md), DO_NOT_CLEAR_ERROR, GINT_TO_POINTER(TRUE));
 		pidgin_mini_dialog_close(md);
 		gtkblist->signed_on_elsewhere = NULL;
 		return;
@@ -3676,7 +3699,7 @@ add_to_signed_on_elsewhere(PurpleAccount *account)
 		md = gtkblist->signed_on_elsewhere =
 			pidgin_mini_dialog_new(_("Welcome back!"), NULL, "network-offline");
 		pidgin_mini_dialog_add_button(md, _("Re-enable"), reconnect_elsewhere_accounts, NULL);
-		pidgin_mini_dialog_add_button(md, _("_Dismiss"), dismiss_cb, NULL);
+		pidgin_mini_dialog_add_button(md, _("_Dismiss"), dismiss_elsewhere_accounts, NULL);
 		g_signal_connect(md, "destroy", G_CALLBACK(elsewhere_destroy_cb), NULL);
 		pidgin_blist_add_alert(GTK_WIDGET(md));
 	}
