@@ -388,6 +388,81 @@ test_images(PurpleConversation *conv)
 	hold("images");
 }
 
+static gboolean
+entry_has_anchor(PidginComposeEntry *entry)
+{
+	GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry));
+	GtkTextIter iter;
+
+	for (gtk_text_buffer_get_start_iter(buffer, &iter); !gtk_text_iter_is_end(&iter);
+	     gtk_text_iter_forward_char(&iter))
+		if (gtk_text_iter_get_child_anchor(&iter) != NULL)
+			return TRUE;
+	return FALSE;
+}
+
+/* Sending a smiley from the picker crashed the same way as an image (a
+ * child anchor in the entry); a typed shortcut is shown as a smiley in
+ * the view. */
+static void
+test_smileys(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
+	guint n;
+
+	/* From the picker, between text */
+	pidgin_compose_entry_set_markup(entry, "smile ");
+	pidgin_compose_entry_insert_smiley(entry, ":)");
+	CHECK(entry_has_anchor(entry), "the smiley isn't an image in the entry");
+	gtk_text_buffer_insert_at_cursor(gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry)), " more", -1);
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "smiley send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "smiley message not shown (%u, %u)", n_messages(conv), n);
+	CHECK(call("send-im") != NULL && strstr(call("send-im"), "smile :) more") != NULL,
+	      "send-im: %s", call("send-im"));
+
+	/* Two, alone, then Backspace over one */
+	pidgin_compose_entry_insert_smiley(entry, ":)");
+	pidgin_compose_entry_insert_smiley(entry, ";)");
+	{
+		GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry));
+		GtkTextIter end;
+
+		gtk_text_buffer_get_end_iter(buffer, &end);
+		gtk_text_buffer_backspace(buffer, &end, TRUE, TRUE);
+	}
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "smiley-only send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "smiley-only message not shown");
+
+	/* Loaded back from the history (set_markup makes anchors), sent again */
+	pidgin_compose_entry_history_up(entry);
+	CHECK(entry_has_anchor(entry), "history lost the smiley");
+	n = n_messages(conv);
+	CHECK(pidgin_compose_entry_send(entry), "history smiley send");
+	spin(300);
+	CHECK(n_messages(conv) == n + 1, "history smiley message not shown");
+
+	/* Typed as text; the echo and a received one render the theme's smiley */
+	pidgin_compose_entry_set_markup(entry, "typed :) and :-(");
+	CHECK(pidgin_compose_entry_send(entry), "typed smiley send");
+	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_BUDDY, "back at you :) <b>:D</b>",
+	                     PURPLE_MESSAGE_RECV, time(NULL));
+	spin(300);
+	CHECK(strstr(pidgin_message_get_plain_text(last_message(conv)), "back at you") != NULL,
+	      "received smiley message: %s", pidgin_message_get_plain_text(last_message(conv)));
+	CHECK(pidgin_markup_result_has_object(pidgin_message_get_markup(last_message(conv)),
+	                                      PIDGIN_MARKUP_OBJECT_SMILEY),
+	      "no smiley in the received row");
+	CHECK(pidgin_markup_result_has_object(
+	          pidgin_message_get_markup(nth_message(conv, n_messages(conv) - 2)),
+	          PIDGIN_MARKUP_OBJECT_SMILEY), "no smiley in the sent row");
+	hold("smileys");
+}
+
 /**************************************************************************
  * The test
  **************************************************************************/
@@ -640,6 +715,7 @@ test_im(PurpleConversation **im_out)
 
 	/* Last: its waits let the view's scroll-back run out of history. */
 	test_images(conv);
+	test_smileys(conv);
 
 	g_free(akey);
 	g_free(ckey);
