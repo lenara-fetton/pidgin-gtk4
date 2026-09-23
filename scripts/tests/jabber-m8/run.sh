@@ -16,6 +16,11 @@
 # checked with and without a "message-meta" UI and with handlers that do
 # and don't render the event.
 #
+# Server features round 2: XEP-0191 blocklist/pushes/privacy modes, 0186
+# invisibility, 0377 reports, MAM preferences and their kv gate, 0447/0446
+# file sharing (parse incl. thumbnails and hashes, SIMS, the element sent
+# after an HTTP upload to a local SoupServer), 0380 EME, 0319 idle.
+#
 # Usage: PIDGIN4_PREFIX=~/.local/pidgin4 scripts/tests/jabber-m8/run.sh
 set -e
 TREE=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -25,11 +30,11 @@ trap 'rm -rf "$OUT"' EXIT
 
 gcc -g -O0 -Wall -Wno-deprecated-declarations -DHAVE_CONFIG_H \
 	-I"$TREE" -I"$TREE/libpurple" -I"$TREE/libpurple/protocols/jabber" \
-	$(pkg-config --cflags glib-2.0 gmodule-2.0 libxml-2.0) \
+	$(pkg-config --cflags glib-2.0 gmodule-2.0 libxml-2.0 libsoup-3.0) \
 	-o "$OUT/test_m8" "$TREE/scripts/tests/jabber-m8/test_m8.c" \
 	-L"$PREFIX/lib" -lpurple -L"$PREFIX/lib/purple-2" -ljabber \
 	-Wl,-rpath,"$PREFIX/lib" -Wl,-rpath,"$PREFIX/lib/purple-2" \
-	$(pkg-config --libs glib-2.0 gmodule-2.0 libxml-2.0)
+	$(pkg-config --libs glib-2.0 gmodule-2.0 libxml-2.0 libsoup-3.0)
 
 mkdir -p "$OUT/home"
 G_DEBUG=fatal-criticals "$OUT/test_m8" "$OUT/home"
