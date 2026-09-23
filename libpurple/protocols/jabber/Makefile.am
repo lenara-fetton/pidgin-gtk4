@@ -93,7 +93,9 @@ JABBERSOURCES = \
 			  usertune.c \
 			  usertune.h \
 			  xdata.c \
-			  xdata.h
+			  xdata.h \
+			  httpupload.c \
+			  httpupload.h
 
 AM_CFLAGS = $(st)
 
@@ -116,6 +118,7 @@ st =
 pkg_LTLIBRARIES      = libjabber.la libxmpp.la
 libjabber_la_SOURCES = $(JABBERSOURCES)
 libjabber_la_LIBADD  = $(GLIB_LIBS) $(SASL_LIBS) $(LIBXML_LIBS) \
+	$(SOUP_LIBS) \
 	$(FARSIGHT_LIBS) \
 	$(GSTREAMER_LIBS) \
 	$(GSTINTERFACES_LIBS)
@@ -133,4 +136,5 @@ AM_CPPFLAGS = \
 	$(LIBXML_CFLAGS) \
 	$(FARSIGHT_CFLAGS) \
 	$(GSTREAMER_CFLAGS) \
-	$(GSTINTERFACES_CFLAGS)
+	$(GSTINTERFACES_CFLAGS) \
+	$(SOUP_CFLAGS)
