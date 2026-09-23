@@ -720,6 +720,8 @@ enable_dbus
 pidginpath
 EXTERNAL_LIBZEPHYR_FALSE
 EXTERNAL_LIBZEPHYR_TRUE
+SOUP_LIBS
+SOUP_CFLAGS
 DYNAMIC_PRPLS
 STATIC_LINK_LIBS
 STATIC_ZEPHYR_FALSE
@@ -1140,6 +1142,8 @@ LIBGADU_CFLAGS
 LIBGADU_LIBS
 GNUTLS_2_10_CFLAGS
 GNUTLS_2_10_LIBS
+SOUP_CFLAGS
+SOUP_LIBS
 DBUS_CFLAGS
 DBUS_LIBS
 UNITY_CFLAGS
@@ -1990,6 +1994,8 @@ Some influential environment variables:
               C compiler flags for GNUTLS_2_10, overriding pkg-config
   GNUTLS_2_10_LIBS
               linker flags for GNUTLS_2_10, overriding pkg-config
+  SOUP_CFLAGS C compiler flags for SOUP, overriding pkg-config
+  SOUP_LIBS   linker flags for SOUP, overriding pkg-config
   DBUS_CFLAGS C compiler flags for DBUS, overriding pkg-config
   DBUS_LIBS   linker flags for DBUS, overriding pkg-config
   UNITY_CFLAGS
@@ -24214,6 +24220,94 @@ for i in $DYNAMIC_PRPLS ; do
 		*)			echo "Invalid dynamic protocol $i!!" ; exit 1 ;;
 	esac
 done
+
+if test "x$static_jabber" = "xyes" -o "x$dynamic_jabber" = "xyes" ; then
+
+pkg_failed=no
+{ printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking for libsoup-3.0 >= 3.0" >&5
+printf %s "checking for libsoup-3.0 >= 3.0... " >&6; }
+
+if test -n "$SOUP_CFLAGS"; then
+    pkg_cv_SOUP_CFLAGS="$SOUP_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libsoup-3.0 >= 3.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libsoup-3.0 >= 3.0") 2>&5
+  ac_status=$?
+  printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_SOUP_CFLAGS=`$PKG_CONFIG --cflags "libsoup-3.0 >= 3.0" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$SOUP_LIBS"; then
+    pkg_cv_SOUP_LIBS="$SOUP_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libsoup-3.0 >= 3.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libsoup-3.0 >= 3.0") 2>&5
+  ac_status=$?
+  printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_SOUP_LIBS=`$PKG_CONFIG --libs "libsoup-3.0 >= 3.0" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+                SOUP_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libsoup-3.0 >= 3.0" 2>&1`
+        else
+                SOUP_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libsoup-3.0 >= 3.0" 2>&1`
+        fi
+        # Put the nasty error message in config.log where it belongs
+        echo "$SOUP_PKG_ERRORS" >&5
+
+
+		as_fn_error $? "
+libsoup 3 (libsoup-3.0.pc) development headers not found.
+The XMPP (jabber) protocol needs it for HTTP File Upload (XEP-0363).
+Install net-libs/libsoup:3.0, or build without the jabber protocol.
+" "$LINENO" 5
+
+elif test $pkg_failed = untried; then
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+
+		as_fn_error $? "
+libsoup 3 (libsoup-3.0.pc) development headers not found.
+The XMPP (jabber) protocol needs it for HTTP File Upload (XEP-0363).
+Install net-libs/libsoup:3.0, or build without the jabber protocol.
+" "$LINENO" 5
+
+else
+        SOUP_CFLAGS=$pkg_cv_SOUP_CFLAGS
+        SOUP_LIBS=$pkg_cv_SOUP_LIBS
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf '%s\n' "yes" >&6; }
+
+fi
+fi
+
+
 
 # Check whether --enable-plugins was given.
 if test ${enable_plugins+y}
