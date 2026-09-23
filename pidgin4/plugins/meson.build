@@ -31,6 +31,9 @@ ported_plugins = {
 	'timestamp_format' : [files('timestamp_format.c'), []],
 	'notify' : [files('notify.c'), []],
 	'cap' : [files('cap/cap.c'), [sqlite_dep]],
+	'convcolors' : [files('convcolors.c'), []],
+	'spellchk' : [files('spellchk.c'), []],
+	'sendbutton' : [files('sendbutton.c'), []],
 }
 
 pidgin4_plugin_dir = libdir / 'pidgin4'
