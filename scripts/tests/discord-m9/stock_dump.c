@@ -39,6 +39,7 @@ static const Step steps[] = {
 	{ DISPATCH, "MESSAGE_ACK", &message_ack },
 	{ DISPATCH, "MESSAGE_ACK", &message_ack_dm },
 	{ SEEN, "conversation-updated", &msg_create },
+	{ HISTORY, NULL, &reacted_page },
 #ifdef STOCK_DUMP_STEPS
 	STOCK_DUMP_STEPS
 #endif
@@ -159,7 +160,7 @@ main(int argc, char **argv)
 
 	for (i = 0; i < G_N_ELEMENTS(steps); i++) {
 		reset();
-		o = parse(*steps[i].payload);
+		o = steps[i].kind == HISTORY ? json_object_new() : parse(*steps[i].payload);
 		switch (steps[i].kind) {
 		case MSG:
 			discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
@@ -176,11 +177,11 @@ main(int argc, char **argv)
 			break;
 		case HISTORY:
 			{
-				JsonNode *node = json_node_new(JSON_NODE_ARRAY);
+				JsonParser *parser = json_parser_new();
 
-				json_node_set_array(node, json_object_get_array_member(o, "messages"));
-				discord_got_history_static(da, node, NULL);
-				json_node_free(node);
+				json_parser_load_from_data(parser, *steps[i].payload, -1, NULL);
+				discord_got_history_static(da, json_parser_get_root(parser), NULL);
+				g_object_unref(parser);
 			}
 			break;
 		}

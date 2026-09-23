@@ -232,6 +232,20 @@ spin(guint ms)
 	}
 }
 
+#ifndef STOCK_DUMP     /* the base plugin has none of this */
+/* Lets the queued reactor fetches go out (and fail) before capturing */
+static void
+drain_reactions(DiscordAccount *da)
+{
+	int i;
+
+	for (i = 0; i < 100 && (da->reaction_busy || da->reaction_timer != 0 ||
+	                        (da->reaction_msgs && !g_queue_is_empty(da->reaction_msgs))); i++)
+		spin(50);
+	spin(60);
+}
+#endif
+
 /* Answers the oldest captured request with @json (NULL: a failure) */
 static void
 respond(const char *json)
@@ -449,6 +463,26 @@ static const char *older_page =
 	"  \"timestamp\":\"2017-07-11T17:00:01+00:00\",\"edited_timestamp\":null,"
 	"  \"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"}}]";
 
+/* History messages with reactions (counts only), newest first */
+static const char *reacted_page =
+	"[{\"type\":0,\"id\":\"334385199974970003\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"party\","
+	"  \"timestamp\":\"2017-07-11T19:00:03+00:00\",\"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"},"
+	"  \"reactions\":[{\"count\":1,\"me\":false,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x8e\x89\"}}]},"
+	" {\"type\":0,\"id\":\"334385199974970002\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"hot\","
+	"  \"timestamp\":\"2017-07-11T19:00:02+00:00\",\"author\":{\"username\":\"Mason\",\"discriminator\":\"0\",\"id\":\"" MASON_ID "\"},"
+	"  \"reactions\":[{\"count\":2,\"me\":true,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x94\xa5\"}},"
+	"                {\"count\":1,\"me\":false,\"emoji\":{\"id\":\"41771983429993937\",\"name\":\"LUL\"}}]},"
+	" {\"type\":0,\"id\":\"334385199974970001\",\"channel_id\":\"" CHANNEL_ID "\",\"content\":\"old\","
+	"  \"timestamp\":\"2017-07-11T19:00:01+00:00\",\"author\":{\"username\":\"alice\",\"discriminator\":\"0\",\"id\":\"" ALICE_ID "\"},"
+	"  \"reactions\":[{\"count\":1,\"me\":false,\"emoji\":{\"id\":null,\"name\":\"\xf0\x9f\x91\x8d\"}}]}]";
+
+/* GET /channels/{id}/messages/{id}/reactions/{emoji}: user objects */
+static const char *reactors_fire =
+	"[{\"id\":\"" ALICE_ID "\",\"username\":\"alice\",\"discriminator\":\"0\",\"avatar\":null},"
+	" {\"id\":\"" SELF_ID "\",\"username\":\"me\",\"discriminator\":\"0\",\"avatar\":null}]";
+static const char *reactors_new_user =
+	"[{\"id\":\"90000000000000001\",\"username\":\"bob\",\"global_name\":\"Bob\",\"discriminator\":\"0\",\"avatar\":null}]";
+
 /* A bot's rich embed with fields */
 static const char *embed_rich =
 	"{\"type\":\"rich\",\"title\":\"Build #42\",\"color\":65280,"
@@ -635,8 +669,9 @@ main(int argc, char **argv)
 	CHECK_STR(M("conv-type"), "chat");
 	CHECK_STR(M("markable"), "1");
 	CHECK(strstr(written->str, "[" CHANNEL_ID "|Mason|Supa Hot <img src=\"https://cdn.discordapp.com/emojis/41771983429993937.png?size=48\" alt=\":LUL:\" width=\"22\" height=\"22\"/>|0x2]") != NULL);
-	/* The history's reaction lines are still written (unknown reactors) */
-	CHECK(strstr(written->str, "reacted with") != NULL);
+	/* No reaction lines: who reacted is fetched (below) */
+	CHECK(strstr(written->str, "reacted with") == NULL);
+	CHECK(g_queue_get_length(da->reaction_msgs) == 1);
 	/* Our own reaction is remembered, the custom emoji's id learnt */
 	CHECK(g_hash_table_contains(discord_own_reactions_get(da, "334385199974967042", FALSE), "\xf0\x9f\x94\xa5"));
 	CHECK(!g_hash_table_contains(discord_own_reactions_get(da, "334385199974967042", FALSE), "LUL:41771983429993937"));
@@ -1065,7 +1100,7 @@ main(int argc, char **argv)
 	CHECK_STR(events->str, "receipt(alice,555,displayed,me@example.com);");
 
 	/* send-marker: one ack per newly read message */
-	spin(60);       /* the earlier IPC requests go out (and fail) first */
+	drain_reactions(da);    /* the earlier requests go out (and fail) first */
 	capture_requests = TRUE;
 	reset();
 	CHECK(discord_ipc_send_marker(account, CHANNEL_ID, "334385199974967100", NULL));
@@ -1169,6 +1204,69 @@ main(int argc, char **argv)
 	CHECK(strstr(written->str, "|0x2]") != NULL);
 	capture_requests = FALSE;
 	purple_account_set_bool(account, "show-reactions", TRUE);
+
+	/* ---- reactions on history messages ---- */
+	{
+		GList *l;
+		gboolean found = FALSE;
+
+		for (l = PURPLE_PLUGIN_PROTOCOL_INFO(purple_find_prpl(DISCORD_PLUGIN_ID))->protocol_options; l; l = l->next)
+			found = found || purple_strequal(purple_account_option_get_setting(l->data), "reaction_history_limit");
+		CHECK(found);
+	}
+	drain_reactions(da);
+	capture_requests = TRUE;
+	purple_account_set_int(account, "reaction_history_limit", 2);
+	reset();
+	CHECK(discord_ipc_mam_fetch_older(account, CHANNEL_ID, "334385199974970004", 3));
+	spin(60);
+	respond(reacted_page);
+	CHECK(strstr(written->str, "reacted") == NULL);         /* no text lines */
+	CHECK(strstr(written->str, "|Mason|hot|0x402]") != NULL);
+	CHECK(g_queue_get_length(da->reaction_msgs) == 2);      /* the newest 2 of 3 */
+	CHECK(!g_hash_table_contains(discord_own_reactions_get(da, "334385199974970002", TRUE), "LUL:41771983429993937"));
+	CHECK(g_hash_table_contains(discord_own_reactions_get(da, "334385199974970002", TRUE), "\xf0\x9f\x94\xa5"));
+	reset();
+	spin(200);
+	CHECK_STR(requests->str, "");                           /* not at once */
+	spin(250);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974970002/reactions/%F0%9F%94%A5?limit=100\n");
+	spin(400);
+	CHECK(g_strstr_len(requests->str, -1, "\n") == requests->str + requests->len - 1);  /* one at a time */
+	respond(reactors_fire);
+	CHECK_STR(events->str,
+		"reaction(" CHANNEL_ID ",334385199974970002,\xf0\x9f\x94\xa5,alice,1);"
+		"reaction(" CHANNEL_ID ",334385199974970002,\xf0\x9f\x94\xa5,me,1);");
+	reset();
+	spin(450);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974970002/reactions/LUL%3A41771983429993937?limit=100\n");
+	/* That response said the bucket is empty: wait for its reset */
+	discord_native_note_rate_limit(da, "0", "1.2");
+	respond(reactors_new_user);
+	CHECK_STR(events->str, "reaction(" CHANNEL_ID ",334385199974970002,:LUL:,bob,1);");
+	reset();
+	spin(900);
+	CHECK_STR(requests->str, "");
+	spin(600);
+	CHECK_STR(requests->str, "GET https://discord.com/api/v10/channels/" CHANNEL_ID "/messages/334385199974970003/reactions/%F0%9F%8E%89?limit=100\n");
+	discord_native_note_rate_limit(da, "4", "0.5");
+	respond(NULL);                                          /* failed: next one */
+	CHECK_STR(events->str, "");
+	reset();
+	spin(450);
+	CHECK_STR(requests->str, "");                           /* the queue is empty */
+	CHECK(g_queue_is_empty(da->reaction_msgs) && !da->reaction_busy && da->reaction_timer == 0);
+	/* Disabled */
+	purple_account_set_int(account, "reaction_history_limit", 0);
+	reset();
+	o = parse(msg_create);
+	json_object_set_string_member(o, "id", "334385199974970010");
+	discord_process_message(da, o, DISCORD_MESSAGE_NORMAL);
+	json_object_unref(o);
+	CHECK(g_queue_is_empty(da->reaction_msgs));
+	CHECK(strstr(written->str, "reacted") == NULL);
+	purple_account_set_int(account, "reaction_history_limit", 25);
+	capture_requests = FALSE;
 
 	/* ---- stock UI: the same payloads give the old output ---- */
 	{
