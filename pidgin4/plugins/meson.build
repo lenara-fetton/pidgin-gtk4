@@ -34,6 +34,10 @@ ported_plugins = {
 	'convcolors' : [files('convcolors.c'), []],
 	'spellchk' : [files('spellchk.c'), []],
 	'sendbutton' : [files('sendbutton.c'), []],
+	'gtkbuddynote' : [files('gtkbuddynote.c'), []],
+	'iconaway' : [files('iconaway.c'), []],
+	'relnot' : [files('relnot.c'), []],
+	'timestamp' : [files('timestamp.c'), []],
 }
 
 pidgin4_plugin_dir = libdir / 'pidgin4'
