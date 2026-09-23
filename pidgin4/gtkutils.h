@@ -213,4 +213,15 @@ void pidgin_open_uri(GtkWindow *parent, const char *uri);
 void pidgin_utils_init(void);
 void pidgin_utils_uninit(void);
 
+/**************************************************************************
+ * Buddy icons (M3)
+ **************************************************************************/
+
+/**
+ * Reads the image at @path and converts it to what @plugin's icon_spec
+ * accepts (format, dimensions, file size), as Pidgin 2 did. Returns the
+ * image data (g_free() it) and its length in @len, or NULL.
+ */
+gpointer pidgin_convert_buddy_icon(PurplePlugin *plugin, const char *path, size_t *len);
+
 #endif /* _PIDGINUTILS_H_ */
