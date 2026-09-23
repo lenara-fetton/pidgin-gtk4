@@ -29,4 +29,17 @@
 void jabber_oob_parse(JabberStream *js, const char *from, JabberIqType type,
                       const char *id, xmlnode *querynode);
 
+/**
+ * Folds a message's <x xmlns='jabber:x:oob'/> (XEP-0066) into its HTML body.
+ *
+ * When the body already is the URL (or contains it), which is how XEP-0363
+ * uploads and OMEMO aesgcm:// media are sent, the body is left unchanged, so
+ * the UI gets the bare URL and can linkify or preview it. Otherwise a link to
+ * the URL (with <desc> as its text, if given) is appended.
+ *
+ * @param body  The message body so far (escaped plain text or XHTML).
+ * @param x     The jabber:x:oob element.
+ */
+void jabber_oob_x_append_to_body(GString *body, xmlnode *x);
+
 #endif /* PURPLE_JABBER_OOB_H_ */

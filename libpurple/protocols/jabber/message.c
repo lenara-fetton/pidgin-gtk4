@@ -36,6 +36,7 @@
 #include "pep.h"
 #include "smiley.h"
 #include "iq.h"
+#include "oob.h"
 
 #include <string.h>
 
@@ -51,31 +52,9 @@ static GString *jm_body_with_oob(JabberMessage *jm) {
 	for(etc = jm->etc; etc; etc = etc->next) {
 		xmlnode *x = etc->data;
 		const char *xmlns = xmlnode_get_namespace(x);
-		if(purple_strequal(xmlns, NS_OOB_X_DATA)) {
-			xmlnode *url, *desc;
-			char *urltxt, *desctxt;
-
-			url = xmlnode_get_child(x, "url");
-			desc = xmlnode_get_child(x, "desc");
-
-			if(!url)
-				continue;
-
-			urltxt = xmlnode_get_data(url);
-			desctxt = desc ? xmlnode_get_data(desc) : urltxt;
-
-			if(body->len && !purple_strequal(body->str, urltxt))
-				g_string_append_printf(body, "<br/><a href='%s'>%s</a>",
-						urltxt, desctxt);
-			else
-				g_string_printf(body, "<a href='%s'>%s</a>",
-						urltxt, desctxt);
-
-			g_free(urltxt);
-
-			if(desctxt != urltxt)
-				g_free(desctxt);
-		}
+		/* M8 (HTTP upload): OOB handling lives in oob.c. */
+		if(purple_strequal(xmlns, NS_OOB_X_DATA))
+			jabber_oob_x_append_to_body(body, x);
 	}
 
 	return body;
