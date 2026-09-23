@@ -32,8 +32,8 @@
 #include "conversation.h"
 
 /*
- * The pidgin4 subset of pidgin/gtkdialogs.h. Build info, developers and
- * translators come with the other windows (TODO(M5)).
+ * The pidgin4 subset of pidgin/gtkdialogs.h. About, build info and the
+ * credits are in pidginabout.c (M5).
  */
 void pidgin_dialogs_destroy_all(void);
 void pidgin_dialogs_about(void);
@@ -44,7 +44,7 @@ void pidgin_dialogs_im(void);
 /** TODO(M4): opens the conversation; until then it only creates it. */
 void pidgin_dialogs_im_with_user(PurpleAccount *account, const char *username);
 void pidgin_dialogs_info(void);
-/** TODO(M5): the log viewer. Asks for the user, then logs a TODO. */
+/** Asks for a user, then opens the log viewer (gtklog.c). */
 void pidgin_dialogs_log(void);
 void pidgin_dialogs_alias_contact(PurpleContact *contact);
 void pidgin_dialogs_alias_buddy(PurpleBuddy *buddy);

@@ -25,6 +25,7 @@
 #include "prefs.h"
 
 #include "gtkprefs.h"
+#include "pidginselftest.h"
 
 /*
  * TODO(M5): the preferences window (pidgin/gtkprefs.c).
@@ -59,3 +60,7 @@ pidgin_prefs_init(void)
 	purple_prefs_add_string(PIDGIN4_PREFS_ROOT "/last_version", "");
 	purple_prefs_set_string(PIDGIN4_PREFS_ROOT "/last_version", VERSION);
 }
+
+void pidgin_prefs_show(void) { }
+void pidgin_prefs_hide(void) { }
+void pidgin_prefs_selftest(void) { }

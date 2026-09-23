@@ -38,6 +38,7 @@
 #include "status.h"
 #include "util.h"
 
+#include "gtksavedstatuses.h"
 #include "gtkstatusbox.h"
 #include "gtkutils.h"
 
@@ -413,11 +414,12 @@ row_activated_cb(GtkListBox *list, GtkListBoxRow *row, gpointer data)
 		gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
 		break;
 	case ROW_NEW:
-	case ROW_MANAGE:
-		/* TODO(M5): the status editor and the saved status window. */
-		purple_debug_info("gtkstatusbox", "TODO(M5): %s is not ported yet\n",
-			type == ROW_NEW ? "the status editor" : "the saved statuses window");
 		gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
+		pidgin_status_editor_show(FALSE, NULL);
+		break;
+	case ROW_MANAGE:
+		gtk_popover_popdown(GTK_POPOVER(statusbox->popover));
+		pidgin_status_window_show();
 		break;
 	}
 }

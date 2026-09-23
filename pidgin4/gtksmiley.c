@@ -1,9 +1,5 @@
-/**
- * @file gtkprefs.h GTK 4 Preferences
- * @ingroup pidgin
- */
-
-/* pidgin
+/*
+ * pidgin4
  *
  * Pidgin is the legal property of its developers, whose names are too numerous
  * to list here.  Please refer to the COPYRIGHT file distributed with this
@@ -23,23 +19,18 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111-1301  USA
  */
-#ifndef _PIDGINPREFS_H_
-#define _PIDGINPREFS_H_
 
-#include "prefs.h"
+/* PLACEHOLDER (M5 scaffolding): replaced by the custom smiley manager */
+#include "pidgin-internal.h"
+#include "pidgin.h"
 
-/**
- * Registers the pidgin4 prefs (the /pidgin4 subtree). Called from
- * purple_core_init() through the core UI ops, after prefs.xml is loaded,
- * so only missing keys get their defaults.
- */
-void pidgin_prefs_init(void);
+#include "debug.h"
+#include "gtksmiley.h"
 
-/** Shows (or raises) the preferences window (M5). */
-void pidgin_prefs_show(void);
-void pidgin_prefs_hide(void);
 
-/** PIDGIN4_WINDOWS_SELFTEST: opens the window and visits every page. */
-void pidgin_prefs_selftest(void);
-
-#endif /* _PIDGINPREFS_H_ */
+void pidgin_smileys_init(void) { }
+void pidgin_smileys_uninit(void) { }
+void pidgin_smiley_manager_show(void) { purple_debug_info("gtksmiley", "placeholder\n"); }
+void pidgin_smiley_edit(GtkWindow *parent, PurpleSmiley *smiley) { }
+void pidgin_smiley_add_from_image(GtkWindow *parent, gconstpointer data, gsize len, const char *shortcut) { }
+void pidgin_smileys_selftest(void) { }

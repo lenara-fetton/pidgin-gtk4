@@ -1,9 +1,5 @@
-/**
- * @file gtkprefs.h GTK 4 Preferences
- * @ingroup pidgin
- */
-
-/* pidgin
+/*
+ * pidgin4
  *
  * Pidgin is the legal property of its developers, whose names are too numerous
  * to list here.  Please refer to the COPYRIGHT file distributed with this
@@ -23,23 +19,32 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111-1301  USA
  */
-#ifndef _PIDGINPREFS_H_
-#define _PIDGINPREFS_H_
+#ifndef _PIDGINLOG_H_
+#define _PIDGINLOG_H_
 
-#include "prefs.h"
+#include "pidgin.h"
+#include "account.h"
+#include "blist.h"
+#include "log.h"
 
-/**
- * Registers the pidgin4 prefs (the /pidgin4 subtree). Called from
- * purple_core_init() through the core UI ops, after prefs.xml is loaded,
- * so only missing keys get their defaults.
+/*
+ * The log viewer (M5): logs of a buddy, contact or chat, and the system
+ * log. Read-only: nothing here writes to logs/ except "Delete", which
+ * asks first.
  */
-void pidgin_prefs_init(void);
 
-/** Shows (or raises) the preferences window (M5). */
-void pidgin_prefs_show(void);
-void pidgin_prefs_hide(void);
+void pidgin_log_show(PurpleLogType type, const char *buddyname,
+                     PurpleAccount *account);
+void pidgin_log_show_contact(PurpleContact *contact);
+void pidgin_syslog_show(void);
 
-/** PIDGIN4_WINDOWS_SELFTEST: opens the window and visits every page. */
-void pidgin_prefs_selftest(void);
+void *pidgin_log_get_handle(void);
+void pidgin_log_init(void);
+void pidgin_log_uninit(void);
 
-#endif /* _PIDGINPREFS_H_ */
+/** PIDGIN4_WINDOWS_SELFTEST: opens the system log and the log of the
+ * first buddy that has logs, shows the newest log, runs a search, and
+ * closes the windows. Never modifies logs. */
+void pidgin_log_selftest(void);
+
+#endif /* _PIDGINLOG_H_ */

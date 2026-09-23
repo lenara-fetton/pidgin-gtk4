@@ -32,7 +32,7 @@
  *     The GTK 2 theme engine (PidginBlistTheme) is gone: its colours and
  *     fonts are CSS classes (.pidgin-blist-online, -away, -idle, -offline,
  *     -group, -contact, -chat) that <profile>/pidgin4/gtk4.css can style
- *     (TODO(M5): loading gtk4.css).
+ *     (gtkthemes.c loads it).
  *   - The menubar is a GMenuModel with window actions ("win.*"), the
  *     context menus are GtkPopoverMenus built per node, tooltips are
  *     custom widgets from ::query-tooltip, the connection error area is a
@@ -62,13 +62,23 @@
 
 #include "gtkaccount.h"
 #include "gtkblist.h"
+#include "gtkcertmgr.h"
 #include "gtkdebug.h"
 #include "gtkdialogs.h"
+#include "gtkft.h"
+#include "gtklog.h"
+#include "gtkplugin.h"
+#include "gtkpounce.h"
+#include "gtkprefs.h"
+#include "gtkprivacy.h"
+#include "gtkroomlist.h"
+#include "gtksmiley.h"
 #include "gtkstatusbox.h"
 #include "gtkutils.h"
 #include "pidginblistmodel.h"
 #include "pidginmenu.h"
 #include "pidginminidialog.h"
+#include "pidginomemo.h"
 
 #define BLIST_PREFS  PIDGIN_PREFS_ROOT "/blist"
 #define BLIST4_PREFS PIDGIN4_PREFS_ROOT "/blist"
@@ -151,12 +161,6 @@ PidginBlistModel *
 pidgin_blist_get_model(void)
 {
 	return gtkblist ? gtkblist->model : NULL;
-}
-
-static void
-todo_m5(const char *what)
-{
-	purple_debug_info("gtkblist", "TODO(M5): %s is not ported yet\n", what);
 }
 
 static gboolean
@@ -2091,13 +2095,56 @@ menu_send_file_cb(PurpleBlistNode *node)
 static void
 menu_pounce_cb(PurpleBlistNode *node)
 {
-	todo_m5("the buddy pounce editor");
+	PurpleBuddy *buddy;
+
+	if (PURPLE_BLIST_NODE_IS_CONTACT(node))
+		buddy = purple_contact_get_priority_buddy((PurpleContact *)node);
+	else if (PURPLE_BLIST_NODE_IS_BUDDY(node))
+		buddy = (PurpleBuddy *)node;
+	else
+		return;
+
+	if (buddy != NULL)
+		pidgin_pounce_editor_show(purple_buddy_get_account(buddy),
+		                          purple_buddy_get_name(buddy), NULL);
 }
 
+/* Pidgin 2's gtk_blist_menu_showlog_cb */
 static void
 menu_showlog_cb(PurpleBlistNode *node)
 {
-	todo_m5("the log viewer");
+	PurpleLogType type;
+	PurpleAccount *account;
+	char *name = NULL;
+
+	if (PURPLE_BLIST_NODE_IS_BUDDY(node)) {
+		PurpleBuddy *b = (PurpleBuddy *)node;
+
+		type = PURPLE_LOG_IM;
+		name = g_strdup(purple_buddy_get_name(b));
+		account = purple_buddy_get_account(b);
+	} else if (PURPLE_BLIST_NODE_IS_CHAT(node)) {
+		PurpleChat *c = (PurpleChat *)node;
+		PurplePlugin *prpl;
+		PurplePluginProtocolInfo *prpl_info = NULL;
+
+		type = PURPLE_LOG_CHAT;
+		account = purple_chat_get_account(c);
+		prpl = purple_find_prpl(purple_account_get_protocol_id(account));
+		if (prpl != NULL)
+			prpl_info = PURPLE_PLUGIN_PROTOCOL_INFO(prpl);
+		if (prpl_info != NULL && prpl_info->get_chat_name != NULL)
+			name = prpl_info->get_chat_name(purple_chat_get_components(c));
+	} else if (PURPLE_BLIST_NODE_IS_CONTACT(node)) {
+		pidgin_log_show_contact((PurpleContact *)node);
+		return;
+	} else {
+		return;
+	}
+
+	if (name != NULL && account != NULL)
+		pidgin_log_show(type, name, account);
+	g_free(name);
 }
 
 static void
@@ -3251,7 +3298,7 @@ chat_components(BlistRequestData *data, gboolean skip_empty)
 static void
 roomlist_cb(GtkWidget *button, BlistRequestData *data)
 {
-	todo_m5("the room list");
+	pidgin_roomlist_dialog_show_with_account(data->account);
 }
 
 static void
@@ -3832,23 +3879,25 @@ win_action(GSimpleAction *action, GVariant *param, gpointer data)
 	else if (purple_strequal(name, "online-help"))
 		purple_notify_uri(NULL, PURPLE_WEBSITE "documentation");
 	else if (purple_strequal(name, "pounces"))
-		todo_m5("Buddy Pounces");
+		pidgin_pounces_manager_show();
 	else if (purple_strequal(name, "certificates"))
-		todo_m5("the certificate manager");
+		pidgin_certmgr_show();
 	else if (purple_strequal(name, "smileys"))
-		todo_m5("Custom Smileys");
+		pidgin_smiley_manager_show();
 	else if (purple_strequal(name, "plugins"))
-		todo_m5("the plugins dialog");
+		pidgin_plugin_dialog_show();
 	else if (purple_strequal(name, "preferences"))
-		todo_m5("the preferences window");
+		pidgin_prefs_show();
 	else if (purple_strequal(name, "privacy"))
-		todo_m5("the privacy dialog");
+		pidgin_privacy_dialog_show();
+	else if (purple_strequal(name, "omemo"))
+		pidgin_omemo_show_fingerprints(NULL, NULL);
 	else if (purple_strequal(name, "transfers"))
-		todo_m5("the file transfer window");
+		pidgin_xfer_dialog_show();
 	else if (purple_strequal(name, "roomlist"))
-		todo_m5("the room list");
+		pidgin_roomlist_dialog_show();
 	else if (purple_strequal(name, "system-log"))
-		todo_m5("the system log viewer");
+		pidgin_syslog_show();
 }
 
 /* Stateful toggles are prefs; the pref callbacks update the state. */
@@ -3908,6 +3957,7 @@ static const GActionEntry win_entries[] = {
 	{ .name = "plugins", .activate = win_action },
 	{ .name = "preferences", .activate = win_action },
 	{ .name = "privacy", .activate = win_action },
+	{ .name = "omemo", .activate = win_action },
 	{ .name = "transfers", .activate = win_action },
 	{ .name = "roomlist", .activate = win_action },
 	{ .name = "system-log", .activate = win_action },
@@ -3970,7 +4020,7 @@ update_menu_sensitivity(void)
 	set_action_enabled("get-info", connected);
 	set_action_enabled("add-buddy", connected);
 	set_action_enabled("add-chat", pidgin_blist_joinchat_is_showable());
-	set_action_enabled("roomlist", connected);
+	set_action_enabled("roomlist", pidgin_roomlist_is_showable());
 	set_action_enabled("privacy", connected);
 }
 
@@ -4027,7 +4077,7 @@ build_menubar(void)
 	g_menu_append_submenu(bar, _("_Accounts"), G_MENU_MODEL(menu));
 	g_object_unref(menu);
 
-	/* Tools (TODO(M5): the windows behind most of these) */
+	/* Tools */
 	menu = g_menu_new();
 	section = section_new(menu);
 	g_menu_append(section, _("Buddy _Pounces"), "win.pounces");
@@ -4036,6 +4086,7 @@ build_menubar(void)
 	g_menu_append(section, _("Plu_gins"), "win.plugins");
 	g_menu_append(section, _("Pr_eferences"), "win.preferences");
 	g_menu_append(section, _("Pr_ivacy"), "win.privacy");
+	g_menu_append(section, _("_OMEMO Fingerprints"), "win.omemo");
 	section = section_new(menu);
 	g_menu_append(section, _("_File Transfers"), "win.transfers");
 	g_menu_append(section, _("R_oom List"), "win.roomlist");

@@ -1,9 +1,5 @@
-/**
- * @file gtkprefs.h GTK 4 Preferences
- * @ingroup pidgin
- */
-
-/* pidgin
+/*
+ * pidgin4
  *
  * Pidgin is the legal property of its developers, whose names are too numerous
  * to list here.  Please refer to the COPYRIGHT file distributed with this
@@ -23,23 +19,19 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111-1301  USA
  */
-#ifndef _PIDGINPREFS_H_
-#define _PIDGINPREFS_H_
 
-#include "prefs.h"
+/* PLACEHOLDER (M5 scaffolding): replaced by the privacy dialog */
+#include "pidgin-internal.h"
+#include "pidgin.h"
 
-/**
- * Registers the pidgin4 prefs (the /pidgin4 subtree). Called from
- * purple_core_init() through the core UI ops, after prefs.xml is loaded,
- * so only missing keys get their defaults.
- */
-void pidgin_prefs_init(void);
+#include "debug.h"
+#include "gtkprivacy.h"
 
-/** Shows (or raises) the preferences window (M5). */
-void pidgin_prefs_show(void);
-void pidgin_prefs_hide(void);
 
-/** PIDGIN4_WINDOWS_SELFTEST: opens the window and visits every page. */
-void pidgin_prefs_selftest(void);
-
-#endif /* _PIDGINPREFS_H_ */
+void pidgin_privacy_init(void) { }
+void pidgin_privacy_dialog_show(void) { purple_debug_info("gtkprivacy", "placeholder\n"); }
+void pidgin_privacy_dialog_hide(void) { }
+void pidgin_request_add_permit(PurpleAccount *account, const char *name) { }
+void pidgin_request_add_block(PurpleAccount *account, const char *name) { }
+PurplePrivacyUiOps *pidgin_privacy_get_ui_ops(void) { return NULL; }
+void pidgin_privacy_selftest(void) { }

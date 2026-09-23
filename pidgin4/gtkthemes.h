@@ -1,9 +1,5 @@
-/**
- * @file gtkprefs.h GTK 4 Preferences
- * @ingroup pidgin
- */
-
-/* pidgin
+/*
+ * pidgin4
  *
  * Pidgin is the legal property of its developers, whose names are too numerous
  * to list here.  Please refer to the COPYRIGHT file distributed with this
@@ -23,23 +19,29 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111-1301  USA
  */
-#ifndef _PIDGINPREFS_H_
-#define _PIDGINPREFS_H_
+#ifndef _PIDGINTHEMES_H_
+#define _PIDGINTHEMES_H_
 
-#include "prefs.h"
+#include "pidgin.h"
 
-/**
- * Registers the pidgin4 prefs (the /pidgin4 subtree). Called from
- * purple_core_init() through the core UI ops, after prefs.xml is loaded,
- * so only missing keys get their defaults.
+/*
+ * CSS (M5): the built-in style.css (loaded at startup in gtkmain.c) and
+ * the user's <profile>/pidgin4/gtk4.css, loaded after it at user priority
+ * and reloaded when the file changes (GFileMonitor).
  */
-void pidgin_prefs_init(void);
 
-/** Shows (or raises) the preferences window (M5). */
-void pidgin_prefs_show(void);
-void pidgin_prefs_hide(void);
+/** Starts loading and watching gtk4.css. Needs the display and the
+ * profile directory. */
+void pidgin_themes_init(void);
+void pidgin_themes_uninit(void);
 
-/** PIDGIN4_WINDOWS_SELFTEST: opens the window and visits every page. */
-void pidgin_prefs_selftest(void);
+/** <profile>/pidgin4/gtk4.css (owned by pidgin4; the file may not exist). */
+const char *pidgin_themes_get_user_css_path(void);
 
-#endif /* _PIDGINPREFS_H_ */
+/** Reloads gtk4.css now. */
+void pidgin_themes_reload_user_css(void);
+
+/** The last parse error of gtk4.css, or NULL. */
+const char *pidgin_themes_get_user_css_error(void);
+
+#endif /* _PIDGINTHEMES_H_ */

@@ -82,4 +82,8 @@ const char *pidgin_user_dir(void);
  */
 void pidgin_application_quit(void);
 
+/** Sets the process exit status used when the application quits normally
+ * (the M5 windows selftest uses 1 for a failure). */
+void pidgin_application_set_exit_status(int status);
+
 #endif /* _PIDGIN_H_ */

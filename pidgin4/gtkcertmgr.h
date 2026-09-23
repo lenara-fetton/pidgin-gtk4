@@ -1,9 +1,5 @@
-/**
- * @file gtkprefs.h GTK 4 Preferences
- * @ingroup pidgin
- */
-
-/* pidgin
+/*
+ * pidgin4
  *
  * Pidgin is the legal property of its developers, whose names are too numerous
  * to list here.  Please refer to the COPYRIGHT file distributed with this
@@ -23,23 +19,18 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111-1301  USA
  */
-#ifndef _PIDGINPREFS_H_
-#define _PIDGINPREFS_H_
+#ifndef _PIDGINCERTMGR_H_
+#define _PIDGINCERTMGR_H_
 
-#include "prefs.h"
+#include "pidgin.h"
 
-/**
- * Registers the pidgin4 prefs (the /pidgin4 subtree). Called from
- * purple_core_init() through the core UI ops, after prefs.xml is loaded,
- * so only missing keys get their defaults.
- */
-void pidgin_prefs_init(void);
+/* The certificate manager (M5): the tls_peers pool. */
 
-/** Shows (or raises) the preferences window (M5). */
-void pidgin_prefs_show(void);
-void pidgin_prefs_hide(void);
+void pidgin_certmgr_show(void);
+void pidgin_certmgr_hide(void);
 
-/** PIDGIN4_WINDOWS_SELFTEST: opens the window and visits every page. */
-void pidgin_prefs_selftest(void);
+/** PIDGIN4_WINDOWS_SELFTEST: opens the manager, views every certificate
+ * of the tls_peers pool, closes. Never deletes or imports anything. */
+void pidgin_certmgr_selftest(void);
 
-#endif /* _PIDGINPREFS_H_ */
+#endif /* _PIDGINCERTMGR_H_ */

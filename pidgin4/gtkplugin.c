@@ -1,9 +1,5 @@
-/**
- * @file gtkprefs.h GTK 4 Preferences
- * @ingroup pidgin
- */
-
-/* pidgin
+/*
+ * pidgin4
  *
  * Pidgin is the legal property of its developers, whose names are too numerous
  * to list here.  Please refer to the COPYRIGHT file distributed with this
@@ -23,23 +19,20 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02111-1301  USA
  */
-#ifndef _PIDGINPREFS_H_
-#define _PIDGINPREFS_H_
 
-#include "prefs.h"
+/* PLACEHOLDER (M5 scaffolding): replaced by the plugins dialog */
+#include "pidgin-internal.h"
+#include "pidgin.h"
 
-/**
- * Registers the pidgin4 prefs (the /pidgin4 subtree). Called from
- * purple_core_init() through the core UI ops, after prefs.xml is loaded,
- * so only missing keys get their defaults.
- */
-void pidgin_prefs_init(void);
+#include "debug.h"
+#include "gtkplugin.h"
 
-/** Shows (or raises) the preferences window (M5). */
-void pidgin_prefs_show(void);
-void pidgin_prefs_hide(void);
 
-/** PIDGIN4_WINDOWS_SELFTEST: opens the window and visits every page. */
-void pidgin_prefs_selftest(void);
-
-#endif /* _PIDGINPREFS_H_ */
+GtkWidget *pidgin_plugin_get_config_frame(PurplePlugin *plugin) { return NULL; }
+void pidgin_plugins_save(void) { purple_plugins_save_loaded(PIDGIN4_PREFS_ROOT "/plugins/loaded"); }
+void pidgin_plugins_load_saved(const char *key) { purple_plugins_load_saved(key); }
+gboolean pidgin_plugin_file_is_foreign_toolkit(const char *path, char **lib) { if (lib) *lib = NULL; return FALSE; }
+void pidgin_plugin_dialog_show(void) { purple_debug_info("gtkplugin", "placeholder\n"); }
+void pidgin_plugins_init(void) { }
+void pidgin_plugins_uninit(void) { }
+void pidgin_plugins_selftest(void) { }
