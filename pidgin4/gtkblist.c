@@ -1987,10 +1987,10 @@ node_action_free(NodeAction *na)
 static void
 node_action_activate_cb(GSimpleAction *action, GVariant *param, NodeAction *na)
 {
-	/* The context menu closes when its node goes away, but a node menu
-	 * built for the selftest has no popover: check again. */
-	if (gtkblist != NULL && lookup_item(na->node) == NULL &&
-	    !PURPLE_BLIST_NODE_IS_BUDDY(na->node))
+	/* The context menu closes when its node goes away, but an item can
+	 * be about another node (a contact's other buddies, a group), so
+	 * only act on nodes the model still has. */
+	if (gtkblist == NULL || lookup_item(na->node) == NULL)
 		return;
 	na->func(na->node);
 }
