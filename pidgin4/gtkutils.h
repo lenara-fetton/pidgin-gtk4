@@ -213,4 +213,25 @@ void pidgin_open_uri(GtkWindow *parent, const char *uri);
 void pidgin_utils_init(void);
 void pidgin_utils_uninit(void);
 
+/**************************************************************************
+ * Message view and compose entry (M4; replace pidgin_create_imhtml() and
+ * pidgin_setup_imhtml())
+ **************************************************************************/
+
+/**
+ * A PidginMessageView (it scrolls itself and has its own find bar),
+ * with the conversation-signal handle registered.
+ */
+GtkWidget *pidgin_create_message_view(void);
+
+/**
+ * A compose entry set up for @features (pidgin_compose_entry_setup()) in
+ * a scrolled window, with a PidginFormatToolbar above it if
+ * @with_toolbar. Returns the container (a vertical GtkBox); @entry and
+ * @toolbar (either may be NULL) receive the parts.
+ */
+GtkWidget *pidgin_create_compose_entry(PurpleConnectionFlags features,
+                                       gboolean with_toolbar,
+                                       GtkWidget **entry, GtkWidget **toolbar);
+
 #endif /* _PIDGINUTILS_H_ */

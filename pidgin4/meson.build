@@ -40,6 +40,12 @@ gobject_dep = dependency('gobject-2.0')
 gmodule_dep = dependency('gmodule-export-2.0')
 gtk_dep = dependency('gtk4', version : '>= 4.14')
 purple_dep = dependency('purple', version : ['>= 2.14.0', '< 3.0'])
+# M4: message view, compose entry, message index, remote images.
+gtksourceview_dep = dependency('gtksourceview-5', version : '>= 5.0')
+spelling_dep = dependency('libspelling-1', version : '>= 0.2')
+soup_dep = dependency('libsoup-3.0', version : '>= 3.0')
+sqlite_dep = dependency('sqlite3', version : '>= 3.35')
+m_dep = cc.find_library('m', required : false)
 
 # Everything libpurple-related (translations, its plugin dir, the rpath)
 # comes from the purple.pc prefix, which may differ from our own prefix.
@@ -116,17 +122,44 @@ pidgin4_sources = files(
 	'gtkprefs.c',
 	'gtkrequest.c',
 	'gtksound.c',
-	'gtkutils.c',
-	'pidginmenu.c',
 	'pidginsingleui.c',
 	'stubs.c',
 )
 
 pidgin4_deps = [glib_dep, gio_dep, gio_unix_dep, gobject_dep, gmodule_dep,
-                gtk_dep, purple_dep]
+                gtk_dep, purple_dep, gtksourceview_dep, spelling_dep, soup_dep,
+                sqlite_dep, m_dep]
+
+# Reusable widgets and stores (M4 GtkIMHtml replacement, helpers). Built as
+# a static library so the unit tests and the demo can link them without
+# gtkmain.c; the executable links it whole, so export_dynamic still exports
+# every pidgin_* symbol to UI plugins. Code here that needs the running app
+# calls pidgin_application_get(), which tests/test-support.c provides.
+components_sources = files(
+	'gtkutils.c',
+	'pidginmenu.c',
+	'pidginmarkup.c',
+	'pidginsmileytheme.c',
+	'pidginmessage.c',
+	'pidginmessageindex.c',
+	'pidginbackfill.c',
+	'pidginimageloader.c',
+	'pidginmessageview.c',
+	'pidgincomposeentry.c',
+	'pidginformattoolbar.c',
+	'pidginrichlabel.c',
+	'pidginnickcolor.c',
+	'pidginanimation.c',
+)
+
+components_lib = static_library('pidgin4-components',
+	components_sources, revision_h,
+	dependencies : pidgin4_deps,
+	install : false)
 
 executable('pidgin4',
 	pidgin4_sources, resources, revision_h,
+	link_whole : components_lib,
 	dependencies : pidgin4_deps,
 	# UI plugins resolve pidgin_* symbols from the executable.
 	export_dynamic : true,
@@ -165,6 +198,48 @@ test_singleui = executable('test-singleui',
 	dependencies : [glib_dep, purple_dep],
 	install : false)
 test('singleui', test_singleui)
+
+# M4 component tests. Each tests/test-<name>.c links the components
+# library plus tests/test-support.c (pidgin_application_get() and a scratch
+# profile helper). They run headless: nothing here needs a display.
+test_support = files('tests/test-support.c')
+test_env = environment()
+test_env.set('PIDGIN4_TEST_DATA', meson.current_source_dir() / 'tests' / 'data')
+test_env.set('PIDGIN4_NO_BACKFILL', '1')
+test_env.set('GSETTINGS_BACKEND', 'memory')
+component_tests = [
+	'pidginmarkup',
+	'messageindex',
+	'backfill',
+	'imageloader',
+	'nickcolor',
+]
+foreach name : component_tests
+	test_exe = executable('test-' + name,
+		'tests/test-' + name + '.c', test_support,
+		link_with : components_lib,
+		dependencies : pidgin4_deps,
+		build_rpath : purple_libdir,
+		install : false)
+	test(name, test_exe, env : test_env, timeout : 120)
+endforeach
+
+# The M4 demo (not installed): msgview-demo [--log FILE] [--xmpp]. With
+# PIDGIN4_MSGVIEW_SELFTEST=1 it renders 5000 messages headless and checks
+# time, memory, find, trimming and the compose entry. Under meson test it
+# only runs on the display in PIDGIN4_TEST_DISPLAY (e.g. an Xvfb :97), never
+# on the session's own, and is skipped (77) otherwise.
+msgview_demo = executable('msgview-demo',
+	'tests/msgview-demo.c', test_support, resources,
+	link_with : components_lib,
+	dependencies : pidgin4_deps,
+	build_rpath : purple_libdir,
+	install : false)
+selftest_env = environment()
+selftest_env.set('PIDGIN4_MSGVIEW_SELFTEST', 'meson')
+selftest_env.set('GSETTINGS_BACKEND', 'memory')
+test('msgview-selftest', msgview_demo, env : selftest_env, timeout : 300,
+     suite : 'gui')
 
 desktop_validate = find_program('desktop-file-validate', required : false)
 if desktop_validate.found()

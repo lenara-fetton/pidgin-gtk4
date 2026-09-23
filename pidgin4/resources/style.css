@@ -9,3 +9,83 @@
 .pidgin-debug-view {
 	font-family: monospace;
 }
+
+/* M4: message view (pidginmessageview.c), rich text, compose entry.
+ * Name colours are Pidgin 2's defaults (gtkconv.c/gtkimhtml.c). */
+pidgin-message-row {
+	padding: 1px 6px;
+}
+
+pidgin-message-row .timestamp {
+	font-size: smaller;
+	opacity: 0.7;
+}
+
+pidgin-message-row .name {
+	font-weight: bold;
+}
+
+pidgin-message-row .name.send { color: #204a87; }
+pidgin-message-row .name.receive { color: #cc0000; }
+pidgin-message-row .name.highlight { color: #af7f00; }
+pidgin-message-row .name.action { color: #062585; }
+pidgin-message-row .name.whisper { color: #6c2585; }
+
+@media (prefers-color-scheme: dark) {
+	pidgin-message-row .name.send { color: #729fcf; }
+	pidgin-message-row .name.receive { color: #ef2929; }
+	pidgin-message-row .name.highlight { color: #edd400; }
+	pidgin-message-row .name.action { color: #8ab4f8; }
+	pidgin-message-row .name.whisper { color: #ad7fa8; }
+}
+
+pidgin-message-row.error .body { color: #ff0000; font-weight: bold; }
+pidgin-message-row.system .body { font-weight: bold; }
+pidgin-message-row.retracted .body { font-style: italic; opacity: 0.6; }
+
+pidgin-message-row .reply-quote {
+	border-left: 3px solid alpha(currentColor, 0.35);
+	padding-left: 6px;
+	margin-left: 12px;
+	font-size: smaller;
+	opacity: 0.8;
+}
+
+pidgin-message-row .reactions {
+	margin-left: 12px;
+}
+
+pidgin-message-row .reactions button {
+	padding: 0 6px;
+	min-height: 0;
+	border-radius: 10px;
+}
+
+pidgin-message-row .receipt { font-size: smaller; opacity: 0.6; }
+pidgin-message-row .receipt.displayed { color: #3584e4; opacity: 1; }
+
+pidgin-message-row .edited {
+	font-size: smaller;
+	opacity: 0.6;
+	min-height: 0;
+	padding: 0 2px;
+}
+
+pidgin-message-row separator.pidgin-marker-line {
+	background: none;
+	background-color: #ff0000;
+	min-height: 2px;
+	margin: 3px 0;
+	opacity: 1;
+}
+
+textview.pidgin-rich-text,
+textview.pidgin-rich-text > text {
+	background: transparent;
+}
+
+pidgin-format-toolbar button {
+	min-width: 24px;
+	min-height: 24px;
+	padding: 2px;
+}
