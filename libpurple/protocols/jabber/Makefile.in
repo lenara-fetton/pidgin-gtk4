@@ -175,9 +175,9 @@ am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
 	libjabber_la-rawudp.lo libjabber_la-rtp.lo \
 	libjabber_la-session.lo libjabber_la-transport.lo \
 	libjabber_la-jutil.lo libjabber_la-kvstore.lo \
-	libjabber_la-bookmarks.lo libjabber_la-carbons.lo libjabber_la-mam.lo \
-	libjabber_la-message.lo libjabber_la-oob.lo \
-	libjabber_la-parser.lo libjabber_la-pep.lo \
+	libjabber_la-bookmarks.lo libjabber_la-carbons.lo \
+	libjabber_la-mam.lo libjabber_la-message.lo \
+	libjabber_la-oob.lo libjabber_la-parser.lo libjabber_la-pep.lo \
 	libjabber_la-ping.lo libjabber_la-presence.lo \
 	libjabber_la-roster.lo libjabber_la-si.lo \
 	libjabber_la-stream_management.lo libjabber_la-useravatar.lo \
@@ -226,9 +226,11 @@ am__depfiles_remade = ./$(DEPDIR)/libjabber_la-adhoccommands.Plo \
 	./$(DEPDIR)/libjabber_la-auth_digest_md5.Plo \
 	./$(DEPDIR)/libjabber_la-auth_plain.Plo \
 	./$(DEPDIR)/libjabber_la-auth_scram.Plo \
+	./$(DEPDIR)/libjabber_la-bookmarks.Plo \
 	./$(DEPDIR)/libjabber_la-bosh.Plo \
 	./$(DEPDIR)/libjabber_la-buddy.Plo \
 	./$(DEPDIR)/libjabber_la-caps.Plo \
+	./$(DEPDIR)/libjabber_la-carbons.Plo \
 	./$(DEPDIR)/libjabber_la-chat.Plo \
 	./$(DEPDIR)/libjabber_la-content.Plo \
 	./$(DEPDIR)/libjabber_la-data.Plo \
@@ -247,10 +249,8 @@ am__depfiles_remade = ./$(DEPDIR)/libjabber_la-adhoccommands.Plo \
 	./$(DEPDIR)/libjabber_la-jingleinfo.Plo \
 	./$(DEPDIR)/libjabber_la-jutil.Plo \
 	./$(DEPDIR)/libjabber_la-kvstore.Plo \
-	./$(DEPDIR)/libjabber_la-bookmarks.Plo \
-	./$(DEPDIR)/libjabber_la-carbons.Plo \
-	./$(DEPDIR)/libjabber_la-mam.Plo \
 	./$(DEPDIR)/libjabber_la-libxmpp.Plo \
+	./$(DEPDIR)/libjabber_la-mam.Plo \
 	./$(DEPDIR)/libjabber_la-message.Plo \
 	./$(DEPDIR)/libjabber_la-oob.Plo \
 	./$(DEPDIR)/libjabber_la-parser.Plo \
@@ -453,6 +453,8 @@ NSS_CFLAGS = @NSS_CFLAGS@
 NSS_LIBS = @NSS_LIBS@
 OBJDUMP = @OBJDUMP@
 OBJEXT = @OBJEXT@
+OMEMO_CFLAGS = @OMEMO_CFLAGS@
+OMEMO_LIBS = @OMEMO_LIBS@
 OTOOL = @OTOOL@
 OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
@@ -733,9 +735,11 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-auth_digest_md5.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-auth_plain.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-auth_scram.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-bookmarks.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-bosh.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-buddy.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-caps.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-carbons.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-chat.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-content.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-data.Plo@am__quote@ # am--include-marker
@@ -754,10 +758,8 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-jingleinfo.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-jutil.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-kvstore.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-bookmarks.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-carbons.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-mam.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-libxmpp.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-mam.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-message.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-oob.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-parser.Plo@am__quote@ # am--include-marker
@@ -1296,9 +1298,11 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-auth_digest_md5.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-auth_plain.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-auth_scram.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-bookmarks.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-bosh.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-buddy.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-caps.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-carbons.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-chat.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-content.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-data.Plo
@@ -1317,10 +1321,8 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-jingleinfo.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-jutil.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-kvstore.Plo
-	-rm -f ./$(DEPDIR)/libjabber_la-bookmarks.Plo
-	-rm -f ./$(DEPDIR)/libjabber_la-carbons.Plo
-	-rm -f ./$(DEPDIR)/libjabber_la-mam.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-libxmpp.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-mam.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-message.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-oob.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-parser.Plo
@@ -1392,9 +1394,11 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-auth_digest_md5.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-auth_plain.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-auth_scram.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-bookmarks.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-bosh.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-buddy.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-caps.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-carbons.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-chat.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-content.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-data.Plo
@@ -1413,10 +1417,8 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-jingleinfo.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-jutil.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-kvstore.Plo
-	-rm -f ./$(DEPDIR)/libjabber_la-bookmarks.Plo
-	-rm -f ./$(DEPDIR)/libjabber_la-carbons.Plo
-	-rm -f ./$(DEPDIR)/libjabber_la-mam.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-libxmpp.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-mam.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-message.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-oob.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-parser.Plo
