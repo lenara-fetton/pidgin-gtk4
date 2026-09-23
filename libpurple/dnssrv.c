@@ -26,45 +26,35 @@
 #include "internal.h"
 #include "util.h"
 
-#ifndef _WIN32
-#include <arpa/nameser.h>
-#include <resolv.h>
-#ifdef HAVE_ARPA_NAMESER_COMPAT_H
-#include <arpa/nameser_compat.h>
-#endif
-#else /* WIN32 */
-#include <windns.h>
-/* Missing from the mingw headers */
-#ifndef DNS_TYPE_SRV
-# define DNS_TYPE_SRV PurpleDnsTypeSrv
-#endif
-#ifndef DNS_TYPE_TXT
-# define DNS_TYPE_TXT PurpleDnsTypeTxt
-#endif
-#endif
-
-#ifndef T_SRV
-#define T_SRV	PurpleDnsTypeSrv
-#endif
-#ifndef T_TXT
-#define T_TXT	PurpleDnsTypeTxt
-#endif
-
-#define MAX_ADDR_RESPONSE_LEN 1048576
-
 #include "debug.h"
 #include "dnssrv.h"
 #include "eventloop.h"
 #include "network.h"
 
+#include <gio/gio.h>
+
+/*
+ * SRV and TXT records are looked up with GResolver
+ * (g_resolver_lookup_records_async() on g_resolver_get_default()), which
+ * runs the blocking res_query() in a GLib worker thread and delivers the
+ * result on the main context.  This replaces the fork()ed resolver process
+ * (Unix) and the DnsQuery thread (Windows) used before; the public API, the
+ * PurpleSrvResponse/PurpleTxtResponse structs and the RFC 2782 ordering are
+ * unchanged.
+ */
+
 static PurpleSrvTxtQueryUiOps *srv_txt_query_ui_ops = NULL;
 
-#ifndef _WIN32
-typedef union {
-	HEADER hdr;
-	u_char buf[1024];
-} queryans;
-#endif
+/*
+ * Links a PurpleSrvTxtQueryData to its in-flight GResolver lookup.  The
+ * GResolver callback always runs, even after cancellation, so it owns this
+ * struct.  purple_srv_txt_query_destroy() only detaches the query from it
+ * (query_data = NULL) and cancels the lookup.
+ */
+typedef struct {
+	PurpleSrvTxtQueryData *query_data;
+	GCancellable *cancellable;
+} PurpleSrvTxtLookup;
 
 struct _PurpleSrvTxtQueryData {
 	union {
@@ -73,23 +63,10 @@ struct _PurpleSrvTxtQueryData {
 	} cb;
 
 	gpointer extradata;
-	guint handle;
 	int type;
 	char *query;
-#ifdef _WIN32
-	GThread *resolver;
-	char *error_message;
-	GList *results;
-#else
-	int fd_in, fd_out;
-	pid_t pid;
-#endif
+	PurpleSrvTxtLookup *lookup;
 };
-
-typedef struct _PurpleSrvInternalQuery {
-	int type;
-	char query[256];
-} PurpleSrvInternalQuery;
 
 typedef struct _PurpleSrvResponseContainer {
 	PurpleSrvResponse *response;
@@ -271,10 +248,6 @@ query_data_new(int type, gchar *query, gpointer extradata)
 	query_data->type = type;
 	query_data->extradata = extradata;
 	query_data->query = query;
-#ifndef _WIN32
-	query_data->fd_in = -1;
-	query_data->fd_out = -1;
-#endif
 	return query_data;
 }
 
@@ -286,469 +259,211 @@ purple_srv_txt_query_destroy(PurpleSrvTxtQueryData *query_data)
 	if (ops && ops->destroy)
 		ops->destroy(query_data);
 
-	if (query_data->handle > 0)
-		purple_input_remove(query_data->handle);
-#ifdef _WIN32
-	if (query_data->resolver != NULL)
-	{
+	if (query_data->lookup != NULL) {
 		/*
-		 * It's not really possible to kill a thread.  So instead we
-		 * just set the callback to NULL and let the DNS lookup
-		 * finish.
+		 * Cancelling an in-progress lookup.  The GResolver callback
+		 * still runs later; it finds the lookup detached and just
+		 * frees it.
 		 */
-		query_data->cb.srv = NULL;
-		return;
+		query_data->lookup->query_data = NULL;
+		g_cancellable_cancel(query_data->lookup->cancellable);
+		query_data->lookup = NULL;
 	}
-	g_free(query_data->error_message);
-#else
-	if (query_data->fd_out != -1)
-		close(query_data->fd_out);
-	if (query_data->fd_in != -1)
-		close(query_data->fd_in);
-#endif
+
 	g_free(query_data->query);
 	g_free(query_data);
 }
 
-#ifdef USE_IDN
 static gboolean
 dns_str_is_ascii(const char *name)
 {
-	guchar *c;
-	for (c = (guchar *)name; c && *c; ++c) {
+	const guchar *c;
+	for (c = (const guchar *)name; c && *c; ++c) {
 		if (*c > 0x7f)
 			return FALSE;
 	}
 
 	return TRUE;
 }
-#endif
 
-#ifndef _WIN32
-static void
-write_to_parent(int in, int out, gconstpointer data, gsize size)
+/*
+ * Convert a non-ASCII domain to punycode with libpurple's own IDNA code, so
+ * that all of libpurple agrees on the mapping.  Returns NULL on failure.
+ */
+static gchar *
+domain_to_ascii(const char *domain)
 {
-	const guchar *buf = data;
-	gssize w;
+	gchar *hostname;
 
-	do {
-		w = write(out, buf, size);
-		if (w > 0) {
-			buf += w;
-			size -= w;
-		} else if (w < 0 && errno == EINTR) {
-			/* Let's try some more; */
-			w = 1;
-		}
-	} while (size > 0 && w > 0);
+	if (dns_str_is_ascii(domain))
+		return g_strdup(domain);
 
-	if (size != 0) {
-		/* An error occurred */
-		close(out);
-		close(in);
-		_exit(0);
-	}
-}
-
-/* Read size bytes to data. Dies if an error occurs. */
-static void
-read_from_parent(int in, int out, gpointer data, gsize size)
-{
-	guchar *buf = data;
-	gssize r;
-
-	do {
-		r = read(in, data, size);
-		if (r > 0) {
-			buf += r;
-			size -= r;
-		} else if (r < 0 && errno == EINTR) {
-			/* Let's try some more; */
-			r = 1;
-		}
-	} while (size > 0 && r > 0);
-
-	if (size != 0) {
-		/* An error occurred */
-		close(out);
-		close(in);
-		_exit(0);
-	}
-}
-
-
-G_GNUC_NORETURN static void
-resolve(int in, int out)
-{
-	GList *ret = NULL;
-	PurpleSrvResponse *srvres;
-	PurpleTxtResponse *txtres;
-	queryans answer;
-	int size, qdcount, ancount;
-	guchar *end, *cp;
-	gchar name[256];
-	guint16 type, dlen, pref, weight, port;
-	PurpleSrvInternalQuery query;
-
-#ifdef HAVE_SIGNAL_H
-	purple_restore_default_signal_handlers();
-#endif
-
-	read_from_parent(in, out, &query, sizeof(query));
-
-	size = res_query( query.query, C_IN, query.type, (u_char*)&answer, sizeof( answer));
-	if (size == -1) {
-		write_to_parent(in, out, &(query.type), sizeof(query.type));
-		write_to_parent(in, out, &size, sizeof(size));
-		close(out);
-		close(in);
-		_exit(0);
+	if (purple_network_convert_idn_to_ascii(domain, &hostname) != 0) {
+		purple_debug_error("dnssrv", "IDNA ToASCII failed\n");
+		return NULL;
 	}
 
-	qdcount = ntohs(answer.hdr.qdcount);
-	ancount = ntohs(answer.hdr.ancount);
-	cp = (guchar*)&answer + sizeof(HEADER);
-	end = (guchar*)&answer + size;
-
-	/* skip over unwanted stuff */
-	while (qdcount-- > 0 && cp < end) {
-		size = dn_expand( (unsigned char*)&answer, end, cp, name, 256);
-		if(size < 0) goto end;
-		cp += size + QFIXEDSZ;
-	}
-
-	while (ancount-- > 0 && cp < end) {
-		size = dn_expand((unsigned char*)&answer, end, cp, name, 256);
-		if(size < 0)
-			goto end;
-		cp += size;
-		GETSHORT(type,cp);
-
-		/* skip ttl and class since we already know it */
-		cp += 6;
-
-		GETSHORT(dlen,cp);
-		if (type == T_SRV) {
-			GETSHORT(pref,cp);
-
-			GETSHORT(weight,cp);
-
-			GETSHORT(port,cp);
-
-			size = dn_expand( (unsigned char*)&answer, end, cp, name, 256);
-			if(size < 0 )
-				goto end;
-
-			cp += size;
-
-			srvres = g_new0(PurpleSrvResponse, 1);
-			if (strlen(name) > sizeof(srvres->hostname) - 1) {
-				purple_debug_error("dnssrv", "hostname is longer than available buffer ('%s', %zd bytes)!",
-				                   name, strlen(name));
-			}
-			g_strlcpy(srvres->hostname, name, sizeof(srvres->hostname));
-			srvres->pref = pref;
-			srvres->port = port;
-			srvres->weight = weight;
-
-			ret = g_list_prepend(ret, srvres);
-		} else if (type == T_TXT) {
-			txtres = g_new0(PurpleTxtResponse, 1);
-			txtres->content = g_strndup((gchar*)(++cp), dlen-1);
-			ret = g_list_append(ret, txtres);
-			cp += dlen - 1;
-		} else {
-			cp += dlen;
-		}
-	}
-
-end:
-	size = g_list_length(ret);
-
-	if (query.type == T_SRV)
-		ret = purple_srv_sort(ret);
-
-	write_to_parent(in, out, &(query.type), sizeof(query.type));
-	write_to_parent(in, out, &size, sizeof(size));
-	while (ret != NULL)
-	{
-		if (query.type == T_SRV)
-			write_to_parent(in, out, ret->data, sizeof(PurpleSrvResponse));
-		if (query.type == T_TXT) {
-			PurpleTxtResponse *response = ret->data;
-			gsize l = strlen(response->content) + 1 /* null byte */;
-			write_to_parent(in, out, &l, sizeof(l));
-			write_to_parent(in, out, response->content, l);
-		}
-
-		g_free(ret->data);
-		ret = g_list_delete_link(ret, ret);
-	}
-
-	close(out);
-	close(in);
-
-	_exit(0);
+	return hostname;
 }
 
 static void
-resolved(gpointer data, gint source, PurpleInputCondition cond)
+purple_srv_txt_lookup_free(PurpleSrvTxtLookup *lookup)
 {
-	int size;
-	int type;
-	PurpleSrvTxtQueryData *query_data = (PurpleSrvTxtQueryData*)data;
-	int i;
-	int status;
+	g_object_unref(lookup->cancellable);
+	g_free(lookup);
+}
 
-	if (read(source, &type, sizeof(type)) == sizeof(type)) {
-		if (read(source, &size, sizeof(size)) == sizeof(size)) {
-			if (size < -1 || size > MAX_ADDR_RESPONSE_LEN) {
-				purple_debug_warning("dnssrv", "res_query returned invalid number\n");
-				size = 0;
-			}
-			if (size == -1 || size == 0) {
-				if (size == -1) {
-					purple_debug_warning("dnssrv", "res_query returned an error\n");
-					/* Re-read resolv.conf and friends in case DNS servers have changed */
-					res_init();
-				} else
-					purple_debug_info("dnssrv", "Found 0 entries, errno is %i\n", errno);
+/* Build PurpleSrvResponses from GResolver's "(qqqs)" SRV records. */
+static GList *
+srv_records_to_responses(GList *records)
+{
+	GList *ret = NULL, *l;
 
-				if (type == T_SRV) {
-					PurpleSrvCallback cb = query_data->cb.srv;
-					cb(NULL, 0, query_data->extradata);
-				} else if (type == T_TXT) {
-					PurpleTxtCallback cb = query_data->cb.txt;
-					cb(NULL, query_data->extradata);
-				} else {
-					purple_debug_error("dnssrv", "type unknown of DNS result entry; errno is %i\n", errno);
-				}
+	for (l = records; l != NULL; l = l->next) {
+		PurpleSrvResponse *srvres;
+		guint16 pref, weight, port;
+		const gchar *target;
 
-			} else if (size) {
-				if (type == T_SRV) {
-					PurpleSrvResponse *res;
-					PurpleSrvResponse *tmp;
-					PurpleSrvCallback cb = query_data->cb.srv;
-					ssize_t red;
-					purple_debug_info("dnssrv","found %d SRV entries\n", size);
-					tmp = res = g_new0(PurpleSrvResponse, size);
-					for (i = 0; i < size; i++) {
-						red = read(source, tmp++, sizeof(PurpleSrvResponse));
-						if (red != sizeof(PurpleSrvResponse)) {
-							purple_debug_error("dnssrv","unable to read srv "
-									"response: %s\n", g_strerror(errno));
-							size = 0;
-							g_free(res);
-							res = NULL;
-						}
-					}
+		if (!g_variant_is_of_type(l->data, G_VARIANT_TYPE("(qqqs)")))
+			continue;
 
-					cb(res, size, query_data->extradata);
-				} else if (type == T_TXT) {
-					GList *responses = NULL;
-					PurpleTxtResponse *res;
-					PurpleTxtCallback cb = query_data->cb.txt;
-					ssize_t red;
-					purple_debug_info("dnssrv","found %d TXT entries\n", size);
-					for (i = 0; i < size; i++) {
-						gsize len;
+		g_variant_get(l->data, "(qqq&s)", &pref, &weight, &port, &target);
 
-						red = read(source, &len, sizeof(len));
-						if (red != sizeof(len)) {
-							purple_debug_error("dnssrv","unable to read txt "
-									"response length: %s\n", g_strerror(errno));
-							size = 0;
-							g_list_free_full(responses,
-							                 (GDestroyNotify)purple_txt_response_destroy);
-							responses = NULL;
-							break;
-						}
-						if (len > MAX_ADDR_RESPONSE_LEN) {
-							purple_debug_error("dnssrv", "we've read invalid number\n");
-							size = 0;
-							g_list_free_full(responses,
-							                 (GDestroyNotify)purple_txt_response_destroy);
-							responses = NULL;
-							break;
-						}
-
-						res = g_new0(PurpleTxtResponse, 1);
-						res->content = g_new0(gchar, len);
-
-						red = read(source, res->content, len);
-						if (red < 0 || (gsize)red != len) {
-							purple_debug_error("dnssrv","unable to read txt "
-									"response: %s\n", g_strerror(errno));
-							size = 0;
-							purple_txt_response_destroy(res);
-							g_list_free_full(responses,
-							                 (GDestroyNotify)purple_txt_response_destroy);
-							responses = NULL;
-							break;
-						}
-						responses = g_list_prepend(responses, res);
-					}
-
-					responses = g_list_reverse(responses);
-					cb(responses, query_data->extradata);
-				} else {
-					purple_debug_error("dnssrv", "type unknown of DNS result entry; errno is %i\n", errno);
-				}
-			}
+		srvres = g_new0(PurpleSrvResponse, 1);
+		if (strlen(target) > sizeof(srvres->hostname) - 1) {
+			purple_debug_error("dnssrv", "hostname is longer than available buffer ('%s', %"
+			                   G_GSIZE_FORMAT " bytes)!\n",
+			                   target, strlen(target));
 		}
+		g_strlcpy(srvres->hostname, target, sizeof(srvres->hostname));
+		srvres->pref = pref;
+		srvres->port = port;
+		srvres->weight = weight;
+
+		ret = g_list_prepend(ret, srvres);
 	}
 
-	waitpid(query_data->pid, &status, 0);
+	return g_list_reverse(ret);
+}
+
+/*
+ * Build PurpleTxtResponses from GResolver's "(as)" TXT records.  A TXT
+ * record made of several character-strings is concatenated, as RFC 7208
+ * and the old Windows code did.
+ */
+static GList *
+txt_records_to_responses(GList *records)
+{
+	GList *ret = NULL, *l;
+
+	for (l = records; l != NULL; l = l->next) {
+		PurpleTxtResponse *txtres;
+		GVariantIter *iter;
+		const gchar *str;
+		GString *content;
+
+		if (!g_variant_is_of_type(l->data, G_VARIANT_TYPE("(as)")))
+			continue;
+
+		content = g_string_new(NULL);
+		g_variant_get(l->data, "(as)", &iter);
+		while (g_variant_iter_loop(iter, "&s", &str))
+			g_string_append(content, str);
+		g_variant_iter_free(iter);
+
+		txtres = g_new0(PurpleTxtResponse, 1);
+		txtres->content = g_string_free(content, FALSE);
+		ret = g_list_prepend(ret, txtres);
+	}
+
+	return g_list_reverse(ret);
+}
+
+static void
+records_resolved(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+	PurpleSrvTxtLookup *lookup = user_data;
+	PurpleSrvTxtQueryData *query_data = lookup->query_data;
+	GList *records;
+	GError *error = NULL;
+
+	records = g_resolver_lookup_records_finish(G_RESOLVER(source), result,
+			&error);
+
+	if (query_data == NULL) {
+		/* purple_srv_txt_query_destroy() was called while resolving. */
+		g_list_free_full(records, (GDestroyNotify)g_variant_unref);
+		g_clear_error(&error);
+		purple_srv_txt_lookup_free(lookup);
+		return;
+	}
+
+	query_data->lookup = NULL;
+	purple_srv_txt_lookup_free(lookup);
+
+	if (error != NULL) {
+		if (g_error_matches(error, G_RESOLVER_ERROR, G_RESOLVER_ERROR_NOT_FOUND))
+			purple_debug_info("dnssrv", "Found 0 entries for %s: %s\n",
+					query_data->query, error->message);
+		else
+			purple_debug_warning("dnssrv", "Lookup of %s failed: %s\n",
+					query_data->query, error->message);
+		g_error_free(error);
+	}
+
+	if (query_data->type == PurpleDnsTypeSrv) {
+		GList *responses, *l;
+		PurpleSrvResponse *res = NULL;
+		int size, i;
+
+		responses = purple_srv_sort(srv_records_to_responses(records));
+		size = g_list_length(responses);
+		purple_debug_info("dnssrv", "found %d SRV entries\n", size);
+
+		if (size > 0) {
+			res = g_new0(PurpleSrvResponse, size);
+			for (l = responses, i = 0; l != NULL; l = l->next, i++)
+				res[i] = *(PurpleSrvResponse *)l->data;
+		}
+		g_list_free_full(responses, g_free);
+
+		/* The callback owns (and g_free()s) the array. */
+		query_data->cb.srv(res, size, query_data->extradata);
+	} else if (query_data->type == PurpleDnsTypeTxt) {
+		GList *responses = txt_records_to_responses(records);
+
+		purple_debug_info("dnssrv", "found %d TXT entries\n",
+				g_list_length(responses));
+
+		/* The callback owns the list and its entries. */
+		query_data->cb.txt(responses, query_data->extradata);
+	} else {
+		purple_debug_error("dnssrv", "unknown query type %d\n", query_data->type);
+	}
+
+	g_list_free_full(records, (GDestroyNotify)g_variant_unref);
+
 	purple_srv_txt_query_destroy(query_data);
 }
 
-#else /* _WIN32 */
-
-/** The Jabber Server code was inspiration for parts of this. */
-
-static gboolean
-res_main_thread_cb(gpointer data)
+static void
+lookup_records(PurpleSrvTxtQueryData *query_data)
 {
-	PurpleSrvResponse *srvres = NULL;
-	PurpleSrvTxtQueryData *query_data = data;
-	if(query_data->error_message != NULL) {
-		purple_debug_error("dnssrv", "%s", query_data->error_message);
-		if (query_data->type == DNS_TYPE_SRV) {
-			if (query_data->cb.srv)
-				query_data->cb.srv(srvres, 0, query_data->extradata);
-		} else if (query_data->type == DNS_TYPE_TXT) {
-			if (query_data->cb.txt)
-				query_data->cb.txt(NULL, query_data->extradata);
-		}
-	} else {
-		if (query_data->type == DNS_TYPE_SRV) {
-			PurpleSrvResponse *srvres_tmp = NULL;
-			GList *lst = query_data->results;
-			int size = g_list_length(lst);
+	GResolver *resolver;
+	PurpleSrvTxtLookup *lookup;
 
-			if(query_data->cb.srv && size > 0)
-				srvres_tmp = srvres = g_new0(PurpleSrvResponse, size);
-			while (lst) {
-				PurpleSrvResponse *lstdata = lst->data;
-				lst = g_list_delete_link(lst, lst);
+	lookup = g_new0(PurpleSrvTxtLookup, 1);
+	lookup->query_data = query_data;
+	lookup->cancellable = g_cancellable_new();
+	query_data->lookup = lookup;
 
-				if(query_data->cb.srv)
-					memcpy(srvres_tmp++, lstdata, sizeof(PurpleSrvResponse));
-				g_free(lstdata);
-			}
-
-			query_data->results = NULL;
-
-			purple_debug_info("dnssrv", "found %d SRV entries\n", size);
-
-			if(query_data->cb.srv) query_data->cb.srv(srvres, size, query_data->extradata);
-		} else if (query_data->type == DNS_TYPE_TXT) {
-			GList *lst = query_data->results;
-
-			purple_debug_info("dnssrv", "found %d TXT entries\n", g_list_length(lst));
-
-			if (query_data->cb.txt) {
-				query_data->results = NULL;
-				query_data->cb.txt(lst, query_data->extradata);
-			}
-		} else {
-			purple_debug_error("dnssrv", "unknown query type");
-		}
-	}
-
-	query_data->resolver = NULL;
-	query_data->handle = 0;
-
-	purple_srv_txt_query_destroy(query_data);
-
-	return FALSE;
+	resolver = g_resolver_get_default();
+	g_resolver_lookup_records_async(resolver, query_data->query,
+			query_data->type == PurpleDnsTypeSrv ?
+				G_RESOLVER_RECORD_SRV : G_RESOLVER_RECORD_TXT,
+			lookup->cancellable, records_resolved, lookup);
+	g_object_unref(resolver);
 }
-
-static gpointer
-res_thread(gpointer data)
-{
-	PDNS_RECORD dr = NULL;
-	int type;
-	DNS_STATUS ds;
-	PurpleSrvTxtQueryData *query_data = data;
-	type = query_data->type;
-	ds = DnsQuery_UTF8(query_data->query, type, DNS_QUERY_STANDARD, NULL, &dr, NULL);
-	if (ds != ERROR_SUCCESS) {
-		gchar *msg = g_win32_error_message(ds);
-		if (type == DNS_TYPE_SRV) {
-			query_data->error_message = g_strdup_printf("Couldn't look up SRV record. %s (%lu).\n", msg, ds);
-		} else if (type == DNS_TYPE_TXT) {
-			query_data->error_message = g_strdup_printf("Couldn't look up TXT record. %s (%lu).\n", msg, ds);
-		}
-		g_free(msg);
-	} else {
-		if (type == DNS_TYPE_SRV) {
-			PDNS_RECORD dr_tmp;
-			GList *lst = NULL;
-			DNS_SRV_DATA *srv_data;
-			PurpleSrvResponse *srvres;
-
-			for (dr_tmp = dr; dr_tmp != NULL; dr_tmp = dr_tmp->pNext) {
-				/* Discard any incorrect entries. I'm not sure if this is necessary */
-				if (dr_tmp->wType != type || !purple_strequal(dr_tmp->pName, query_data->query)) {
-					continue;
-				}
-
-				srv_data = &dr_tmp->Data.SRV;
-				srvres = g_new0(PurpleSrvResponse, 1);
-				strncpy(srvres->hostname, srv_data->pNameTarget, 255);
-				srvres->hostname[255] = '\0';
-				srvres->pref = srv_data->wPriority;
-				srvres->port = srv_data->wPort;
-				srvres->weight = srv_data->wWeight;
-
-				lst = g_list_prepend(lst, srvres);
-			}
-
-			DnsRecordListFree(dr, DnsFreeRecordList);
-			query_data->results = purple_srv_sort(lst);
-		} else if (type == DNS_TYPE_TXT) {
-			PDNS_RECORD dr_tmp;
-			GList *lst = NULL;
-			DNS_TXT_DATA *txt_data;
-			PurpleTxtResponse *txtres;
-
-			for (dr_tmp = dr; dr_tmp != NULL; dr_tmp = dr_tmp->pNext) {
-				GString *s;
-				int i;
-
-				/* Discard any incorrect entries. I'm not sure if this is necessary */
-				if (dr_tmp->wType != type || !purple_strequal(dr_tmp->pName, query_data->query)) {
-					continue;
-				}
-
-				txt_data = &dr_tmp->Data.TXT;
-				txtres = g_new0(PurpleTxtResponse, 1);
-
-				s = g_string_new("");
-				for (i = 0; i < txt_data->dwStringCount; ++i)
-					s = g_string_append(s, txt_data->pStringArray[i]);
-				txtres->content = g_string_free(s, FALSE);
-
-				lst = g_list_append(lst, txtres);
-			}
-
-			DnsRecordListFree(dr, DnsFreeRecordList);
-			query_data->results = lst;
-		} else {
-
-		}
-	}
-
-	/* back to main thread */
-	/* Note: this should *not* be attached to query_data->handle - it will cause leakage */
-	purple_timeout_add(0, res_main_thread_cb, query_data);
-
-	g_thread_exit(NULL);
-	return NULL;
-}
-
-#endif
 
 PurpleSrvTxtQueryData *
 purple_srv_resolve(const char *protocol, const char *transport,
@@ -767,13 +482,6 @@ purple_srv_resolve_account(PurpleAccount *account, const char *protocol,
 	char *hostname;
 	PurpleSrvTxtQueryData *query_data;
 	PurpleProxyType proxy_type;
-#ifndef _WIN32
-	PurpleSrvInternalQuery internal_query;
-	int in[2], out[2];
-	int pid;
-#else
-	GError* err = NULL;
-#endif
 
 	if (!protocol || !*protocol || !transport || !*transport || !domain || !*domain) {
 		purple_debug_error("dnssrv", "Wrong arguments\n");
@@ -789,17 +497,11 @@ purple_srv_resolve_account(PurpleAccount *account, const char *protocol,
 		return NULL;
 	}
 
-#ifdef USE_IDN
-	if (!dns_str_is_ascii(domain)) {
-		int ret = purple_network_convert_idn_to_ascii(domain, &hostname);
-		if (ret != 0) {
-			purple_debug_error("dnssrv", "IDNA ToASCII failed\n");
-			cb(NULL, 0, extradata);
-			return NULL;
-		}
-	} else /* Fallthru is intentional */
-#endif
-	hostname = g_strdup(domain);
+	hostname = domain_to_ascii(domain);
+	if (hostname == NULL) {
+		cb(NULL, 0, extradata);
+		return NULL;
+	}
 
 	query = g_strdup_printf("_%s._%s.%s", protocol, transport, hostname);
 	purple_debug_info("dnssrv","querying SRV record for %s: %s\n", domain,
@@ -814,67 +516,9 @@ purple_srv_resolve_account(PurpleAccount *account, const char *protocol,
 		return query_data;
 	}
 
-#ifndef _WIN32
-	if(pipe(in) || pipe(out)) {
-		purple_debug_error("dnssrv", "Could not create pipe\n");
-		g_free(query);
-		g_free(query_data);
-		cb(NULL, 0, extradata);
-		return NULL;
-	}
-
-	pid = fork();
-	if (pid == -1) {
-		purple_debug_error("dnssrv", "Could not create process!\n");
-		g_free(query);
-		g_free(query_data);
-		cb(NULL, 0, extradata);
-		return NULL;
-	}
-
-	/* Child */
-	if (pid == 0)
-	{
-		g_free(query);
-		g_free(query_data);
-
-		close(out[0]);
-		close(in[1]);
-		resolve(in[0], out[1]);
-		/* resolve() does not return */
-	}
-
-	close(out[1]);
-	close(in[0]);
-
-	internal_query.type = T_SRV;
-	strncpy(internal_query.query, query, 255);
-	internal_query.query[255] = '\0';
-
-	if (write(in[1], &internal_query, sizeof(internal_query)) < 0)
-		purple_debug_error("dnssrv", "Could not write to SRV resolver\n");
-
-	query_data->pid = pid;
-	query_data->fd_out = out[0];
-	query_data->fd_in = in[1];
-	query_data->handle = purple_input_add(out[0], PURPLE_INPUT_READ, resolved, query_data);
+	lookup_records(query_data);
 
 	return query_data;
-#else
-	query_data->resolver = g_thread_create(res_thread, query_data, FALSE, &err);
-	if (query_data->resolver == NULL) {
-		query_data->error_message = g_strdup_printf("SRV thread create failure: %s\n", (err && err->message) ? err->message : "");
-		g_error_free(err);
-	}
-
-	/* The query isn't going to happen, so finish the SRV lookup now.
-	 * Asynchronously call the callback since stuff may not expect
-	 * the callback to be called before this returns */
-	if (query_data->error_message != NULL)
-		query_data->handle = purple_timeout_add(0, res_main_thread_cb, query_data);
-
-	return query_data;
-#endif
 }
 
 PurpleSrvTxtQueryData *purple_txt_resolve(const char *owner,
@@ -891,13 +535,6 @@ PurpleSrvTxtQueryData *purple_txt_resolve_account(PurpleAccount *account,
 	char *hostname;
 	PurpleSrvTxtQueryData *query_data;
 	PurpleProxyType proxy_type;
-#ifndef _WIN32
-	PurpleSrvInternalQuery internal_query;
-	int in[2], out[2];
-	int pid;
-#else
-	GError* err = NULL;
-#endif
 
 	proxy_type = purple_proxy_info_get_type(
 		purple_proxy_get_setup(account));
@@ -907,17 +544,11 @@ PurpleSrvTxtQueryData *purple_txt_resolve_account(PurpleAccount *account,
 		return NULL;
 	}
 
-#ifdef USE_IDN
-	if (!dns_str_is_ascii(domain)) {
-		int ret = purple_network_convert_idn_to_ascii(domain, &hostname);
-		if (ret != 0) {
-			purple_debug_error("dnssrv", "IDNA ToASCII failed\n");
-			cb(NULL, extradata);
-			return NULL;
-		}
-	} else /* fallthru is intentional */
-#endif
-	hostname = g_strdup(domain);
+	hostname = domain_to_ascii(domain);
+	if (hostname == NULL) {
+		cb(NULL, extradata);
+		return NULL;
+	}
 
 	query = g_strdup_printf("%s.%s", owner, hostname);
 	purple_debug_info("dnssrv","querying TXT record for %s: %s\n", domain,
@@ -933,67 +564,9 @@ PurpleSrvTxtQueryData *purple_txt_resolve_account(PurpleAccount *account,
 		return query_data;
 	}
 
-#ifndef _WIN32
-	if(pipe(in) || pipe(out)) {
-		purple_debug_error("dnssrv", "Could not create pipe\n");
-		g_free(query);
-		g_free(query_data);
-		cb(NULL, extradata);
-		return NULL;
-	}
-
-	pid = fork();
-	if (pid == -1) {
-		purple_debug_error("dnssrv", "Could not create process!\n");
-		g_free(query);
-		g_free(query_data);
-		cb(NULL, extradata);
-		return NULL;
-	}
-
-	/* Child */
-	if (pid == 0)
-	{
-		g_free(query);
-		g_free(query_data);
-
-		close(out[0]);
-		close(in[1]);
-		resolve(in[0], out[1]);
-		/* resolve() does not return */
-	}
-
-	close(out[1]);
-	close(in[0]);
-
-	internal_query.type = T_TXT;
-	strncpy(internal_query.query, query, 255);
-	internal_query.query[255] = '\0';
-
-	if (write(in[1], &internal_query, sizeof(internal_query)) < 0)
-		purple_debug_error("dnssrv", "Could not write to TXT resolver\n");
-
-	query_data->pid = pid;
-	query_data->fd_out = out[0];
-	query_data->fd_in = in[1];
-	query_data->handle = purple_input_add(out[0], PURPLE_INPUT_READ, resolved, query_data);
+	lookup_records(query_data);
 
 	return query_data;
-#else
-	query_data->resolver = g_thread_create(res_thread, query_data, FALSE, &err);
-	if (query_data->resolver == NULL) {
-		query_data->error_message = g_strdup_printf("TXT thread create failure: %s\n", (err && err->message) ? err->message : "");
-		g_error_free(err);
-	}
-
-	/* The query isn't going to happen, so finish the TXT lookup now.
-	 * Asynchronously call the callback since stuff may not expect
-	 * the callback to be called before this returns */
-	if (query_data->error_message != NULL)
-		query_data->handle = purple_timeout_add(0, res_main_thread_cb, query_data);
-
-	return query_data;
-#endif
 }
 
 void
@@ -1091,12 +664,18 @@ purple_txt_query_resolved(PurpleSrvTxtQueryData *query_data, GList *entries)
 	purple_srv_txt_query_destroy(query_data);
 }
 
+/*
+ * Only used as the callback for the ui ops.
+ */
 static void
 purple_srv_query_failed(PurpleSrvTxtQueryData *query_data, const gchar *error_message)
 {
 	purple_debug_error("dnssrv", "%s\n", error_message);
 
-	if (query_data->cb.srv != NULL)
+	if (query_data->type == PurpleDnsTypeTxt) {
+		if (query_data->cb.txt != NULL)
+			query_data->cb.txt(NULL, query_data->extradata);
+	} else if (query_data->cb.srv != NULL)
 		query_data->cb.srv(NULL, 0, query_data->extradata);
 
 	purple_srv_txt_query_destroy(query_data);
@@ -1108,7 +687,7 @@ purple_srv_txt_query_ui_resolve(PurpleSrvTxtQueryData *query_data)
 	PurpleSrvTxtQueryUiOps *ops = purple_srv_txt_query_get_ui_ops();
 
 	if (ops && ops->resolve)
-		return ops->resolve(query_data, (query_data->type == T_SRV ? purple_srv_query_resolved : purple_txt_query_resolved), purple_srv_query_failed);
+		return ops->resolve(query_data, (query_data->type == PurpleDnsTypeSrv ? purple_srv_query_resolved : purple_txt_query_resolved), purple_srv_query_failed);
 
 	return FALSE;
 }
@@ -1123,7 +702,7 @@ PurpleSrvTxtQueryUiOps *
 purple_srv_txt_query_get_ui_ops(void)
 {
 	/* It is perfectly acceptable for srv_txt_query_ui_ops to be NULL; this just
-	 * means that the default platform-specific implementation will be used.
+	 * means that the default GResolver implementation will be used.
 	 */
 	return srv_txt_query_ui_ops;
 }
