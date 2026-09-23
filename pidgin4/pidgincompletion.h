@@ -33,10 +33,10 @@
  */
 
 /**
- * Attaches completion to @entry (a GtkEntry or GtkText). With
- * @account_dropdown (a pidgin_account_dropdown_new(), may be NULL) only
- * that account's buddies are offered; with @all_accounts FALSE only
- * buddies of connected accounts are offered.
+ * Attaches completion to @entry (a GtkEntry or GtkText). Buddies of every
+ * account are offered (with @all_accounts FALSE only those of connected
+ * accounts, like Pidgin 2); picking one selects its account in
+ * @account_dropdown (a pidgin_account_dropdown_new(), may be NULL).
  */
 void pidgin_buddy_completion_attach(GtkWidget *entry,
                                     GtkWidget *account_dropdown,
