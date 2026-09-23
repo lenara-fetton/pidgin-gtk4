@@ -746,8 +746,10 @@ update_reply(PidginMessageRow *row)
 	if (row->view != NULL)
 		target = pidgin_message_view_find_by_id(row->view, reply_to);
 	if (target != NULL) {
+		/* The target's alias, as its row shows it: reply-to-sender is a
+		 * JID (the occupant's room@server/nick in rooms). */
 		preview = pidgin_message_get_plain_text(target);
-		if (sender == NULL)
+		if (pidgin_message_get_alias(target) != NULL)
 			sender = pidgin_message_get_alias(target);
 	}
 	if (preview == NULL)
