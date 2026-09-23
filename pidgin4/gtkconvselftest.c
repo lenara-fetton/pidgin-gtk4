@@ -1,0 +1,909 @@
+/*
+ * pidgin4: the conversation UI selftest (PIDGIN4_CONV_SELFTEST=1).
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * No real account may sign in during tests (the user's Pidgin 2 runs
+ * them), and libpurple needs a connection to create a conversation. So
+ * this registers an in-process protocol plugin, "prpl-pidgin4-selftest",
+ * whose login succeeds at once, with the M8 IPC commands (they only record
+ * their calls), and a throwaway account on it. It then drives
+ * conversations of both types through libpurple's own API, emits the M8
+ * signals by hand, runs the window actions, checks the view, the index
+ * (messages.db), the HTML log (the contract rule 7 fallback lines) and
+ * the unseen state, removes the account, and quits with status 0 on
+ * success. Run it on a scratch copy of a profile: it writes logs and
+ * index rows (see pidgin4/TESTING.md).
+ */
+#include "pidgin-internal.h"
+#include "pidgin.h"
+
+#include "account.h"
+#include "cmds.h"
+#include "connection.h"
+#include "conversation.h"
+#include "debug.h"
+#include "log.h"
+#include "plugin.h"
+#include "prefs.h"
+#include "prpl.h"
+#include "server.h"
+#include "signals.h"
+#include "status.h"
+#include "util.h"
+#include "version.h"
+
+#include "gtkconv.h"
+#include "gtkconvwin.h"
+#include "pidgincomposeentry.h"
+#include "pidginconvmeta.h"
+#include "pidginmessage.h"
+#include "pidginmessageindex.h"
+#include "pidginmessageview.h"
+
+#define ST_PRPL_ID "prpl-pidgin4-selftest"
+#define ST_USER "selftest@example.invalid"
+#define ST_BUDDY "buddy@example.invalid"
+#define ST_ROOM "room@conference.example.invalid"
+#define THUMBS "\xf0\x9f\x91\x8d"
+#define PARTY "\xf0\x9f\x8e\x89"
+
+static int failures = 0;
+static int checks = 0;
+static PurplePlugin *st_plugin = NULL;
+static PurpleAccount *st_account = NULL;
+static GHashTable *ipc_calls = NULL;     /* command -> last args (string) */
+static int sent_counter = 0;
+
+#define CHECK(cond, ...) G_STMT_START { \
+	checks++; \
+	if (!(cond)) { \
+		failures++; \
+		g_printerr("PIDGIN4_CONV_SELFTEST: FAIL %s:%d: %s: ", __FILE__, __LINE__, #cond); \
+		g_printerr(__VA_ARGS__); \
+		g_printerr("\n"); \
+	} \
+} G_STMT_END
+
+/**************************************************************************
+ * The selftest protocol plugin
+ **************************************************************************/
+
+static const char *
+st_list_icon(PurpleAccount *account, PurpleBuddy *buddy)
+{
+	return "selftest";
+}
+
+static GList *
+st_status_types(PurpleAccount *account)
+{
+	GList *types = NULL;
+
+	types = g_list_append(types, purple_status_type_new(PURPLE_STATUS_AVAILABLE,
+		"available", NULL, TRUE));
+	types = g_list_append(types, purple_status_type_new(PURPLE_STATUS_OFFLINE,
+		"offline", NULL, TRUE));
+	return types;
+}
+
+static void
+st_login(PurpleAccount *account)
+{
+	PurpleConnection *gc = purple_account_get_connection(account);
+
+	gc->flags |= PURPLE_CONNECTION_HTML;
+	purple_connection_set_state(gc, PURPLE_CONNECTED);
+}
+
+static void
+st_close(PurpleConnection *gc)
+{
+}
+
+static void
+emit_sending_meta(PurpleConnection *gc, const char *who, const char *type)
+{
+	GHashTable *meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	char *id = g_strdup_printf("sent-%d", ++sent_counter);
+
+	g_hash_table_insert(meta, g_strdup("conv-type"), g_strdup(type));
+	g_hash_table_insert(meta, g_strdup("stanza-id"), g_strdup(id));
+	g_hash_table_insert(meta, g_strdup("origin-id"), id);
+	purple_signal_emit(purple_conversations_get_handle(), "sending-message-meta",
+	                   purple_connection_get_account(gc), who, meta);
+	g_hash_table_unref(meta);
+}
+
+static int
+st_send_im(PurpleConnection *gc, const char *who, const char *message,
+           PurpleMessageFlags flags)
+{
+	emit_sending_meta(gc, who, "im");
+	return 1;
+}
+
+static int
+st_send_chat(PurpleConnection *gc, int id, const char *message, PurpleMessageFlags flags)
+{
+	PurpleConversation *conv = purple_find_chat(gc, id);
+
+	/* The room reflects it (with the same ids, like an XMPP MUC). */
+	emit_sending_meta(gc, purple_conversation_get_name(conv), "chat");
+	serv_got_chat_in(gc, id, purple_conv_chat_get_nick(PURPLE_CONV_CHAT(conv)),
+	                 PURPLE_MESSAGE_SEND, message, time(NULL));
+	return 0;
+}
+
+static GList *
+st_chat_info(PurpleConnection *gc)
+{
+	return NULL;
+}
+
+static void
+st_join_chat(PurpleConnection *gc, GHashTable *components)
+{
+}
+
+static PurpleCmdRet
+st_op_cmd(PurpleConversation *conv, const char *cmd, char **args, char **error, void *data)
+{
+	g_hash_table_replace(ipc_calls, g_strdup("cmd-op"), g_strdup(args[0]));
+	return PURPLE_CMD_RET_OK;
+}
+
+static void
+record(const char *command, const char *a, const char *b, const char *c)
+{
+	g_hash_table_replace(ipc_calls, g_strdup(command),
+	                     g_strdup_printf("%s|%s|%s", a ? a : "", b ? b : "", c ? c : ""));
+}
+
+static gboolean
+ipc_send_reaction(PurpleAccount *account, const char *conv, const char *id, const char *list)
+{
+	record("send-reaction", conv, id, list);
+	return TRUE;
+}
+
+static gboolean
+ipc_send_correction(PurpleAccount *account, const char *conv, const char *id, const char *body)
+{
+	record("send-correction", conv, id, body);
+	return TRUE;
+}
+
+static gboolean
+ipc_send_reply(PurpleAccount *account, const char *conv, const char *id, const char *jid,
+               const char *quote, const char *body)
+{
+	record("send-reply", id, quote, body);
+	return TRUE;
+}
+
+static gboolean
+ipc_send_retraction(PurpleAccount *account, const char *conv, const char *id)
+{
+	record("send-retraction", conv, id, NULL);
+	return TRUE;
+}
+
+static gboolean
+ipc_send_marker(PurpleAccount *account, const char *conv, const char *id, const char *marker)
+{
+	record("send-marker", conv, id, marker);
+	return TRUE;
+}
+
+static gboolean
+ipc_mds_publish(PurpleAccount *account, const char *conv, const char *id)
+{
+	record("mds-publish", conv, id, NULL);
+	return TRUE;
+}
+
+static PurpleCmdId st_cmd_id;
+
+static gboolean
+st_load(PurplePlugin *plugin)
+{
+	PurpleValue *acct = purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT);
+
+	purple_plugin_ipc_register(plugin, "send-reaction", PURPLE_CALLBACK(ipc_send_reaction),
+		purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 4, purple_value_dup(acct),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
+		purple_value_new(PURPLE_TYPE_STRING));
+	purple_plugin_ipc_register(plugin, "send-correction", PURPLE_CALLBACK(ipc_send_correction),
+		purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 4, purple_value_dup(acct),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
+		purple_value_new(PURPLE_TYPE_STRING));
+	purple_plugin_ipc_register(plugin, "send-reply", PURPLE_CALLBACK(ipc_send_reply),
+		purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 6, purple_value_dup(acct),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
+		purple_value_new(PURPLE_TYPE_STRING));
+	purple_plugin_ipc_register(plugin, "send-retraction", PURPLE_CALLBACK(ipc_send_retraction),
+		purple_marshal_BOOLEAN__POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 3, purple_value_dup(acct),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING));
+	purple_plugin_ipc_register(plugin, "send-marker", PURPLE_CALLBACK(ipc_send_marker),
+		purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 4, purple_value_dup(acct),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING),
+		purple_value_new(PURPLE_TYPE_STRING));
+	purple_plugin_ipc_register(plugin, "mds-publish", PURPLE_CALLBACK(ipc_mds_publish),
+		purple_marshal_BOOLEAN__POINTER_POINTER_POINTER,
+		purple_value_new(PURPLE_TYPE_BOOLEAN), 3, purple_value_dup(acct),
+		purple_value_new(PURPLE_TYPE_STRING), purple_value_new(PURPLE_TYPE_STRING));
+	purple_value_destroy(acct);
+
+	st_cmd_id = purple_cmd_register("op", "w", PURPLE_CMD_P_PRPL,
+		PURPLE_CMD_FLAG_CHAT | PURPLE_CMD_FLAG_PRPL_ONLY, ST_PRPL_ID, st_op_cmd,
+		"op &lt;nick&gt;", NULL);
+	return TRUE;
+}
+
+static gboolean
+st_unload(PurplePlugin *plugin)
+{
+	purple_cmd_unregister(st_cmd_id);
+	purple_plugin_ipc_unregister_all(plugin);
+	return TRUE;
+}
+
+static PurplePluginProtocolInfo st_prpl_info = {
+	.options = OPT_PROTO_NO_PASSWORD | OPT_PROTO_CHAT_TOPIC,
+	.list_icon = st_list_icon,
+	.status_types = st_status_types,
+	.login = st_login,
+	.close = st_close,
+	.send_im = st_send_im,
+	.chat_info = st_chat_info,
+	.join_chat = st_join_chat,
+	.chat_send = st_send_chat,
+	.struct_size = sizeof(PurplePluginProtocolInfo),
+};
+
+static PurplePluginInfo st_info = {
+	.magic = PURPLE_PLUGIN_MAGIC,
+	.major_version = PURPLE_MAJOR_VERSION,
+	.minor_version = PURPLE_MINOR_VERSION,
+	.type = PURPLE_PLUGIN_PROTOCOL,
+	.priority = PURPLE_PRIORITY_DEFAULT,
+	.id = ST_PRPL_ID,
+	.name = "Selftest",
+	.version = VERSION,
+	.summary = "pidgin4 conversation selftest protocol",
+	.description = "Logs in without a network; records the M8 IPC calls.",
+	.load = st_load,
+	.unload = st_unload,
+	.extra_info = &st_prpl_info,
+};
+
+/**************************************************************************
+ * Helpers
+ **************************************************************************/
+
+static void
+spin(guint ms)
+{
+	gint64 end = g_get_monotonic_time() + ms * 1000;
+
+	while (g_get_monotonic_time() < end)
+		g_main_context_iteration(NULL, FALSE);
+}
+
+static GHashTable *
+meta_new(const char *first_key, ...)
+{
+	GHashTable *meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	const char *key = first_key;
+	va_list args;
+
+	va_start(args, first_key);
+	while (key != NULL) {
+		const char *value = va_arg(args, const char *);
+
+		g_hash_table_insert(meta, g_strdup(key), g_strdup(value));
+		key = va_arg(args, const char *);
+	}
+	va_end(args);
+	return meta;
+}
+
+static void
+emit_meta(const char *conv_name, GHashTable *meta)
+{
+	purple_signal_emit(purple_conversations_get_handle(), "receiving-message-meta",
+	                   st_account, conv_name, meta);
+}
+
+static PidginMessageView *
+view_of(PurpleConversation *conv)
+{
+	return PIDGIN_MESSAGE_VIEW(pidgin_conv_get_message_view(PIDGIN_CONVERSATION(conv)));
+}
+
+static guint
+n_messages(PurpleConversation *conv)
+{
+	return g_list_model_get_n_items(pidgin_message_view_get_model(view_of(conv)));
+}
+
+static PidginMessage *
+nth_message(PurpleConversation *conv, guint n)
+{
+	PidginMessage *m = g_list_model_get_item(pidgin_message_view_get_model(view_of(conv)), n);
+
+	if (m != NULL)
+		g_object_unref(m);  /* the store keeps it */
+	return m;
+}
+
+static PidginMessage *
+last_message(PurpleConversation *conv)
+{
+	guint n = n_messages(conv);
+
+	return n > 0 ? nth_message(conv, n - 1) : NULL;
+}
+
+static char *
+log_path(PurpleConversation *conv)
+{
+	return pidgin_conv_meta_log_file(conv);
+}
+
+static gboolean
+file_contains(const char *path, const char *needle)
+{
+	char *contents = NULL;
+	gboolean ret;
+
+	if (path == NULL || !g_file_get_contents(path, &contents, NULL, NULL))
+		return FALSE;
+	ret = strstr(contents, needle) != NULL;
+	g_free(contents);
+	return ret;
+}
+
+static gboolean
+emit_bool(const char *signal, ...)
+{
+	/* purple_signal_emit_return_1 with varargs */
+	va_list args;
+	void *ret;
+
+	va_start(args, signal);
+	ret = purple_signal_emit_vargs_return_1(purple_conversations_get_handle(), signal, args);
+	va_end(args);
+	return GPOINTER_TO_INT(ret) != 0;
+}
+
+static const char *
+call(const char *command)
+{
+	return g_hash_table_lookup(ipc_calls, command);
+}
+
+static gboolean
+activate(PidginWindow *win, const char *action, GVariant *param)
+{
+	return gtk_widget_activate_action_variant(win->window, action, param);
+}
+
+/**************************************************************************
+ * The test
+ **************************************************************************/
+
+static void
+test_im(PurpleConversation **im_out)
+{
+	PurpleConversation *conv;
+	PidginConversation *gtkconv;
+	PidginMessageIndex *idx = pidgin_message_index_get_default();
+	PidginMessage *msg, *sent;
+	PidginIndexedMessage *row;
+	GHashTable *meta;
+	char *akey, *ckey, *path;
+	time_t now = time(NULL);
+	guint n;
+	gint64 rows_before = idx ? pidgin_message_index_count(idx) : 0;
+
+	conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, st_account, ST_BUDDY);
+	CHECK(conv != NULL, "no IM conversation");
+	gtkconv = PIDGIN_CONVERSATION(conv);
+	CHECK(gtkconv != NULL && gtkconv->win != NULL, "no PidginConversation/window");
+	CHECK(!pidgin_conv_is_hidden(gtkconv), "IM is hidden");
+	purple_conversation_set_logging(conv, TRUE);
+	*im_out = conv;
+	spin(100);
+
+	/* Plain writes with various flags */
+	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_BUDDY, "hello <b>bold</b> world",
+	                     PURPLE_MESSAGE_RECV, now - 600);
+	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_USER, "an answer",
+	                     PURPLE_MESSAGE_SEND, now - 590);
+	purple_conversation_write(conv, NULL, "a system line", PURPLE_MESSAGE_SYSTEM, now - 580);
+	purple_conversation_write(conv, NULL, "an error", PURPLE_MESSAGE_ERROR, now - 570);
+	purple_conversation_write(conv, NULL, "not logged", PURPLE_MESSAGE_NO_LOG, now - 560);
+	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_BUDDY, "/me waves",
+	                     PURPLE_MESSAGE_RECV, now - 550);
+	CHECK(n_messages(conv) == 6, "%u messages", n_messages(conv));
+	CHECK(pidgin_message_get_flags(nth_message(conv, 1)) & PURPLE_MESSAGE_SEND, "flags");
+	CHECK(strstr(pidgin_message_get_plain_text(nth_message(conv, 0)), "hello bold world") != NULL,
+	      "plain text: %s", pidgin_message_get_plain_text(nth_message(conv, 0)));
+
+	/* receiving-message-meta attaches to the next write */
+	meta = meta_new("conv-type", "im", "sender", ST_BUDDY, "stanza-id", "s1",
+	                "server-id", "srv1", "markable", "1", NULL);
+	emit_meta(ST_BUDDY, meta);
+	CHECK(g_hash_table_lookup(meta, "discard") == NULL, "fresh message discarded");
+	g_hash_table_unref(meta);
+	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_BUDDY, "a message with ids",
+	                     PURPLE_MESSAGE_RECV, now - 500);
+	msg = last_message(conv);
+	CHECK(purple_strequal(pidgin_message_get_stanza_id(msg), "s1"), "stanza id %s",
+	      pidgin_message_get_stanza_id(msg));
+	CHECK(purple_strequal(pidgin_message_get_server_id(msg), "srv1"), "server id");
+	CHECK(pidgin_message_get_index_id(msg) > 0, "not indexed");
+
+	/* The index row, with its log position */
+	akey = pidgin_message_index_account_key(st_account);
+	ckey = pidgin_message_index_conv_key(st_account, ST_BUDDY);
+	row = idx ? pidgin_message_index_find_by_id(idx, akey, ckey, "srv1") : NULL;
+	CHECK(row != NULL, "srv1 not in the index");
+	if (row != NULL) {
+		CHECK(row->log_file != NULL && row->log_offset > 0, "log position %s:%" G_GINT64_FORMAT,
+		      row->log_file ? row->log_file : "(null)", row->log_offset);
+		if (row->log_file != NULL) {
+			char *full = g_build_filename(purple_user_dir(), "logs", row->log_file, NULL);
+			char *contents = NULL;
+
+			if (g_file_get_contents(full, &contents, NULL, NULL) &&
+			    row->log_offset < (gint64)strlen(contents))
+				CHECK(strstr(contents + row->log_offset, "a message with ids") != NULL &&
+				      strstr(contents + row->log_offset, "an answer") == NULL,
+				      "offset points elsewhere: %.60s", contents + row->log_offset);
+			g_free(contents);
+			g_free(full);
+		}
+		pidgin_indexed_message_free(row);
+	}
+
+	/* Dedup: a server-id hit is discarded */
+	n = n_messages(conv);
+	meta = meta_new("conv-type", "im", "server-id", "srv1", "mam", "1", NULL);
+	emit_meta(ST_BUDDY, meta);
+	CHECK(purple_strequal(g_hash_table_lookup(meta, "discard"), "1"), "srv1 not discarded");
+	g_hash_table_unref(meta);
+
+	/* ... and an archive copy of a line without ids, fuzzily */
+	{
+		char *ts = g_strdup_printf("%" G_GINT64_FORMAT, (gint64)(now - 590));
+
+		meta = meta_new("conv-type", "im", "server-id", "srv-new", "mam", "1",
+		                "mam-query", "catchup", "timestamp", ts, NULL);
+		emit_meta(ST_BUDDY, meta);
+		CHECK(g_hash_table_lookup(meta, "discard") == NULL, "no id hit expected");
+		g_hash_table_unref(meta);
+		purple_conv_im_write(PURPLE_CONV_IM(conv), ST_USER, "an answer",
+		                     PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_DELAYED, now - 590);
+		CHECK(n_messages(conv) == n, "fuzzy duplicate shown (%u, %u)", n_messages(conv), n);
+		g_free(ts);
+	}
+
+	/* The send path: sending-message-meta gives the sent message its id */
+	purple_conv_im_send(PURPLE_CONV_IM(conv), "outgoing message");
+	sent = last_message(conv);
+	CHECK(pidgin_message_get_flags(sent) & PURPLE_MESSAGE_SEND, "not sent");
+	CHECK(pidgin_message_get_stanza_id(sent) != NULL &&
+	      g_str_has_prefix(pidgin_message_get_stanza_id(sent), "sent-"), "sent id %s",
+	      pidgin_message_get_stanza_id(sent));
+	CHECK(pidgin_message_get_receipt(sent) == PIDGIN_RECEIPT_SENT, "receipt %d",
+	      pidgin_message_get_receipt(sent));
+
+	/* The compose entry: send, then Up-arrow edits the last message */
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "typed <b>text</b>");
+	CHECK(pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry)), "entry send");
+	CHECK(purple_strequal(pidgin_message_get_plain_text(last_message(conv)), "typed text"),
+	      "sent text %s", pidgin_message_get_plain_text(last_message(conv)));
+	g_signal_emit_by_name(gtkconv->entry, "edit-last-requested");
+	CHECK(gtkconv->editing != NULL, "edit-last didn't start editing");
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "fixed text");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(call("send-correction") != NULL && strstr(call("send-correction"), "|fixed text") != NULL,
+	      "send-correction: %s", call("send-correction"));
+	CHECK(gtkconv->editing == NULL, "still editing");
+
+	/* Commands */
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "/help");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(strstr(pidgin_message_get_plain_text(last_message(conv)), "help") != NULL,
+	      "/help: %s", pidgin_message_get_plain_text(last_message(conv)));
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "/me tests");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(strstr(pidgin_message_get_html(last_message(conv)), "tests") != NULL, "/me");
+
+	/* M8 events */
+	CHECK(emit_bool("message-corrected", st_account, ST_BUDDY, "s1", "s1-fix",
+	                "a <i>corrected</i> message", ST_BUDDY), "correction not rendered");
+	msg = pidgin_message_view_find_by_id(view_of(conv), "s1");
+	CHECK(msg != NULL && pidgin_message_get_edited(msg), "not edited");
+	CHECK(msg != NULL && strstr(pidgin_message_get_plain_text(msg), "a corrected message"),
+	      "body %s", msg ? pidgin_message_get_plain_text(msg) : "");
+	/* A correction by someone else is refused */
+	CHECK(!emit_bool("message-corrected", st_account, ST_BUDDY, "s1", "s1-evil", "evil",
+	                 "mallory@example.invalid"), "foreign correction accepted");
+
+	CHECK(emit_bool("message-reaction", st_account, ST_BUDDY, "s1", THUMBS, ST_BUDDY,
+	                GINT_TO_POINTER(TRUE)), "reaction not rendered");
+	CHECK(msg != NULL && pidgin_message_has_reaction(msg, THUMBS, ST_BUDDY), "no reaction");
+	/* The same add again is a no-op (no second log line) */
+	emit_bool("message-reaction", st_account, ST_BUDDY, "s1", THUMBS, ST_BUDDY,
+	          GINT_TO_POINTER(TRUE));
+
+	/* React from the view: send-reaction gets the whole new set */
+	g_signal_emit_by_name(view_of(conv), "reaction-toggled", msg, PARTY, TRUE);
+	CHECK(call("send-reaction") != NULL && strstr(call("send-reaction"), "|s1|" PARTY),
+	      "send-reaction: %s", call("send-reaction"));
+
+	/* Reply from the view, then send */
+	g_signal_emit_by_name(view_of(conv), "reply-requested", msg);
+	CHECK(gtkconv->replying != NULL && gtk_widget_get_visible(gtkconv->banner), "no banner");
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "my reply");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(call("send-reply") != NULL && g_str_has_prefix(call("send-reply"), "s1|") &&
+	      g_str_has_suffix(call("send-reply"), "|my reply"), "send-reply: %s", call("send-reply"));
+
+	/* Receipts: delivered, then displayed covers earlier ones */
+	CHECK(emit_bool("message-receipt", st_account, ST_BUDDY,
+	                pidgin_message_get_stanza_id(sent), "displayed", ST_BUDDY), "receipt");
+	CHECK(pidgin_message_get_receipt(sent) == PIDGIN_RECEIPT_DISPLAYED, "receipt state %d",
+	      pidgin_message_get_receipt(sent));
+
+	/* Unseen: a message while another tab is current, then read elsewhere */
+	pidgin_conv_set_unseen(conv, PIDGIN_UNSEEN_TEXT);
+	CHECK(gtkconv->unseen_count >= 1, "unseen count");
+	CHECK(pidgin_conversations_get_unseen_count(PURPLE_CONV_TYPE_IM, PIDGIN_UNSEEN_TEXT) >= 1,
+	      "global unseen count");
+	emit_bool("message-receipt", st_account, ST_BUDDY, "srv1", "displayed", ST_USER);
+	CHECK(gtkconv->unseen_state == PIDGIN_UNSEEN_NONE && gtkconv->unseen_count == 0,
+	      "read elsewhere didn't clear unseen (%d)", gtkconv->unseen_state);
+
+	/* Retraction */
+	CHECK(emit_bool("message-retracted", st_account, ST_BUDDY, "s1", ST_BUDDY, NULL),
+	      "retraction not rendered");
+	CHECK(msg != NULL && pidgin_message_get_retracted(msg), "not retracted");
+	g_signal_emit_by_name(view_of(conv), "retract-requested", sent);
+	CHECK(call("send-retraction") != NULL &&
+	      strstr(call("send-retraction"), pidgin_message_get_stanza_id(sent)) != NULL,
+	      "send-retraction: %s", call("send-retraction"));
+
+	/* Read markers for the newest markable message */
+	meta = meta_new("conv-type", "im", "stanza-id", "s2", "server-id", "srv2", "markable", "1",
+	                NULL);
+	emit_meta(ST_BUDDY, meta);
+	g_hash_table_unref(meta);
+	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_BUDDY, "mark me", PURPLE_MESSAGE_RECV, now);
+	pidgin_conv_meta_mark_displayed(conv);
+	CHECK(call("send-marker") != NULL && strstr(call("send-marker"), "|s2|displayed"),
+	      "send-marker: %s", call("send-marker"));
+	CHECK(call("mds-publish") != NULL && strstr(call("mds-publish"), "|srv2|"),
+	      "mds-publish: %s", call("mds-publish"));
+
+	/* The log got the rule 7 fallback lines */
+	path = log_path(conv);
+	CHECK(path != NULL, "no log");
+	CHECK(file_contains(path, "edited: a corrected message"), "no edit line in %s", path);
+	CHECK(file_contains(path, "reacted " THUMBS " to: a corrected message"), "no reaction line");
+	CHECK(file_contains(path, "retracted a message"), "no retraction line");
+	CHECK(!file_contains(path, "evil"), "foreign correction logged");
+	{
+		/* one reaction line only */
+		char *contents = NULL;
+		char *p;
+		int count = 0;
+
+		if (path != NULL && g_file_get_contents(path, &contents, NULL, NULL))
+			for (p = contents; (p = strstr(p, "reacted " THUMBS)) != NULL; p++)
+				count++;
+		CHECK(count == 1, "%d reaction lines", count);
+		g_free(contents);
+	}
+	/* ... and nothing of it shows in the view */
+	for (n = 0; n < n_messages(conv); n++)
+		CHECK(strstr(pidgin_message_get_plain_text(nth_message(conv, n)), "reacted") == NULL,
+		      "a fallback line is displayed");
+	g_free(path);
+
+	/* Index-based scroll-back: older rows are prepended */
+	if (idx != NULL) {
+		PidginIndexedMessage *old = pidgin_indexed_message_new();
+		GError *error = NULL;
+
+		old->account = g_strdup(akey);
+		old->conv = g_strdup(ckey);
+		old->time = now - 86400 * 30;
+		old->sender = g_strdup("Buddy");
+		old->body = g_strdup("a message from last month");
+		old->flags = PURPLE_MESSAGE_RECV;
+		CHECK(pidgin_message_index_insert(idx, old, &error) > 0, "insert");
+		g_clear_error(&error);
+		pidgin_indexed_message_free(old);
+
+		n = n_messages(conv);
+		pidgin_conv_action(gtkconv, "load-older");
+		CHECK(n_messages(conv) > n, "scroll-back added nothing (%u)", n_messages(conv));
+		CHECK(strstr(pidgin_message_get_plain_text(nth_message(conv, 0)),
+		             "a message from last month") != NULL, "first is %s",
+		      pidgin_message_get_plain_text(nth_message(conv, 0)));
+		CHECK(pidgin_message_index_count(idx) > rows_before + 5, "index rows %" G_GINT64_FORMAT,
+		      pidgin_message_index_count(idx) - rows_before);
+	}
+
+	g_free(akey);
+	g_free(ckey);
+}
+
+static void
+test_chat(PurpleConversation **chat_out)
+{
+	PurpleConnection *gc = purple_account_get_connection(st_account);
+	PurpleConversation *conv;
+	PidginConversation *gtkconv;
+	GList *users = NULL, *flags = NULL;
+	GListModel *model;
+	GHashTable *meta;
+	PidginMessage *msg;
+
+	conv = serv_got_joined_chat(gc, 7, ST_ROOM);
+	CHECK(conv != NULL, "no chat");
+	*chat_out = conv;
+	gtkconv = PIDGIN_CONVERSATION(conv);
+	purple_conversation_set_logging(conv, TRUE);
+	purple_conv_chat_set_nick(PURPLE_CONV_CHAT(conv), "me");
+
+	users = g_list_append(users, "zed");
+	flags = g_list_append(flags, GINT_TO_POINTER(PURPLE_CBFLAGS_NONE));
+	users = g_list_append(users, "alice");
+	flags = g_list_append(flags, GINT_TO_POINTER(PURPLE_CBFLAGS_NONE));
+	users = g_list_append(users, "op");
+	flags = g_list_append(flags, GINT_TO_POINTER(PURPLE_CBFLAGS_OP));
+	users = g_list_append(users, "me");
+	flags = g_list_append(flags, GINT_TO_POINTER(PURPLE_CBFLAGS_VOICE));
+	purple_conv_chat_add_users(PURPLE_CONV_CHAT(conv), users, NULL, flags, FALSE);
+	g_list_free(users);
+	g_list_free(flags);
+
+	model = G_LIST_MODEL(gtkconv->u.chat->users);
+	CHECK(g_list_model_get_n_items(model) == 4, "%u users", g_list_model_get_n_items(model));
+	{
+		GObject *first = g_list_model_get_item(model, 0);
+		char *name = NULL;
+
+		/* The PidginChatUser type is private: check through the list's
+		 * order via the prpl's view instead. */
+		CHECK(first != NULL, "empty list");
+		g_clear_object(&first);
+		g_free(name);
+	}
+	purple_conv_chat_rename_user(PURPLE_CONV_CHAT(conv), "zed", "zack");
+	CHECK(g_list_model_get_n_items(model) == 4, "rename changed the count");
+	purple_conv_chat_user_set_flags(PURPLE_CONV_CHAT(conv), "alice", PURPLE_CBFLAGS_OP);
+	purple_conv_chat_remove_user(PURPLE_CONV_CHAT(conv), "zack", "bye");
+	CHECK(g_list_model_get_n_items(model) == 3, "remove: %u", g_list_model_get_n_items(model));
+
+	/* Messages; a highlight while the tab is not current */
+	serv_got_chat_in(gc, 7, "alice", PURPLE_MESSAGE_RECV, "hi all", time(NULL));
+	CHECK(n_messages(conv) >= 1, "no chat messages");
+	meta = meta_new("conv-type", "chat", "sender", "op", "stanza-id", "c1", "server-id",
+	                "room-1", "occupant-id", "occ-op", NULL);
+	emit_meta(ST_ROOM, meta);
+	g_hash_table_unref(meta);
+	serv_got_chat_in(gc, 7, "op", PURPLE_MESSAGE_RECV, "me: are you there?", time(NULL));
+	msg = last_message(conv);
+	CHECK(purple_strequal(pidgin_message_get_server_id(msg), "room-1"), "chat server id");
+	CHECK(pidgin_message_get_flags(msg) & PURPLE_MESSAGE_NICK, "no NICK highlight");
+
+	/* Sending in a room: the reflection carries the ids */
+	purple_conv_chat_send(PURPLE_CONV_CHAT(conv), "hello room");
+	msg = last_message(conv);
+	CHECK(pidgin_message_get_flags(msg) & PURPLE_MESSAGE_SEND, "reflection not SEND");
+	CHECK(pidgin_message_get_stanza_id(msg) != NULL, "reflection has no id");
+
+	/* A reaction in the room, targeting the room's id */
+	CHECK(emit_bool("message-reaction", st_account, ST_ROOM, "room-1", PARTY, "alice",
+	                GINT_TO_POINTER(TRUE)), "room reaction");
+	CHECK(pidgin_message_has_reaction(pidgin_message_view_find_by_id(view_of(conv), "room-1"),
+	                                  PARTY, "alice"), "room reaction missing");
+
+	/* Moderation-like retraction by someone else (the room checked) */
+	CHECK(emit_bool("message-retracted", st_account, ST_ROOM, "room-1", "moderator", "spam"),
+	      "moderation not rendered");
+	CHECK(pidgin_message_get_retracted(pidgin_message_view_find_by_id(view_of(conv), "room-1")),
+	      "not moderated");
+
+	/* The prpl's /op from the user list menu's command action */
+	g_free(gtkconv->u.chat->menu_who);
+	gtkconv->u.chat->menu_who = g_strdup("alice");
+	gtk_widget_activate_action(gtkconv->u.chat->userlist_box, "user.command", "s", "op");
+	CHECK(purple_strequal(call("cmd-op"), "alice"), "user.command op: %s", call("cmd-op"));
+
+	/* The topic */
+	purple_conv_chat_set_topic(PURPLE_CONV_CHAT(conv), "op", "The <b>topic</b>");
+	CHECK(purple_strequal(gtk_editable_get_text(GTK_EDITABLE(gtkconv->u.chat->topic_text)),
+	                      "The topic"), "topic %s",
+	      gtk_editable_get_text(GTK_EDITABLE(gtkconv->u.chat->topic_text)));
+
+	{
+		char *path = log_path(conv);
+
+		CHECK(file_contains(path, "reacted " PARTY), "no room reaction line");
+		CHECK(file_contains(path, "moderator removed a message: spam"), "no moderation line");
+		g_free(path);
+	}
+}
+
+static gboolean
+selftest_run(gpointer data)
+{
+	PurpleConversation *im = NULL, *chat = NULL;
+	PidginConversation *gtkim, *gtkchat;
+	PidginWindow *win;
+	int before;
+
+	ipc_calls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+	/* The protocol and a throwaway account */
+	st_plugin = purple_plugin_new(TRUE, NULL);
+	st_plugin->info = &st_info;
+	purple_plugin_register(st_plugin);
+	/* Registered plugins wait in the load queue; probing loads prpls
+	 * (the plugin dialog re-probes the same way). */
+	purple_plugins_probe(G_MODULE_SUFFIX);
+	CHECK(purple_find_prpl(ST_PRPL_ID) == st_plugin && purple_plugin_is_loaded(st_plugin),
+	      "selftest prpl didn't load");
+
+	st_account = purple_account_new(ST_USER, ST_PRPL_ID);
+	purple_accounts_add(st_account);
+	purple_account_set_enabled(st_account, PIDGIN_UI, TRUE);
+	purple_account_connect(st_account);
+	spin(50);
+	CHECK(purple_account_is_connected(st_account), "the selftest account didn't connect");
+	if (!purple_account_is_connected(st_account))
+		goto done;
+
+	test_im(&im);
+	test_chat(&chat);
+	spin(200);
+
+	/* Tabs: both in one window (placement "last" unless the pref says
+	 * otherwise; move the chat there to be sure). */
+	gtkim = PIDGIN_CONVERSATION(im);
+	gtkchat = PIDGIN_CONVERSATION(chat);
+	if (gtkim->win != gtkchat->win) {
+		pidgin_conv_window_remove_gtkconv(gtkchat->win, gtkchat);
+		pidgin_conv_window_add_gtkconv(gtkim->win, gtkchat);
+	}
+	win = gtkim->win;
+	CHECK(pidgin_conv_window_get_gtkconv_count(win) == 2, "%u tabs",
+	      pidgin_conv_window_get_gtkconv_count(win));
+	pidgin_conv_window_switch_gtkconv(win, gtkim);
+	CHECK(pidgin_conv_window_get_active_gtkconv(win) == gtkim, "switch to IM");
+	CHECK(activate(win, "conv.next-tab", NULL), "conv.next-tab");
+	CHECK(pidgin_conv_window_get_active_gtkconv(win) == gtkchat, "next-tab");
+	CHECK(activate(win, "conv.tab", g_variant_new_int32(1)), "conv.tab(1)");
+	CHECK(pidgin_conv_window_get_active_gtkconv(win) == gtkim, "tab(1)");
+	CHECK(activate(win, "conv.prev-tab", NULL), "conv.prev-tab");
+	CHECK(pidgin_conv_window_get_active_gtkconv(win) == gtkchat, "prev-tab wraps");
+
+	/* Unseen while the other tab is current; next-unread goes there */
+	pidgin_conv_set_unseen(im, PIDGIN_UNSEEN_NONE);
+	purple_conv_im_write(PURPLE_CONV_IM(im), ST_BUDDY, "while away", PURPLE_MESSAGE_RECV,
+	                     time(NULL));
+	CHECK(gtkim->unseen_state == PIDGIN_UNSEEN_TEXT && gtkim->unseen_count == 1,
+	      "unseen %d/%u", gtkim->unseen_state, gtkim->unseen_count);
+	{
+		GList *list = pidgin_conversations_find_unseen_list(PURPLE_CONV_TYPE_ANY,
+			PIDGIN_UNSEEN_TEXT, FALSE, 0);
+		CHECK(g_list_find(list, im) != NULL, "not in the unseen list");
+		g_list_free(list);
+	}
+	CHECK(activate(win, "conv.next-unread", NULL), "conv.next-unread");
+	CHECK(pidgin_conv_window_get_active_gtkconv(win) == gtkim, "next-unread");
+	/* Switching to it with the window active clears it; without a window
+	 * manager the window may not be active, so clear as the window does. */
+	pidgin_conv_seen(gtkim);
+	CHECK(gtkim->unseen_state == PIDGIN_UNSEEN_NONE, "seen");
+
+	/* Menu actions and toggles */
+	CHECK(activate(win, "conv.find", NULL), "conv.find");
+	CHECK(activate(win, "conv.timestamps", NULL), "conv.timestamps");
+	CHECK(!purple_prefs_get_bool(PIDGIN_PREFS_ROOT "/conversations/show_timestamps"),
+	      "timestamps pref");
+	activate(win, "conv.timestamps", NULL);
+	before = purple_conversation_is_logging(im);
+	CHECK(activate(win, "conv.logging", NULL), "conv.logging");
+	CHECK(purple_conversation_is_logging(im) != before, "logging toggle");
+	activate(win, "conv.logging", NULL);
+	CHECK(activate(win, "conv.clear", NULL), "conv.clear");
+	CHECK(n_messages(im) == 0, "clear left %u", n_messages(im));
+
+	/* Close the IM with Ctrl+W's action; the chat remains */
+	CHECK(activate(win, "conv.close", NULL), "conv.close");
+	spin(100);
+	CHECK(g_list_find(purple_get_conversations(), im) == NULL, "IM not closed");
+	CHECK(pidgin_conv_window_get_gtkconv_count(win) == 1, "tabs after close");
+
+	/* Hidden conversations (hide_new = always) and presenting them */
+	purple_prefs_set_string(PIDGIN_PREFS_ROOT "/conversations/im/hide_new", "always");
+	serv_got_im(purple_account_get_connection(st_account), "stranger@example.invalid",
+	            "psst", PURPLE_MESSAGE_RECV, time(NULL));
+	im = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM,
+	                                           "stranger@example.invalid", st_account);
+	CHECK(im != NULL && pidgin_conv_is_hidden(PIDGIN_CONVERSATION(im)), "not hidden");
+	if (im != NULL) {
+		GList *list = pidgin_conversations_find_unseen_list(PURPLE_CONV_TYPE_IM,
+			PIDGIN_UNSEEN_TEXT, TRUE, 0);
+		CHECK(g_list_find(list, im) != NULL, "hidden unseen");
+		g_list_free(list);
+		pidgin_conv_present_conversation(im);
+		CHECK(!pidgin_conv_is_hidden(PIDGIN_CONVERSATION(im)), "present didn't show it");
+		CHECK(n_messages(im) == 1, "hidden message lost (%u)", n_messages(im));
+	}
+	purple_prefs_set_string(PIDGIN_PREFS_ROOT "/conversations/im/hide_new", "never");
+
+	/* Detach a tab into a new window */
+	if (im != NULL && PIDGIN_CONVERSATION(im)->win == PIDGIN_CONVERSATION(chat)->win) {
+		guint nwin = g_list_length(pidgin_conv_windows_get_list());
+
+		win = PIDGIN_CONVERSATION(im)->win;
+		win->tab_menu_conv = PIDGIN_CONVERSATION(im);
+		gtk_widget_activate_action(win->window, "tab.detach", NULL);
+		spin(100);
+		CHECK(g_list_length(pidgin_conv_windows_get_list()) == nwin + 1, "detach");
+	}
+	spin(200);
+
+done:
+	/* Clean up: conversations, the account, the protocol */
+	while (purple_get_conversations() != NULL)
+		purple_conversation_destroy(purple_get_conversations()->data);
+	spin(100);
+	if (st_account != NULL) {
+		purple_account_set_enabled(st_account, PIDGIN_UI, FALSE);
+		purple_accounts_delete(st_account);
+		st_account = NULL;
+	}
+	if (st_plugin != NULL) {
+		purple_plugin_unload(st_plugin);
+		purple_plugin_destroy(st_plugin);
+		st_plugin = NULL;
+	}
+	g_hash_table_destroy(ipc_calls);
+
+	if (failures == 0)
+		g_print("PIDGIN4_CONV_SELFTEST: PASS (%d checks)\n", checks);
+	else
+		g_print("PIDGIN4_CONV_SELFTEST: %d of %d checks FAILED\n", failures, checks);
+	pidgin_application_set_exit_status(failures == 0 ? 0 : 1);
+	pidgin_application_quit();
+	return G_SOURCE_REMOVE;
+}
+
+void
+pidgin_conversations_selftest(void)
+{
+	if (g_getenv("PIDGIN4_CONV_SELFTEST") == NULL)
+		return;
+	/* After startup settles (the buddy list is shown). */
+	g_timeout_add(500, selftest_run, NULL);
+}

@@ -52,6 +52,7 @@
 #include "gtkaccount.h"
 #include "gtkblist.h"
 #include "gtkconn.h"
+#include "gtkconv.h"
 #include "gtkdebug.h"
 #include "gtkdialogs.h"
 #include "gtkeventloop.h"
@@ -150,8 +151,6 @@ pidgin_ui_init(void)
 	 *
 	 * Not set in M2, so libpurple runs without them (every call site
 	 * checks for NULL ops/functions):
-	 *   conversations (TODO(M4)): no conversation windows; messages are
-	 *     still logged, and received IMs/chats are not shown;
 	 *   xfers, privacy, roomlist (TODO(M5)): transfers are neither offered
 	 *     nor shown, privacy and room list windows do not exist;
 	 *   sound, idle (TODO(M6)): see gtksound.c and gtkidle.c;
@@ -174,12 +173,15 @@ pidgin_ui_init(void)
 	pidgin_pounces_init();
 	pidgin_utils_init();
 	pidgin_notify_init();
+	/* M4b: sets the conversation UI ops. */
+	pidgin_conversations_init();
 }
 
 static void
 pidgin_quit(void)
 {
 	/* Uninit */
+	pidgin_conversations_uninit();
 	pidgin_utils_uninit();
 	pidgin_notify_uninit();
 	pidgin_connection_uninit();
@@ -211,6 +213,10 @@ pidgin_ui_get_info(void)
 		g_hash_table_insert(ui_info, "prpl-icq-clientkey", "ma1cSASNCKFtrdv9");
 		g_hash_table_insert(ui_info, "prpl-aim-distid", GINT_TO_POINTER(1715));
 		g_hash_table_insert(ui_info, "prpl-icq-distid", GINT_TO_POINTER(1550));
+
+		/* M8: the prpls emit the message-metadata signals and IPC only
+		 * for a UI that handles them (pidginconvmeta.c). */
+		g_hash_table_insert(ui_info, "message-meta", "1");
 	}
 
 	return ui_info;
@@ -250,6 +256,12 @@ pidgin_application_quit(void)
 		}
 		g_application_quit(G_APPLICATION(application));
 	}
+}
+
+void
+pidgin_application_set_exit_status(int status)
+{
+	exit_status = status;
 }
 
 static gboolean
@@ -489,6 +501,8 @@ startup_cb(GApplication *app, gpointer data)
 	 * accounts window opens (gtkaccount.c). */
 	if (g_getenv("PIDGIN4_REQUEST_SELFTEST") != NULL)
 		pidgin_request_selftest();
+	/* No-op unless PIDGIN4_CONV_SELFTEST is set (gtkconvselftest.c). */
+	pidgin_conversations_selftest();
 
 	if (opts.login) {
 		/* disable all accounts */
