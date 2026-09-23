@@ -1404,10 +1404,17 @@ drop_position(GtkWidget *widget, double y)
 	return DROP_AFTER;
 }
 
+/* Pidgin 2's semantics, except for a collapsed contact: Pidgin 2 expanded
+ * it after hovering in the middle of its row for a while, and a drop on
+ * the expanded contact merged. Here the middle half of the row
+ * (DROP_INTO_*, highlighted) merges at once, collapsed or not; the top
+ * and bottom quarters reorder as before. */
 static void
 move_node(PurpleBlistNode *n, PurpleBlistNode *node, DropPosition position)
 {
-	gboolean expanded = PURPLE_BLIST_NODE_IS_CONTACT(node) && contact_is_expanded(node);
+	gboolean into = (position == DROP_INTO_OR_BEFORE || position == DROP_INTO_OR_AFTER);
+	gboolean expanded = PURPLE_BLIST_NODE_IS_CONTACT(node) &&
+	                    (contact_is_expanded(node) || into);
 	gboolean after = (position == DROP_AFTER || position == DROP_INTO_OR_AFTER);
 
 	if (n == node)
@@ -1654,6 +1661,12 @@ row_drop_motion_cb(GtkDropTarget *target, double x, double y, BlistRow *r)
 	                                      PIDGIN_TYPE_BLIST_NODE_ITEM))
 		action = GDK_ACTION_MOVE;
 
+	/* Nothing goes into a chat: a drop there only reorders. */
+	if (row_node(r) != NULL && PURPLE_BLIST_NODE_IS_CHAT(row_node(r)) &&
+	    action == GDK_ACTION_MOVE)
+		pos = (pos == DROP_INTO_OR_BEFORE) ? DROP_BEFORE :
+		      (pos == DROP_INTO_OR_AFTER) ? DROP_AFTER : pos;
+
 	row_clear_drop_highlight(r);
 	if (pos == DROP_BEFORE)
 		gtk_widget_add_css_class(r->expander, "pidgin-blist-drop-before");
@@ -1830,6 +1843,7 @@ factory_setup_cb(GtkSignalListItemFactory *factory, GObject *object, gpointer da
 	gtk_widget_add_controller(r->expander, GTK_EVENT_CONTROLLER(target));
 
 	g_object_set_data_full(G_OBJECT(li), ROW_KEY, r, g_free);
+	g_object_set_data(G_OBJECT(r->expander), ROW_KEY, r);      /* for the selftest */
 	gtk_list_item_set_child(li, r->expander);
 }
 
@@ -5164,6 +5178,131 @@ selftest_max_picture(GtkWidget *widget, int max)
 	return max;
 }
 
+/* The row widget (its GtkTreeExpander) showing node, if one is realized */
+static BlistRow *
+selftest_find_row(GtkWidget *widget, PurpleBlistNode *node)
+{
+	BlistRow *r = g_object_get_data(G_OBJECT(widget), ROW_KEY);
+	GtkWidget *child;
+
+	if (r != NULL && r->expander == widget && row_node(r) == node)
+		return r;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if ((r = selftest_find_row(child, node)) != NULL)
+			return r;
+	return NULL;
+}
+
+/* Drags source onto the middle of target's row, as GTK does: motion
+ * (the highlight and the action), then drop. */
+static gboolean
+selftest_drop_on_row(PurpleBlistNode *source, PurpleBlistNode *target)
+{
+	BlistRow *r = selftest_find_row(GTK_WIDGET(gtkblist->window), target);
+	GtkEventController *drop = NULL;
+	GListModel *controllers;
+	GValue value = G_VALUE_INIT;
+	GdkDragAction action = 0;
+	gboolean ret = FALSE, highlighted;
+	double y;
+	guint i;
+
+	if (r == NULL) {
+		purple_debug_error("gtkblist", "selftest: FAIL: no row for the drop target\n");
+		return FALSE;
+	}
+	controllers = gtk_widget_observe_controllers(r->expander);
+	for (i = 0; i < g_list_model_get_n_items(controllers) && drop == NULL; i++) {
+		GObject *c = g_list_model_get_item(controllers, i);
+
+		if (GTK_IS_DROP_TARGET(c))
+			drop = GTK_EVENT_CONTROLLER(c);
+		g_object_unref(c);
+	}
+	g_object_unref(controllers);
+	if (drop == NULL)
+		return FALSE;
+
+	y = gtk_widget_get_height(r->expander) / 2.0 + 1;
+	/* motion reads the current drop, which only a real drag has */
+	g_signal_emit_by_name(drop, "motion", 10.0, y, &action);
+	highlighted = gtk_widget_has_css_class(r->expander, "pidgin-blist-drop-into");
+	if (!highlighted || action == 0)
+		purple_debug_error("gtkblist", "selftest: FAIL: hovering: action %d, highlight %d\n",
+		                   action, highlighted);
+	g_value_init(&value, PIDGIN_TYPE_BLIST_NODE_ITEM);
+	g_value_set_object(&value, lookup_item(source));
+	g_signal_emit_by_name(drop, "drop", &value, 10.0, y, &ret);
+	g_value_unset(&value);
+	return ret;
+}
+
+/* Dropping a contact or a buddy on the middle of another contact merges
+ * them (it only reordered them when the target contact was collapsed). */
+static void
+selftest_dnd(void)
+{
+	PurpleAccount *account;
+	PurpleGroup *group;
+	PurpleBuddy *a, *b, *c;
+	PurpleContact *ca, *cb;
+	int contacts = count_nodes(PURPLE_BLIST_CONTACT_NODE);
+	int buddies = count_nodes(PURPLE_BLIST_BUDDY_NODE);
+	int groups = count_nodes(PURPLE_BLIST_GROUP_NODE);
+	gboolean ok;
+
+	if (purple_accounts_get_all() == NULL)
+		return;
+	account = purple_accounts_get_all()->data;
+
+	/* A group of three contacts at the top, so their rows are realized */
+	group = purple_group_new("pidgin4 selftest DnD");
+	purple_blist_add_group(group, NULL);
+	a = purple_buddy_new(account, "selftest-a@example.invalid", "Selftest A");
+	b = purple_buddy_new(account, "selftest-b@example.invalid", "Selftest B");
+	c = purple_buddy_new(account, "selftest-c@example.invalid", "Selftest C");
+	purple_blist_add_buddy(a, NULL, group, NULL);
+	purple_blist_add_buddy(b, NULL, group, NULL);
+	purple_blist_add_buddy(c, NULL, group, NULL);
+	ca = purple_buddy_get_contact(a);
+	cb = purple_buddy_get_contact(b);
+	gtk_list_view_scroll_to(GTK_LIST_VIEW(gtkblist->list_view), 0, GTK_LIST_SCROLL_NONE, NULL);
+	pidgin_selftest_iterate(500);
+
+	/* contact onto a collapsed contact */
+	ok = selftest_drop_on_row((PurpleBlistNode *)ca, (PurpleBlistNode *)cb);
+	ok = ok && purple_buddy_get_contact(a) == cb && purple_buddy_get_contact(b) == cb &&
+	     count_nodes(PURPLE_BLIST_CONTACT_NODE) == contacts + 2;
+	if (!ok)
+		purple_debug_error("gtkblist", "selftest: FAIL: contact dropped on a contact "
+		                   "didn't merge\n");
+	pidgin_selftest_iterate(300);
+
+	/* buddy (a contact of one) onto the merged contact */
+	if (ok) {
+		ok = selftest_drop_on_row((PurpleBlistNode *)purple_buddy_get_contact(c),
+		                          (PurpleBlistNode *)cb) &&
+		     purple_buddy_get_contact(c) == cb && cb->totalsize == 3;
+		if (!ok)
+			purple_debug_error("gtkblist", "selftest: FAIL: second merge (%d buddies)\n",
+			                   cb->totalsize);
+	}
+	if (ok)
+		purple_debug_info("gtkblist", "selftest: DnD merged three contacts into one\n");
+
+	/* Put everything back */
+	purple_blist_remove_buddy(a);
+	purple_blist_remove_buddy(b);
+	purple_blist_remove_buddy(c);
+	purple_blist_remove_group(group);
+	pidgin_selftest_iterate(200);
+	if (count_nodes(PURPLE_BLIST_CONTACT_NODE) != contacts ||
+	    count_nodes(PURPLE_BLIST_BUDDY_NODE) != buddies ||
+	    count_nodes(PURPLE_BLIST_GROUP_NODE) != groups)
+		purple_debug_error("gtkblist", "selftest: FAIL: DnD left the list changed\n");
+}
+
 static void
 selftest_menus(void)
 {
@@ -5249,6 +5388,8 @@ selftest_run(gpointer data)
 			purple_debug_info("gtkblist", "selftest: largest row buddy icon %d px\n",
 			                  row_icon);
 	}
+
+	selftest_dnd();
 
 	/* Collapse and expand every group, then put them back. */
 	for (gnode = purple_blist_get_root(); gnode; gnode = purple_blist_node_get_sibling_next(gnode)) {
