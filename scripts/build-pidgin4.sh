@@ -94,6 +94,16 @@ desktop_files() {
 		echo "icons/hicolor/$size/apps/$app_id.png"
 	done
 	echo "icons/hicolor/scalable/apps/$app_id.svg"
+	# M6: the tray's status icons. The StatusNotifierItem's IconName is
+	# $app_id-<status>, which hosts such as Waybar look up in the icon
+	# theme (the item also sends them as pixmaps and names the prefix's
+	# share/icons as IconThemePath).
+	for size in 16x16 22x22 32x32 48x48; do
+		for variant in available away busy extended-away invisible \
+		               offline pending connecting; do
+			echo "icons/hicolor/$size/apps/$app_id-$variant.png"
+		done
+	done
 }
 
 refresh_desktop_caches() {
