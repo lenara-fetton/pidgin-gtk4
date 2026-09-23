@@ -1001,6 +1001,21 @@ update_typing(PidginConversation *gtkconv)
 	pidgin_conv_update_tab(gtkconv);
 }
 
+/* What depends on whether a file can be sent to the conversation now
+ * (can_receive_file may follow the buddy's presence): the toolbar's attach
+ * button (IM: send_file and can_receive_file; chat: chat_send_file and
+ * chat_can_receive_file, as conv.send-file), and whether a pasted image
+ * can go anywhere (inline or as a file, see offer_image()). */
+static void
+update_send_file(PidginConversation *gtkconv)
+{
+	pidgin_compose_entry_set_paste_images(conv_entry(gtkconv),
+		image_offer(gtkconv) != IMAGE_OFFER_NONE);
+	if (gtkconv->toolbar != NULL)
+		pidgin_format_toolbar_set_show_attach(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar),
+			pidgin_conv_action_enabled(gtkconv, "send-file"));
+}
+
 /* Formatting, toolbar and buttons for the connection's features. */
 static void
 update_features(PidginConversation *gtkconv)
@@ -1017,8 +1032,7 @@ update_features(PidginConversation *gtkconv)
 		(prpl_info && (prpl_info->options & OPT_PROTO_USE_POINTSIZE))
 			? PIDGIN_MARKUP_USE_POINTSIZE : 0);
 	pidgin_compose_entry_set_smiley_category(entry, purple_account_get_protocol_name(account));
-	/* a pasted image goes inline or as a file, if either (see offer_image) */
-	pidgin_compose_entry_set_paste_images(entry, image_offer(gtkconv) != IMAGE_OFFER_NONE);
+	update_send_file(gtkconv);
 	if (gtkconv->toolbar != NULL) {
 		pidgin_format_toolbar_update(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar));
 		/* Pidgin 2's toolbar "Attention!" button, for IMs */
@@ -3469,8 +3483,10 @@ update_for_buddy(PurpleBuddy *buddy)
 	PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM,
 		purple_buddy_get_name(buddy), purple_buddy_get_account(buddy));
 
-	if (conv != NULL && PIDGIN_CONVERSATION(conv) != NULL)
+	if (conv != NULL && PIDGIN_CONVERSATION(conv) != NULL) {
 		update_tab_and_infopane(PIDGIN_CONVERSATION(conv));
+		update_send_file(PIDGIN_CONVERSATION(conv));
+	}
 }
 
 static void

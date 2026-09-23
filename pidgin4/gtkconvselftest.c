@@ -757,6 +757,76 @@ test_paste_image(PurpleConversation *conv)
 	hold("paste image");
 }
 
+/* The toolbar's attach button: shown when the prpl can send this
+ * conversation a file (IM: send_file + can_receive_file; chat:
+ * chat_send_file), follows the prpl, and runs conv.send-file. */
+static void
+test_attach(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	GtkWidget *button;
+	GList *l;
+
+	CHECK(gtkconv->toolbar != NULL, "no toolbar");
+	if (gtkconv->toolbar == NULL)
+		return;
+	button = pidgin_format_toolbar_get_attach_button(PIDGIN_FORMAT_TOOLBAR(gtkconv->toolbar));
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
+
+	/* images, no files (the default) */
+	pidgin_selftest_prpl_set_caps(TRUE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(!gtk_widget_get_visible(button), "attach without send_file");
+
+	/* neither */
+	pidgin_selftest_prpl_set_caps(FALSE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(!gtk_widget_get_visible(button), "attach without anything");
+
+	/* files: shown, and a click sends a file to the buddy (the prpl is
+	 * asked with no file: it opens its chooser, as Pidgin 2's) */
+	pidgin_selftest_prpl_set_caps(FALSE, TRUE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(gtk_widget_get_visible(button), "no attach with send_file");
+	CHECK(purple_strequal(gtk_actionable_get_action_name(GTK_ACTIONABLE(button)),
+	                      "conv.send-file"), "attach action %s",
+	      gtk_actionable_get_action_name(GTK_ACTIONABLE(button)));
+	CHECK(gtk_widget_get_sensitive(button), "attach insensitive");
+	CHECK(gtk_widget_activate(button), "attach not activatable");
+	spin(400);
+	CHECK(purple_strequal(call("send-file"), ST_BUDDY "||"), "attach send-file: %s",
+	      call("send-file"));
+
+	/* images and files */
+	pidgin_selftest_prpl_set_caps(TRUE, TRUE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	CHECK(gtk_widget_get_visible(button), "no attach with images and files");
+
+	/* chats: chat_send_file */
+	for (l = purple_get_chats(); l != NULL; l = l->next) {
+		PurpleConversation *chat = l->data;
+		PidginConversation *gtkchat = PIDGIN_CONVERSATION(chat);
+		GtkWidget *chat_button;
+
+		if (gtkchat == NULL || gtkchat->toolbar == NULL)
+			continue;
+		chat_button = pidgin_format_toolbar_get_attach_button(
+			PIDGIN_FORMAT_TOOLBAR(gtkchat->toolbar));
+		pidgin_conv_update_buttons_by_protocol(chat);
+		CHECK(gtk_widget_get_visible(chat_button), "no attach in a chat with chat_send_file");
+		pidgin_selftest_prpl_set_caps(TRUE, FALSE);
+		pidgin_conv_update_buttons_by_protocol(chat);
+		CHECK(!gtk_widget_get_visible(chat_button), "attach in a chat without chat_send_file");
+		pidgin_selftest_prpl_set_caps(TRUE, TRUE);
+	}
+
+	pidgin_selftest_prpl_set_caps(TRUE, FALSE);
+	pidgin_conv_update_buttons_by_protocol(conv);
+	for (l = purple_get_chats(); l != NULL; l = l->next)
+		pidgin_conv_update_buttons_by_protocol(l->data);
+	CHECK(!gtk_widget_get_visible(button), "attach left shown");
+}
+
 static gboolean
 entry_has_anchor(PidginComposeEntry *entry)
 {
@@ -1210,6 +1280,7 @@ selftest_run(gpointer data)
 	test_chat(&chat);
 	test_attention(im);
 	test_paste_image(im);
+	test_attach(im);
 	test_send_to(im);
 	spin(200);
 

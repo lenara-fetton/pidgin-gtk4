@@ -376,6 +376,10 @@ is best), another IRC client, the Discord web client.
       spreadsheet cells (text and an image on the clipboard): Ctrl+V
       pastes the text. A photo pastes as `.jpg` with Preferences →
       Conversations → "Send pasted images as" Automatic, `.png` with PNG.
+- [ ] The toolbar's paperclip (Send File) shows in XMPP IMs and MUCs
+      (HTTP upload) and wherever the protocol can send a file, not on
+      Steam; clicking it opens the file chooser and sends the file. It
+      follows tab switches and Send To.
 - [ ] `/help`, `/me waves`, `/clear`, `/debug version`, and a protocol
       command (`/topic`, `/nick`, `/op` on IRC; `/role` on XMPP).
 - [ ] Chat user list: ops first, then voiced, buddies bold; right click
