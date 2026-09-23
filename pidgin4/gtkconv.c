@@ -61,6 +61,7 @@
 #include "pidginattachment.h"
 #include "pidginblistmodel.h"
 #include "pidgincomposeentry.h"
+#include "pidginfileconfirm.h"
 #include "pidginimageencode.h"
 #include "pidginconvmeta.h"
 #include "pidginformattoolbar.h"
@@ -1737,7 +1738,11 @@ entry_key_cb(GtkEventControllerKey *ctl, guint keyval, guint keycode,
  *      and paste_jpeg_quality prefs, see pidginimageencode.h), deleted when the
  *      transfer completes or is cancelled (and, for transfers that never
  *      end, at the next start once a day old); a dropped file is sent as
- *      it is;
+ *      it is. With /pidgin4/images/confirm_file_send (default TRUE) it is
+ *      first shown in a dialog modal to the conversation window
+ *      (pidginfileconfirm.h): only its Send saves the paste and sends;
+ *      Cancel (or the conversation closing) drops it without a trace. A
+ *      dropped file of any other type is confirmed the same way;
  *  (c) else it is not taken: a paste pastes the clipboard's text, and a
  *      drop offers, as Pidgin 2 did, to make it the buddy icon (IMs with
  *      the buddy on the list), or does nothing.
@@ -1867,13 +1872,109 @@ send_file_now(PidginConversation *gtkconv, const char *path)
 		serv_send_file(gc, purple_conversation_get_name(conv), path);
 }
 
+/* (b): @data saved under paste/ (or @source_path as it is), and sent */
+static gboolean
+send_image_file(PidginConversation *gtkconv, GBytes *data, const char *filename,
+                const char *source_path)
+{
+	char *path = source_path ? g_strdup(source_path) : save_paste_file(data, filename);
+	char *base, *msg;
+
+	if (path == NULL)
+		return FALSE;
+	base = g_markup_escape_text(filename, -1);
+	msg = g_strdup_printf(_("Sending the image %s as a file."), base);
+	purple_conversation_write(gtkconv->active_conv, NULL, msg,
+	                          PURPLE_MESSAGE_SYSTEM | PURPLE_MESSAGE_NO_LOG, time(NULL));
+	g_free(msg);
+	g_free(base);
+	send_file_now(gtkconv, path);
+	g_free(path);
+	return TRUE;
+}
+
+/* The confirmation before (b) (pidginfileconfirm.h). The dialog is kept
+ * on the tab as SEND_CONFIRM_KEY (one at a time; a new one replaces it),
+ * and destroyed with the conversation (pidgin_conv_destroy()). */
+#define SEND_CONFIRM_KEY "pidgin-send-confirm-dialog"
+
+typedef struct
+{
+	PidginConversation *gtkconv;
+	GtkWidget *dialog;
+	GBytes *data;
+	char *filename;
+	char *path;
+	gboolean image;
+} SendConfirm;
+
+static void
+send_confirm_free(gpointer data)
+{
+	SendConfirm *sc = data;
+	GObject *tab = G_OBJECT(sc->gtkconv->tab_cont);
+
+	/* Cancel: forget it (when the tab drops it, it is gone already) */
+	if (g_object_get_data(tab, SEND_CONFIRM_KEY) == sc->dialog)
+		g_object_steal_data(tab, SEND_CONFIRM_KEY);
+	if (sc->data != NULL)
+		g_bytes_unref(sc->data);
+	g_free(sc->filename);
+	g_free(sc->path);
+	g_free(sc);
+}
+
+static void
+send_confirmed_cb(gpointer data)
+{
+	SendConfirm *sc = data;
+
+	if (purple_conversation_get_gc(sc->gtkconv->active_conv) == NULL)
+		return;     /* signed off meanwhile: nothing saved, nothing sent */
+	if (sc->image)
+		send_image_file(sc->gtkconv, sc->data, sc->filename, sc->path);
+	else
+		send_file_now(sc->gtkconv, sc->path);
+}
+
+/* FALSE (sent by the caller now) with the pref off */
+static gboolean
+confirm_file_send(PidginConversation *gtkconv, GBytes *data, const char *filename,
+                  const char *path, gboolean image)
+{
+	PurpleConversation *conv = gtkconv->active_conv;
+	PurpleAccount *account = purple_conversation_get_account(conv);
+	GtkRoot *root = gtk_widget_get_root(gtkconv->tab_cont);
+	SendConfirm *sc;
+	char *via;
+
+	if (!purple_prefs_get_bool(PIDGIN4_PREFS_ROOT "/images/confirm_file_send"))
+		return FALSE;
+
+	sc = g_new0(SendConfirm, 1);
+	sc->gtkconv = gtkconv;
+	sc->data = data ? g_bytes_ref(data) : NULL;
+	sc->filename = g_strdup(filename);
+	sc->path = g_strdup(path);
+	sc->image = image;
+	via = g_strdup_printf("%s (%s)", purple_account_get_username(account),
+	                      purple_account_get_protocol_name(account));
+	sc->dialog = pidgin_file_confirm_new(GTK_IS_WINDOW(root) ? GTK_WINDOW(root) : NULL,
+	                                     data, path, filename,
+	                                     purple_conversation_get_title(conv), via,
+	                                     send_confirmed_cb, sc, send_confirm_free);
+	g_free(via);
+	g_object_set_data_full(G_OBJECT(gtkconv->tab_cont), SEND_CONFIRM_KEY, sc->dialog,
+	                       (GDestroyNotify)gtk_window_destroy);
+	return TRUE;
+}
+
 /* The rule above. @source_path: the dropped file (sent as it is, and read
  * only when inlined), or NULL for @data. */
 static gboolean
 offer_image(PidginConversation *gtkconv, GBytes *data, const char *filename,
             const char *source_path)
 {
-	PurpleConversation *conv = gtkconv->active_conv;
 	ImageOffer offer = image_offer(gtkconv);
 
 	if (offer == IMAGE_OFFER_INLINE) {
@@ -1901,20 +2002,9 @@ offer_image(PidginConversation *gtkconv, GBytes *data, const char *filename,
 	}
 
 	if (offer == IMAGE_OFFER_FILE) {
-		char *path = source_path ? g_strdup(source_path) : save_paste_file(data, filename);
-		char *base, *msg;
-
-		if (path == NULL)
-			return FALSE;
-		base = g_markup_escape_text(filename, -1);
-		msg = g_strdup_printf(_("Sending the image %s as a file."), base);
-		purple_conversation_write(conv, NULL, msg,
-		                          PURPLE_MESSAGE_SYSTEM | PURPLE_MESSAGE_NO_LOG, time(NULL));
-		g_free(msg);
-		g_free(base);
-		send_file_now(gtkconv, path);
-		g_free(path);
-		return TRUE;
+		if (confirm_file_send(gtkconv, data, filename, source_path, TRUE))
+			return TRUE;
+		return send_image_file(gtkconv, data, filename, source_path);
 	}
 	return FALSE;
 }
@@ -2221,7 +2311,12 @@ send_file_to(PidginConversation *gtkconv, const char *path)
 
 	type = g_content_type_guess(path, NULL, 0, NULL);
 	if (type == NULL || !g_content_type_is_a(type, "image/*")) {
-		send_file_now(gtkconv, path);
+		char *base = g_path_get_basename(path);
+
+		if (!pidgin_conv_action_enabled(gtkconv, "send-file") ||
+		    !confirm_file_send(gtkconv, NULL, base, path, FALSE))
+			send_file_now(gtkconv, path);
+		g_free(base);
 	} else if (offer_image_path(gtkconv, path)) {
 		/* images: as a paste (see "Images: paste and drop") */
 	} else if (!is_chat(gtkconv) &&
@@ -2767,6 +2862,7 @@ pidgin_conv_destroy(PurpleConversation *conv)
 	}
 
 	g_object_set_data(G_OBJECT(gtkconv->tab_cont), "PidginConversation", NULL);
+	g_object_set_data(G_OBJECT(gtkconv->tab_cont), SEND_CONFIRM_KEY, NULL);
 	g_clear_object(&gtkconv->tab_cont);
 	g_clear_object(&gtkconv->tabby);
 	g_list_free(gtkconv->convs);

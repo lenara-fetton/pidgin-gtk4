@@ -398,9 +398,18 @@ is best), another IRC client, the Discord web client.
       URL, and images on the account's own XMPP domain, show inline;
       Discord CDN images show inline.
 - [ ] Paste a screenshot (Ctrl+V, or right click → Paste Image) into an
-      XMPP chat: it uploads (HTTP upload; a "Sending the image
-      pasted-….png as a file." line, then the transfer lines), and
-      `~/.purple…/pidgin4/paste/` is empty again once it finished. Into
+      XMPP chat: a "Send Image" dialog floats over the conversation
+      window (modal to it) with the preview, the name, size in pixels,
+      file size and PNG/JPEG, and "Send to <buddy> via <account>";
+      Escape (Cancel) sends nothing and leaves nothing in
+      `~/.purple…/pidgin4/paste/`. Paste again and press Enter (Send):
+      it uploads (HTTP upload; a "Sending the image pasted-….png as a
+      file." line, then the transfer lines), and
+      `~/.purple…/pidgin4/paste/` is empty again once it finished.
+      Dropping a non-image file asks the same way (icon, name, size).
+      Closing the tab with the dialog open closes it, sending nothing.
+      With Preferences → Conversations → "Confirm before sending a
+      pasted or dropped file" off, it sends at once as before. Into
       a Discord DM: the image appears in the entry inline. Copy
       spreadsheet cells (text and an image on the clipboard): Ctrl+V
       pastes the text. A photo pastes as `.jpg` with Preferences →

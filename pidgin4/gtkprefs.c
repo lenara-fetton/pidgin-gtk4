@@ -174,6 +174,8 @@ prefs_register_pidgin4(void)
 	purple_prefs_add_string(PIDGIN4_PREFS_ROOT "/images/paste_format", "auto");
 	purple_prefs_add_int(PIDGIN4_PREFS_ROOT "/images/paste_jpeg_quality",
 	                     PIDGIN_IMAGE_ENCODE_DEFAULT_QUALITY);
+	/* Ask before an image (or a dropped file) goes out as a file. */
+	purple_prefs_add_bool(PIDGIN4_PREFS_ROOT "/images/confirm_file_send", TRUE);
 	/* Images shown inline: XMPP file shares from any host (a message that
 	 * is one image URL), and received file transfers that are images. */
 	purple_prefs_add_bool(PIDGIN4_PREFS_ROOT "/images/inline_xmpp_shares", TRUE);
@@ -689,6 +691,8 @@ conv_page(void)
 	              50, 100, sg);
 	pidgin_pref_bind_insensitive_string(button, PIDGIN4_PREFS_ROOT "/images/paste_format",
 	                                    "png");
+	checkbox(vbox, _("_Confirm before sending a pasted or dropped file"),
+	         PIDGIN4_PREFS_ROOT "/images/confirm_file_send");
 	spin(vbox, _("_Scrollback (messages kept in a window):"),
 	     CONV_PREFS "/scrollback_lines", 100, 100000, sg);
 
