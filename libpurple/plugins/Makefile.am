@@ -1,4 +1,4 @@
-DIST_SUBDIRS = mono perl ssl tcl
+DIST_SUBDIRS = mono omemo perl ssl tcl
 
 if USE_PERL
 PERL_DIR = perl
@@ -16,8 +16,13 @@ if USE_MONO
 MONO_DIR = mono
 endif
 
+if ENABLE_OMEMO
+OMEMO_DIR = omemo
+endif
+
 SUBDIRS = \
 	$(MONO_DIR) \
+	$(OMEMO_DIR) \
 	$(PERL_DIR) \
 	ssl \
 	$(TCL_DIR)

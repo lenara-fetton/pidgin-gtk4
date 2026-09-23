@@ -757,6 +757,10 @@ AVAHI_LIBS
 AVAHI_CFLAGS
 MEANWHILE_LIBS
 MEANWHILE_CFLAGS
+ENABLE_OMEMO_FALSE
+ENABLE_OMEMO_TRUE
+OMEMO_LIBS
+OMEMO_CFLAGS
 IDN2_LIBS
 IDN2_CFLAGS
 GSTAPP_LIBS
@@ -1042,6 +1046,7 @@ enable_gstreamer_interfaces
 enable_farstream
 enable_vv
 enable_idn
+enable_omemo
 enable_meanwhile
 enable_avahi
 with_avahi_client_includes
@@ -1132,6 +1137,8 @@ GSTAPP_CFLAGS
 GSTAPP_LIBS
 IDN2_CFLAGS
 IDN2_LIBS
+OMEMO_CFLAGS
+OMEMO_LIBS
 MEANWHILE_CFLAGS
 MEANWHILE_LIBS
 AVAHI_CFLAGS
@@ -1827,6 +1834,8 @@ Optional Features:
   --disable-farstream     compile without farstream support
   --disable-vv            compile without voice and video support
   --disable-idn           compile without IDN support
+  --disable-omemo         do not build the OMEMO plugin (needs libomemo-c,
+                          libgcrypt and sqlite3)
   --disable-meanwhile     compile without meanwhile (required for Sametime
                           support)
   --disable-avahi         compile without avahi (required for Bonjour support)
@@ -1977,6 +1986,9 @@ Some influential environment variables:
   GSTAPP_LIBS linker flags for GSTAPP, overriding pkg-config
   IDN2_CFLAGS C compiler flags for IDN2, overriding pkg-config
   IDN2_LIBS   linker flags for IDN2, overriding pkg-config
+  OMEMO_CFLAGS
+              C compiler flags for OMEMO, overriding pkg-config
+  OMEMO_LIBS  linker flags for OMEMO, overriding pkg-config
   MEANWHILE_CFLAGS
               C compiler flags for MEANWHILE, overriding pkg-config
   MEANWHILE_LIBS
@@ -22947,6 +22959,122 @@ printf '%s\n' "#define USE_IDN 1" >>confdefs.h
 fi
 fi
 
+
+# Check whether --enable-omemo was given.
+if test ${enable_omemo+y}
+then :
+  enableval=$enable_omemo; enable_omemo="$enableval"
+else case e in #(
+  e) enable_omemo="yes" ;;
+esac
+fi
+
+if test "x$enable_omemo" != "xno"; then
+
+pkg_failed=no
+{ printf '%s\n' "$as_me:${as_lineno-$LINENO}: checking for libomemo-c >= 0.5 libgcrypt sqlite3" >&5
+printf %s "checking for libomemo-c >= 0.5 libgcrypt sqlite3... " >&6; }
+
+if test -n "$OMEMO_CFLAGS"; then
+    pkg_cv_OMEMO_CFLAGS="$OMEMO_CFLAGS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libomemo-c >= 0.5 libgcrypt sqlite3\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libomemo-c >= 0.5 libgcrypt sqlite3") 2>&5
+  ac_status=$?
+  printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_OMEMO_CFLAGS=`$PKG_CONFIG --cflags "libomemo-c >= 0.5 libgcrypt sqlite3" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+if test -n "$OMEMO_LIBS"; then
+    pkg_cv_OMEMO_LIBS="$OMEMO_LIBS"
+ elif test -n "$PKG_CONFIG"; then
+    if test -n "$PKG_CONFIG" && \
+    { { printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libomemo-c >= 0.5 libgcrypt sqlite3\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libomemo-c >= 0.5 libgcrypt sqlite3") 2>&5
+  ac_status=$?
+  printf '%s\n' "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
+  test $ac_status = 0; }; then
+  pkg_cv_OMEMO_LIBS=`$PKG_CONFIG --libs "libomemo-c >= 0.5 libgcrypt sqlite3" 2>/dev/null`
+		      test "x$?" != "x0" && pkg_failed=yes
+else
+  pkg_failed=yes
+fi
+ else
+    pkg_failed=untried
+fi
+
+
+
+if test $pkg_failed = yes; then
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+
+if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
+        _pkg_short_errors_supported=yes
+else
+        _pkg_short_errors_supported=no
+fi
+        if test $_pkg_short_errors_supported = yes; then
+                OMEMO_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libomemo-c >= 0.5 libgcrypt sqlite3" 2>&1`
+        else
+                OMEMO_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libomemo-c >= 0.5 libgcrypt sqlite3" 2>&1`
+        fi
+        # Put the nasty error message in config.log where it belongs
+        echo "$OMEMO_PKG_ERRORS" >&5
+
+
+		{ printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+		enable_omemo="no"
+		if test "x$force_deps" = "xyes" ; then
+			as_fn_error $? "
+libomemo-c, libgcrypt or sqlite3 development headers not found.
+Use --disable-omemo if you do not need the OMEMO plugin.
+" "$LINENO" 5
+		fi
+
+elif test $pkg_failed = untried; then
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+
+		{ printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: no" >&5
+printf '%s\n' "no" >&6; }
+		enable_omemo="no"
+		if test "x$force_deps" = "xyes" ; then
+			as_fn_error $? "
+libomemo-c, libgcrypt or sqlite3 development headers not found.
+Use --disable-omemo if you do not need the OMEMO plugin.
+" "$LINENO" 5
+		fi
+
+else
+        OMEMO_CFLAGS=$pkg_cv_OMEMO_CFLAGS
+        OMEMO_LIBS=$pkg_cv_OMEMO_LIBS
+        { printf '%s\n' "$as_me:${as_lineno-$LINENO}: result: yes" >&5
+printf '%s\n' "yes" >&6; }
+
+
+
+		enable_omemo="yes"
+
+fi
+fi
+ if test "x$enable_omemo" = "xyes"; then
+  ENABLE_OMEMO_TRUE=
+  ENABLE_OMEMO_FALSE='#'
+else
+  ENABLE_OMEMO_TRUE='#'
+  ENABLE_OMEMO_FALSE=
+fi
+
+
 # Check whether --enable-meanwhile was given.
 if test ${enable_meanwhile+y}
 then :
@@ -27878,7 +28006,7 @@ else
 fi
 
 
-ac_config_files="$ac_config_files Makefile Doxyfile doc/Makefile doc/pidgin.1 doc/finch.1 m4macros/Makefile pidgin.apspec pidgin/Makefile pidgin/data/pidgin.desktop.in pidgin/data/pidgin.pc pidgin/data/pidgin-uninstalled.pc pidgin/data/pidgin-2.pc pidgin/data/pidgin-2-uninstalled.pc pidgin/pixmaps/Makefile pidgin/pixmaps/emotes/default/24/Makefile pidgin/pixmaps/emotes/none/Makefile pidgin/pixmaps/emotes/small/16/Makefile pidgin/plugins/Makefile pidgin/plugins/cap/Makefile pidgin/plugins/disco/Makefile pidgin/plugins/gestures/Makefile pidgin/plugins/gevolution/Makefile pidgin/plugins/musicmessaging/Makefile pidgin/plugins/perl/Makefile pidgin/plugins/perl/common/Makefile.PL pidgin/plugins/ticker/Makefile libpurple/data/gconf/Makefile libpurple/data/purple.pc libpurple/data/purple-uninstalled.pc libpurple/data/purple-2.pc libpurple/data/purple-2-uninstalled.pc libpurple/ciphers/Makefile libpurple/example/Makefile libpurple/fuzzers/Makefile libpurple/plugins/Makefile libpurple/plugins/mono/Makefile libpurple/plugins/mono/api/Makefile libpurple/plugins/mono/loader/Makefile libpurple/plugins/perl/Makefile libpurple/plugins/perl/common/Makefile.PL libpurple/plugins/ssl/Makefile libpurple/plugins/tcl/Makefile libpurple/Makefile libpurple/protocols/Makefile libpurple/protocols/bonjour/Makefile libpurple/protocols/gg/Makefile libpurple/protocols/irc/Makefile libpurple/protocols/jabber/Makefile libpurple/protocols/novell/Makefile libpurple/protocols/null/Makefile libpurple/protocols/sametime/Makefile libpurple/protocols/silc/Makefile libpurple/protocols/silc10/Makefile libpurple/protocols/simple/Makefile libpurple/protocols/zephyr/Makefile libpurple/tests/Makefile libpurple/purple.h libpurple/version.h share/sounds/Makefile share/ca-certs/Makefile finch/finch.pc finch/Makefile finch/plugins/Makefile po/Makefile.in pidgin.spec"
+ac_config_files="$ac_config_files Makefile Doxyfile doc/Makefile doc/pidgin.1 doc/finch.1 m4macros/Makefile pidgin.apspec pidgin/Makefile pidgin/data/pidgin.desktop.in pidgin/data/pidgin.pc pidgin/data/pidgin-uninstalled.pc pidgin/data/pidgin-2.pc pidgin/data/pidgin-2-uninstalled.pc pidgin/pixmaps/Makefile pidgin/pixmaps/emotes/default/24/Makefile pidgin/pixmaps/emotes/none/Makefile pidgin/pixmaps/emotes/small/16/Makefile pidgin/plugins/Makefile pidgin/plugins/cap/Makefile pidgin/plugins/disco/Makefile pidgin/plugins/gestures/Makefile pidgin/plugins/gevolution/Makefile pidgin/plugins/musicmessaging/Makefile pidgin/plugins/perl/Makefile pidgin/plugins/perl/common/Makefile.PL pidgin/plugins/ticker/Makefile libpurple/data/gconf/Makefile libpurple/data/purple.pc libpurple/data/purple-uninstalled.pc libpurple/data/purple-2.pc libpurple/data/purple-2-uninstalled.pc libpurple/ciphers/Makefile libpurple/example/Makefile libpurple/fuzzers/Makefile libpurple/plugins/Makefile libpurple/plugins/mono/Makefile libpurple/plugins/mono/api/Makefile libpurple/plugins/mono/loader/Makefile libpurple/plugins/perl/Makefile libpurple/plugins/perl/common/Makefile.PL libpurple/plugins/omemo/Makefile libpurple/plugins/ssl/Makefile libpurple/plugins/tcl/Makefile libpurple/Makefile libpurple/protocols/Makefile libpurple/protocols/bonjour/Makefile libpurple/protocols/gg/Makefile libpurple/protocols/irc/Makefile libpurple/protocols/jabber/Makefile libpurple/protocols/novell/Makefile libpurple/protocols/null/Makefile libpurple/protocols/sametime/Makefile libpurple/protocols/silc/Makefile libpurple/protocols/silc10/Makefile libpurple/protocols/simple/Makefile libpurple/protocols/zephyr/Makefile libpurple/tests/Makefile libpurple/purple.h libpurple/version.h share/sounds/Makefile share/ca-certs/Makefile finch/finch.pc finch/Makefile finch/plugins/Makefile po/Makefile.in pidgin.spec"
 
 cat >confcache <<\_ACEOF
 # This file is a shell script that caches the results of configure
@@ -28033,6 +28161,10 @@ Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 if test -z "${USE_VV_TRUE}" && test -z "${USE_VV_FALSE}"; then
   as_fn_error $? "conditional \"USE_VV\" was never defined.
+Usually this means the macro was only invoked conditionally." "$LINENO" 5
+fi
+if test -z "${ENABLE_OMEMO_TRUE}" && test -z "${ENABLE_OMEMO_FALSE}"; then
+  as_fn_error $? "conditional \"ENABLE_OMEMO\" was never defined.
 Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 if test -z "${HAVE_LIBGADU_TRUE}" && test -z "${HAVE_LIBGADU_FALSE}"; then
@@ -29096,6 +29228,7 @@ do
     "libpurple/plugins/mono/loader/Makefile") CONFIG_FILES="$CONFIG_FILES libpurple/plugins/mono/loader/Makefile" ;;
     "libpurple/plugins/perl/Makefile") CONFIG_FILES="$CONFIG_FILES libpurple/plugins/perl/Makefile" ;;
     "libpurple/plugins/perl/common/Makefile.PL") CONFIG_FILES="$CONFIG_FILES libpurple/plugins/perl/common/Makefile.PL" ;;
+    "libpurple/plugins/omemo/Makefile") CONFIG_FILES="$CONFIG_FILES libpurple/plugins/omemo/Makefile" ;;
     "libpurple/plugins/ssl/Makefile") CONFIG_FILES="$CONFIG_FILES libpurple/plugins/ssl/Makefile" ;;
     "libpurple/plugins/tcl/Makefile") CONFIG_FILES="$CONFIG_FILES libpurple/plugins/tcl/Makefile" ;;
     "libpurple/Makefile") CONFIG_FILES="$CONFIG_FILES libpurple/Makefile" ;;
@@ -30455,6 +30588,7 @@ if test "x$enable_dbus" = "xyes" ; then
 	eval eval echo D-Bus services directory...... : $DBUS_SERVICES_DIR
 fi
 echo Build with GNU Libidn2........ : $enable_idn
+echo Build the OMEMO plugin........ : $enable_omemo
 echo SSL Library/Libraries......... : $msg_ssl
 if test "x$SSL_CERTIFICATES_DIR" != "x" ; then
 	eval eval echo SSL CA certificates directory. : $SSL_CERTIFICATES_DIR

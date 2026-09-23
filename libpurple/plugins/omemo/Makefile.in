@@ -90,7 +90,7 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
-subdir = libpurple/plugins/perl
+subdir = libpurple/plugins/omemo
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/acinclude.m4 \
 	$(top_srcdir)/configure.ac
@@ -130,15 +130,21 @@ am__uninstall_files_from_dir = { \
 am__installdirs = "$(DESTDIR)$(plugindir)"
 LTLIBRARIES = $(plugin_LTLIBRARIES)
 am__DEPENDENCIES_1 =
-am_perl_la_OBJECTS = perl.lo perl-common.lo perl-handlers.lo
-perl_la_OBJECTS = $(am_perl_la_OBJECTS)
+@PLUGINS_TRUE@omemo_la_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+@PLUGINS_TRUE@	$(am__DEPENDENCIES_1)
+am__omemo_la_SOURCES_DIST = omemo.c omemo.h omemo-crypto.c \
+	omemo-store.c omemo-xmpp.c
+@PLUGINS_TRUE@am_omemo_la_OBJECTS = omemo.lo omemo-crypto.lo \
+@PLUGINS_TRUE@	omemo-store.lo omemo-xmpp.lo
+omemo_la_OBJECTS = $(am_omemo_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
 am__v_lt_0 = --silent
 am__v_lt_1 = 
-perl_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
+omemo_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(AM_CFLAGS) $(CFLAGS) \
-	$(perl_la_LDFLAGS) $(LDFLAGS) -o $@
+	$(omemo_la_LDFLAGS) $(LDFLAGS) -o $@
+@PLUGINS_TRUE@am_omemo_la_rpath = -rpath $(plugindir)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -154,8 +160,9 @@ am__v_at_1 =
 DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
-am__depfiles_remade = ./$(DEPDIR)/perl-common.Plo \
-	./$(DEPDIR)/perl-handlers.Plo ./$(DEPDIR)/perl.Plo
+am__depfiles_remade = ./$(DEPDIR)/omemo-crypto.Plo \
+	./$(DEPDIR)/omemo-store.Plo ./$(DEPDIR)/omemo-xmpp.Plo \
+	./$(DEPDIR)/omemo.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -175,8 +182,8 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(perl_la_SOURCES)
-DIST_SOURCES = $(perl_la_SOURCES)
+SOURCES = $(omemo_la_SOURCES)
+DIST_SOURCES = $(am__omemo_la_SOURCES_DIST)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -377,8 +384,6 @@ SHELL = @SHELL@
 SILC_CFLAGS = @SILC_CFLAGS@
 SILC_LIBS = @SILC_LIBS@
 SM_LIBS = @SM_LIBS@
-SOUP_CFLAGS = @SOUP_CFLAGS@
-SOUP_LIBS = @SOUP_LIBS@
 SQLITE3_CFLAGS = @SQLITE3_CFLAGS@
 SQLITE3_LIBS = @SQLITE3_LIBS@
 SSL_CERTIFICATES_DIR = @SSL_CERTIFICATES_DIR@
@@ -470,87 +475,28 @@ target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
+EXTRA_DIST = 
 plugindir = $(libdir)/purple-$(PURPLE_MAJOR_VERSION)
-perl_dirs = common
-plugin_LTLIBRARIES = perl.la
-perl_la_LDFLAGS = -module -avoid-version
-perl_la_LIBADD = $(GLIB_LIBS) $(PERL_LIBS)
-perl_la_SOURCES = \
-	perl.c \
-	perl-common.c \
-	perl-common.h \
-	perl-handlers.c \
-	perl-handlers.h
+omemo_la_LDFLAGS = -module -avoid-version
+@PLUGINS_TRUE@plugin_LTLIBRARIES = omemo.la
+@PLUGINS_TRUE@omemo_la_SOURCES = \
+@PLUGINS_TRUE@	omemo.c \
+@PLUGINS_TRUE@	omemo.h \
+@PLUGINS_TRUE@	omemo-crypto.c \
+@PLUGINS_TRUE@	omemo-store.c \
+@PLUGINS_TRUE@	omemo-xmpp.c
 
-perl_la_DEPENDENCIES = \
-	.libs/libperl_orig.a \
-	.libs/DynaLoader.a
 
-common_sources = \
-	common/Account.xs \
-	common/AccountOpts.xs \
-	common/BuddyIcon.xs \
-	common/BuddyList.xs \
-	common/Certificate.xs \
-	common/Cipher.xs \
-	common/Cmds.xs \
-	common/Core.xs \
-	common/Connection.xs \
-	common/Conversation.xs \
-	common/Debug.xs \
-	common/FT.xs \
-	common/Idle.xs \
-	common/ImgStore.xs \
-	common/Log.xs \
-	common/Makefile.PL.in \
-	common/Network.xs \
-	common/Notify.xs \
-	common/Plugin.xs \
-	common/PluginPref.xs \
-	common/Pounce.xs \
-	common/Prefs.xs \
-	common/Privacy.xs \
-	common/Proxy.xs \
-	common/Prpl.xs \
-	common/Purple.pm \
-	common/Purple.xs \
-	common/Request.xs \
-	common/Roomlist.xs \
-	common/SSLConn.xs \
-	common/SavedStatuses.xs \
-	common/Server.xs \
-	common/Signal.xs \
-	common/Smiley.xs \
-	common/Sound.xs \
-	common/Status.xs \
-	common/Stringref.xs \
-	common/Util.xs \
-	common/Whiteboard.xs \
-	common/XMLNode.xs \
-	common/module.h \
-	common/typemap
-
-#	common/fallback/const-c.inc \
-#	common/fallback/const-xs.inc
-perl_scripts = \
-	scripts/function_list.pl \
-	scripts/signals-test.pl
-
-EXTRA_DIST = \
-	Makefile.mingw \
-	common/Makefile.mingw \
-	$(common_sources) \
-	$(perl_scripts)
-
+# Only the plugin links these; libpurple itself gains no dependency.
+@PLUGINS_TRUE@omemo_la_LIBADD = $(GLIB_LIBS) $(OMEMO_LIBS)
 AM_CPPFLAGS = \
-	-I$(top_srcdir) \
+	-DDATADIR=\"$(datadir)\" \
 	-I$(top_srcdir)/libpurple \
 	-I$(top_builddir)/libpurple \
-	-DLIBDIR=\"$(libdir)/purple-$(PURPLE_MAJOR_VERSION)\" \
 	$(DEBUG_CFLAGS) \
 	$(GLIB_CFLAGS) \
-	$(PLUGIN_CFLAGS) \
-	$(PERL_CFLAGS)
+	$(OMEMO_CFLAGS) \
+	$(PLUGIN_CFLAGS)
 
 all: all-am
 
@@ -565,9 +511,9 @@ $(srcdir)/Makefile.in:  $(srcdir)/Makefile.am  $(am__configure_deps)
 	      exit 1;; \
 	  esac; \
 	done; \
-	echo ' cd $(top_srcdir) && $(AUTOMAKE) --gnu libpurple/plugins/perl/Makefile'; \
+	echo ' cd $(top_srcdir) && $(AUTOMAKE) --gnu libpurple/plugins/omemo/Makefile'; \
 	$(am__cd) $(top_srcdir) && \
-	  $(AUTOMAKE) --gnu libpurple/plugins/perl/Makefile
+	  $(AUTOMAKE) --gnu libpurple/plugins/omemo/Makefile
 Makefile: $(srcdir)/Makefile.in $(top_builddir)/config.status
 	@case '$?' in \
 	  *config.status*) \
@@ -619,8 +565,8 @@ clean-pluginLTLIBRARIES:
 	echo rm -f $${locs}; \
 	$(am__rm_f) $${locs}
 
-perl.la: $(perl_la_OBJECTS) $(perl_la_DEPENDENCIES) $(EXTRA_perl_la_DEPENDENCIES) 
-	$(AM_V_CCLD)$(perl_la_LINK) -rpath $(plugindir) $(perl_la_OBJECTS) $(perl_la_LIBADD) $(LIBS)
+omemo.la: $(omemo_la_OBJECTS) $(omemo_la_DEPENDENCIES) $(EXTRA_omemo_la_DEPENDENCIES) 
+	$(AM_V_CCLD)$(omemo_la_LINK) $(am_omemo_la_rpath) $(omemo_la_OBJECTS) $(omemo_la_LIBADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -628,9 +574,10 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/perl-common.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/perl-handlers.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/perl.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo-crypto.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo-store.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo-xmpp.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/omemo.Plo@am__quote@ # am--include-marker
 
 $(am__depfiles_remade):
 	@$(MKDIR_P) $(@D)
@@ -752,7 +699,7 @@ distdir-am: $(DISTFILES)
 	done
 check-am: all-am
 check: check-am
-all-am: Makefile $(LTLIBRARIES) all-local
+all-am: Makefile $(LTLIBRARIES)
 installdirs:
 	for dir in "$(DESTDIR)$(plugindir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
@@ -778,6 +725,12 @@ install-strip:
 	fi
 mostlyclean-generic:
 
+clean-generic:
+
+distclean-generic:
+	-$(am__rm_f) $(CONFIG_CLEAN_FILES)
+	-test . = "$(srcdir)" || $(am__rm_f) $(CONFIG_CLEAN_VPATH_FILES)
+
 maintainer-clean-generic:
 	@echo "This command is intended for maintainers to use"
 	@echo "it deletes files that may require special tools to rebuild."
@@ -787,9 +740,10 @@ clean-am: clean-generic clean-libtool clean-pluginLTLIBRARIES \
 	mostlyclean-am
 
 distclean: distclean-am
-	-rm -f ./$(DEPDIR)/perl-common.Plo
-	-rm -f ./$(DEPDIR)/perl-handlers.Plo
-	-rm -f ./$(DEPDIR)/perl.Plo
+	-rm -f ./$(DEPDIR)/omemo-crypto.Plo
+	-rm -f ./$(DEPDIR)/omemo-store.Plo
+	-rm -f ./$(DEPDIR)/omemo-xmpp.Plo
+	-rm -f ./$(DEPDIR)/omemo.Plo
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-tags
@@ -812,7 +766,7 @@ install-dvi: install-dvi-am
 
 install-dvi-am:
 
-install-exec-am: install-exec-local
+install-exec-am:
 
 install-html: install-html-am
 
@@ -835,9 +789,10 @@ install-ps-am:
 installcheck-am:
 
 maintainer-clean: maintainer-clean-am
-	-rm -f ./$(DEPDIR)/perl-common.Plo
-	-rm -f ./$(DEPDIR)/perl-handlers.Plo
-	-rm -f ./$(DEPDIR)/perl.Plo
+	-rm -f ./$(DEPDIR)/omemo-crypto.Plo
+	-rm -f ./$(DEPDIR)/omemo-store.Plo
+	-rm -f ./$(DEPDIR)/omemo-xmpp.Plo
+	-rm -f ./$(DEPDIR)/omemo.Plo
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic
 
@@ -854,116 +809,27 @@ ps: ps-am
 
 ps-am:
 
-uninstall-am: uninstall-local uninstall-pluginLTLIBRARIES
+uninstall-am: uninstall-pluginLTLIBRARIES
 
 .MAKE: install-am install-strip
 
-.PHONY: CTAGS GTAGS TAGS all all-am all-local am--depfiles check \
-	check-am clean clean-generic clean-libtool \
-	clean-pluginLTLIBRARIES cscopelist-am ctags ctags-am distclean \
-	distclean-compile distclean-generic distclean-libtool \
-	distclean-tags distdir dvi dvi-am html html-am info info-am \
-	install install-am install-data install-data-am install-dvi \
-	install-dvi-am install-exec install-exec-am install-exec-local \
-	install-html install-html-am install-info install-info-am \
-	install-man install-pdf install-pdf-am \
-	install-pluginLTLIBRARIES install-ps install-ps-am \
-	install-strip installcheck installcheck-am installdirs \
-	maintainer-clean maintainer-clean-generic mostlyclean \
-	mostlyclean-compile mostlyclean-generic mostlyclean-libtool \
-	pdf pdf-am ps ps-am tags tags-am uninstall uninstall-am \
-	uninstall-local uninstall-pluginLTLIBRARIES
+.PHONY: CTAGS GTAGS TAGS all all-am am--depfiles check check-am clean \
+	clean-generic clean-libtool clean-pluginLTLIBRARIES \
+	cscopelist-am ctags ctags-am distclean distclean-compile \
+	distclean-generic distclean-libtool distclean-tags distdir dvi \
+	dvi-am html html-am info info-am install install-am \
+	install-data install-data-am install-dvi install-dvi-am \
+	install-exec install-exec-am install-html install-html-am \
+	install-info install-info-am install-man install-pdf \
+	install-pdf-am install-pluginLTLIBRARIES install-ps \
+	install-ps-am install-strip installcheck installcheck-am \
+	installdirs maintainer-clean maintainer-clean-generic \
+	mostlyclean mostlyclean-compile mostlyclean-generic \
+	mostlyclean-libtool pdf pdf-am ps ps-am tags tags-am uninstall \
+	uninstall-am uninstall-pluginLTLIBRARIES
 
 .PRECIOUS: Makefile
 
-
-.libs/libperl_orig.a:
-	@mkdir -p .libs
-	@rm -f .libs/libperl_orig.a
-	@if [ x$(LIBPERL_A) = x ]; then \
-		touch .libs/libperl_orig.a; \
-	else \
-		$(LN_S) $(LIBPERL_A) .libs/libperl_orig.a; \
-	fi
-
-.libs/DynaLoader.a:
-	@mkdir -p .libs
-	@rm -f .libs/DynaLoader.a
-	@if [ x$(DYNALOADER_A) = x ]; then \
-		touch .libs/DynaLoader.a; \
-	else \
-		$(LN_S) $(DYNALOADER_A) .libs/DynaLoader.a; \
-	fi
-
-common/Makefile: common/Makefile.PL
-	@if test "x${top_srcdir}" != "x${top_builddir}"; then \
-		for f in ${common_sources}; do \
-			srcloc=${srcdir}; \
-			case $$srcloc in /*) ;; *) srcloc=../${srcdir} ;; esac; \
-			${LN_S} -f $$srcloc/$$f $$f; \
-		done; \
-	fi
-	@cd common && $(perlpath) Makefile.PL
-
-common/Makefile.PL: common/Makefile.PL.in $(top_builddir)/config.status
-	cd $(top_builddir) && $(SHELL) ./config.status $(subdir)/$@ $(am__depfiles_maybe)
-
-all-local: common/Makefile
-	@for dir in $(perl_dirs); do \
-		cd $$dir && \
-		if [ ! -f Makefile ]; then \
-			$(perlpath) Makefile.PL; \
-		fi && \
-		($(MAKE) CC="$(CC)" CCFLAGS="$(PERL_CFLAGS) $(CFLAGS)" $(PERL_EXTRA_OPTS) || \
-		 $(MAKE) CC="$(CC)" CCFLAGS="$(PERL_CFLAGS) $(CFLAGS)" $(PERL_EXTRA_OPTS)) && \
-		cd ..; \
-	done
-
-install-exec-local:
-	@for dir in $(perl_dirs); do \
-		cd $$dir; \
-		$(MAKE) install; \
-		cd ..; \
-	done
-
-# Evil Hack (TM)
-# ... which doesn't work with DESTDIR installs. FIXME?
-uninstall-local:
-	@for dir in $(perl_dirs); do \
-		cd $$dir && \
-		`$(MAKE) uninstall | grep unlink | sed -e 's#/usr#${prefix}#' -e 's#unlink#rm -f#'` && \
-		cd ..; \
-	done
-
-clean-generic:
-	@for dir in $(perl_dirs); do \
-		cd $$dir; \
-		$(MAKE) clean; \
-		cd ..; \
-	done
-	cd common ; rm -rf *.c *.o pm_to_blib Purple.bs MYMETA.* blib/*/.exists blib/*/auto/Purple blib/*/Purple.*pm ; cd ..
-	rm -f *.so
-
-distclean-generic:
-	@for dir in $(perl_dirs); do \
-		cd $$dir; \
-		$(MAKE) realclean; \
-		rm -f Makefile.PL; \
-		rm -f Makefile.old; \
-		rm -f Makefile; \
-		cd ..; \
-	done
-
-	@rm -f Makefile
-#	@rm -f common/const-c.inc common/const-xs.inc
-
-	@if test "x${top_srcdir}" != "x${top_builddir}"; then \
-		for f in ${common_sources}; do \
-			srcloc=${srcdir}; \
-			case $$srcloc in /*) ;; *) srcloc=../${srcdir} ;; esac; \
-			${LN_S} -f $$srcloc/$$f $$f; \
-		done; \
-	fi
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

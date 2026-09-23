@@ -575,6 +575,8 @@ NSS_CFLAGS = @NSS_CFLAGS@
 NSS_LIBS = @NSS_LIBS@
 OBJDUMP = @OBJDUMP@
 OBJEXT = @OBJEXT@
+OMEMO_CFLAGS = @OMEMO_CFLAGS@
+OMEMO_LIBS = @OMEMO_LIBS@
 OTOOL = @OTOOL@
 OTOOL64 = @OTOOL64@
 PACKAGE = @PACKAGE@
@@ -705,13 +707,15 @@ target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
-DIST_SUBDIRS = mono perl ssl tcl
+DIST_SUBDIRS = mono omemo perl ssl tcl
 @USE_PERL_TRUE@PERL_DIR = perl
 @USE_TCL_TRUE@TCL_DIR = tcl
 @ENABLE_DBUS_TRUE@DBUS_LTLIB = dbus-example.la
 @USE_MONO_TRUE@MONO_DIR = mono
+@ENABLE_OMEMO_TRUE@OMEMO_DIR = omemo
 SUBDIRS = \
 	$(MONO_DIR) \
+	$(OMEMO_DIR) \
 	$(PERL_DIR) \
 	ssl \
 	$(TCL_DIR)
