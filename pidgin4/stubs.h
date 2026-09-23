@@ -22,4 +22,10 @@
  */
 PurpleBlistUiOps *pidgin_blist_get_ui_ops(void);
 
+/**
+ * TODO(M5): replaced by gtkpounce.c. Registers the pounce handler so that
+ * pounces.xml round-trips (see stubs.c) and runs execute-command actions.
+ */
+void pidgin_pounces_init(void);
+
 #endif /* _PIDGIN_STUBS_H_ */

@@ -168,6 +168,7 @@ pidgin_ui_init(void)
 
 	pidgin_account_init();
 	pidgin_connection_init();
+	pidgin_pounces_init();
 	pidgin_utils_init();
 	pidgin_notify_init();
 }
@@ -464,8 +465,16 @@ startup_cb(GApplication *app, gpointer data)
 	/* No-op until the buddy list exists (TODO(M3)). */
 	purple_blist_show();
 
-	if (opts.debug || purple_prefs_get_bool(PIDGIN4_PREFS_ROOT "/debug/enabled"))
+	if (purple_prefs_get_bool(PIDGIN4_PREFS_ROOT "/debug/enabled"))
 		pidgin_debug_window_show();
+	else if (opts.debug)
+		pidgin_debug_window_show_for_session();
+
+	/* Developer aids for headless testing: open one request of every
+	 * kind (gtkrequest.c). PIDGIN4_ACCOUNT_SELFTEST is handled when the
+	 * accounts window opens (gtkaccount.c). */
+	if (g_getenv("PIDGIN4_REQUEST_SELFTEST") != NULL)
+		pidgin_request_selftest();
 
 	if (opts.login) {
 		/* disable all accounts */
@@ -580,10 +589,31 @@ handle_local_options_cb(GApplication *app, GVariantDict *options, gpointer data)
 	return -1;
 }
 
+/*
+ * With G_DEBUG=fatal-criticals (the test setup), criticals from GTK, GLib
+ * and pidgin4 itself (G_LOG_DOMAIN "pidgin4") abort, but those logged by
+ * libpurple and its plugins (no log domain) do not: libpurple 2.14 emits
+ * some on ordinary profiles, e.g. purple_buddy_new() for buddies of an
+ * account whose prpl is gone (blist.c: purple_presence_set_status_active
+ * with no "offline" status). They are still printed/logged.
+ */
+static gboolean
+fatal_log_filter(const char *log_domain, GLogLevelFlags log_level,
+                 const char *message, gpointer data)
+{
+	if (log_domain == NULL && !(log_level & G_LOG_LEVEL_ERROR)) {
+		g_printerr("pidgin4: not fatal (libpurple): %s\n", message);
+		return FALSE;
+	}
+	return TRUE;
+}
+
 int
 main(int argc, char *argv[])
 {
 	int status;
+
+	g_test_log_set_fatal_handler(fatal_log_filter, NULL);
 
 	setlocale(LC_ALL, "");
 	bindtextdomain(PACKAGE, LOCALEDIR);

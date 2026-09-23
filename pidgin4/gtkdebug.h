@@ -51,6 +51,12 @@ void *pidgin_debug_get_handle(void);
 void pidgin_debug_window_show(void);
 
 /**
+ * Shows the debug window without remembering it in /pidgin4/debug/enabled
+ * (for -d).
+ */
+void pidgin_debug_window_show_for_session(void);
+
+/**
  * Hides the debug window.
  */
 void pidgin_debug_window_hide(void);
