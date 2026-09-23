@@ -23,6 +23,7 @@
 
 #include "internal.h"
 
+#include "debug.h"
 #include "pep.h"
 #include "iq.h"
 #include <string.h>
@@ -30,6 +31,7 @@
 #include "usermood.h"
 #include "usernick.h"
 #include "usertune.h"
+#include "bookmarks.h"
 
 static GHashTable *pep_handlers = NULL;
 
@@ -42,6 +44,7 @@ void jabber_pep_init(void) {
 		jabber_mood_init();
 		jabber_tune_init();
 		jabber_nick_init();
+		jabber_bookmarks_pep_init();
 	}
 }
 
@@ -174,5 +177,48 @@ void jabber_pep_publish(JabberStream *js, xmlnode *publish) {
 
 	xmlnode_insert_child(iq->node, pubsub);
 
+	jabber_iq_send(iq);
+}
+
+static void
+jabber_pep_publish_options_cb(JabberStream *js, const char *from,
+                              JabberIqType type, const char *id,
+                              xmlnode *packet, gpointer data)
+{
+	if (type == JABBER_IQ_ERROR) {
+		char *msg = jabber_parse_error(js, packet, NULL);
+		purple_debug_warning("jabber", "PEP publish to %s failed: %s\n",
+		                     (char *)data, msg ? msg : "(unknown)");
+		g_free(msg);
+	}
+	g_free(data);
+}
+
+void
+jabber_pep_publish_with_options(JabberStream *js, xmlnode *publish,
+                                xmlnode *options)
+{
+	JabberIq *iq;
+	xmlnode *pubsub;
+
+	if (js->pep != TRUE) {
+		xmlnode_free(publish);
+		if (options)
+			xmlnode_free(options);
+		return;
+	}
+
+	iq = jabber_iq_new(js, JABBER_IQ_SET);
+	pubsub = xmlnode_new_child(iq->node, "pubsub");
+	xmlnode_set_namespace(pubsub, "http://jabber.org/protocol/pubsub");
+	xmlnode_insert_child(pubsub, publish);
+
+	if (options) {
+		xmlnode *po = xmlnode_new_child(pubsub, "publish-options");
+		xmlnode_insert_child(po, options);
+	}
+
+	jabber_iq_set_callback(iq, jabber_pep_publish_options_cb,
+	                       g_strdup(xmlnode_get_attrib(publish, "node")));
 	jabber_iq_send(iq);
 }

@@ -28,6 +28,7 @@
 #include "request.h"
 
 #include "adhoccommands.h"
+#include "bookmarks.h"
 #include "buddy.h"
 #include "carbons.h"
 #include "disco.h"
@@ -360,8 +361,8 @@ void jabber_disco_items_parse(JabberStream *js, const char *from,
 	}
 }
 
-/* disco#info on our own bare JID: the account's archive (XEP-0313).
- * Then catch up. */
+/* disco#info on our own bare JID: the account's archive (XEP-0313) and
+ * bookmark (XEP-0402) features.  Then catch up and fetch bookmarks. */
 static void
 jabber_disco_account_info_cb(JabberStream *js, const char *from,
                              JabberIqType type, const char *id,
@@ -377,12 +378,15 @@ jabber_disco_account_info_cb(JabberStream *js, const char *from,
 
 		if (purple_strequal(var, NS_MAM))
 			js->mam_supported = TRUE;
+		else if (purple_strequal(var, NS_BOOKMARKS2_COMPAT))
+			jabber_bookmarks_set_compat(js, TRUE);
 	}
 
 	purple_debug_info("jabber", "Account archive (MAM): %s\n",
 	                  js->mam_supported ? "yes" : "no");
 
 	jabber_mam_catchup(js);
+	jabber_bookmarks_fetch(js);
 }
 
 static void
@@ -425,7 +429,7 @@ jabber_disco_finish_server_info_result_cb(JabberStream *js)
 		jabber_request_block_list(js);
 	}
 
-	/* M8: archive catch-up (after the roster request) */
+	/* M8: archive catch-up and bookmarks (after the roster request) */
 	jabber_disco_account_info(js);
 
 	/* If there are manually specified bytestream proxies, query them */

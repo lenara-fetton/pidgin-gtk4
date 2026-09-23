@@ -59,6 +59,7 @@
 #include "iq.h"
 #include "jutil.h"
 #include "kvstore.h"
+#include "bookmarks.h"
 #include "mam.h"
 #include "message.h"
 #include "parser.h"
@@ -1720,6 +1721,7 @@ void jabber_close(PurpleConnection *gc)
 
 	/* M8 */
 	jabber_mam_close(js);
+	jabber_bookmarks_close(js);
 	jabber_chat_selfping_stop(js);
 
 	if (js->keepalive_timeout != 0)
@@ -4059,9 +4061,10 @@ void jabber_plugin_init(PurplePlugin *plugin)
 
 	jabber_kv_init(plugin);
 
-	/* M8: mam-fetch-older IPC, mam-query-done signal, MUC self-ping on
-	 * network changes */
+	/* M8: mam-fetch-older / bookmark-add / bookmark-remove IPC,
+	 * mam-query-done signal, MUC self-ping on network changes */
 	jabber_mam_init(plugin);
+	jabber_bookmarks_init(plugin);
 	jabber_chat_selfping_init(plugin);
 
 	purple_signal_register(plugin, "jabber-receiving-iq",
