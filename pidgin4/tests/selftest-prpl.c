@@ -376,6 +376,13 @@ pidgin_selftest_prpl_get_call(const char *command)
 }
 
 void
+pidgin_selftest_prpl_clear_call(const char *command)
+{
+	if (st_calls != NULL)
+		g_hash_table_remove(st_calls, command);
+}
+
+void
 pidgin_selftest_prpl_set_caps(gboolean im_images, gboolean files)
 {
 	if (im_images)

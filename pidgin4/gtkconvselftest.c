@@ -635,10 +635,58 @@ count_paste_files(char **first)
 	return n;
 }
 
+/* The "Send Image/File" confirmation open on @conv (gtkconv.c keeps it on
+ * the tab), or NULL. */
+#define SEND_CONFIRM_KEY "pidgin-send-confirm-dialog"
+
+static GtkWindow *
+confirm_dialog(PurpleConversation *conv)
+{
+	return g_object_get_data(G_OBJECT(PIDGIN_CONVERSATION(conv)->tab_cont), SEND_CONFIRM_KEY);
+}
+
+static GtkWidget *
+find_named(GtkWidget *widget, const char *name)
+{
+	GtkWidget *child, *ret = NULL;
+
+	if (purple_strequal(gtk_widget_get_name(widget), name))
+		return widget;
+	for (child = gtk_widget_get_first_child(widget); child != NULL && ret == NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		ret = find_named(child, name);
+	return ret;
+}
+
+static const char *
+confirm_label(GtkWindow *dialog, const char *name)
+{
+	GtkWidget *label = find_named(GTK_WIDGET(dialog), name);
+
+	return GTK_IS_LABEL(label) ? gtk_label_get_text(GTK_LABEL(label)) : "";
+}
+
+/* Send (the default widget, as Enter) or Cancel (window.close, as
+ * Escape) */
+static void
+confirm_answer(PurpleConversation *conv, gboolean send)
+{
+	GtkWindow *dialog = confirm_dialog(conv);
+
+	if (dialog == NULL)
+		return;
+	if (send)
+		gtk_widget_activate(gtk_window_get_default_widget(dialog));
+	else
+		gtk_widget_activate_action(GTK_WIDGET(dialog), "window.close", NULL);
+	spin(300);
+}
+
 /* Pasting an image: (a) inline with OPT_PROTO_IM_IMAGE; (b) as a file
  * transfer of <profile>/pidgin4/paste/pasted-*.png without it but with
- * send_file (the file goes when the transfer ends); (c) a text paste
- * with neither. Text next to the image wins unless it is blank. */
+ * send_file (the file goes when the transfer ends), after a confirmation
+ * unless /pidgin4/images/confirm_file_send is off; (c) a text paste with
+ * neither. Text next to the image wins unless it is blank. */
 static void
 test_paste_image(PurpleConversation *conv)
 {
@@ -646,6 +694,7 @@ test_paste_image(PurpleConversation *conv)
 	PidginComposeEntry *entry = PIDGIN_COMPOSE_ENTRY(gtkconv->entry);
 	char *text, *path = NULL, *expect, *before;
 	PurpleXfer *xfer;
+	GtkWindow *dialog;
 	int files;
 
 	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
@@ -675,7 +724,8 @@ test_paste_image(PurpleConversation *conv)
 	CHECK(entry_has_anchor(entry), "(a) blank text and image: no image");
 	pidgin_compose_entry_clear(entry);
 
-	/* (b) a file transfer */
+	/* (b) a file transfer: at once with confirm_file_send off */
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/confirm_file_send", FALSE);
 	pidgin_selftest_prpl_set_caps(FALSE, TRUE);
 	pidgin_conv_update_buttons_by_protocol(conv);
 	CHECK(pidgin_compose_entry_get_paste_images(entry), "(b) images not pasted");
@@ -734,6 +784,133 @@ test_paste_image(PurpleConversation *conv)
 	}
 	CHECK(path == NULL || !g_file_test(path, G_FILE_TEST_EXISTS), "(b) %s left", path);
 	g_free(path);
+	path = NULL;
+
+	/* ... with it on (the default): a dialog, modal to the conversation
+	 * window; nothing is saved or sent before its Send */
+	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/images/confirm_file_send", TRUE);
+	pidgin_selftest_prpl_clear_call("send-file");
+	files = count_paste_files(NULL);
+	paste_image_clipboard(entry, NULL);
+	dialog = confirm_dialog(conv);
+	CHECK(dialog != NULL, "(b) no confirmation");
+	CHECK(!entry_has_anchor(entry) && pidgin_compose_entry_is_empty(entry),
+	      "(b) confirm: something was pasted");
+	CHECK(count_paste_files(NULL) == files, "(b) saved before Send");
+	CHECK(call("send-file") == NULL, "(b) sent before Send: %s", call("send-file"));
+	if (dialog != NULL) {
+		GtkWidget *preview = find_named(GTK_WIDGET(dialog), "file-confirm-preview");
+		const char *to = confirm_label(dialog, "file-confirm-recipient");
+		const char *details = confirm_label(dialog, "file-confirm-details");
+
+		CHECK(gtk_widget_get_visible(GTK_WIDGET(dialog)), "(b) confirmation not shown");
+		CHECK(gtk_window_get_modal(dialog), "(b) confirmation not modal");
+		CHECK(gtk_window_get_transient_for(dialog) ==
+		      GTK_WINDOW(gtk_widget_get_root(gtkconv->tab_cont)),
+		      "(b) confirmation not transient for the conversation window");
+		CHECK(GTK_IS_PICTURE(preview), "(b) no image preview");
+		CHECK(strstr(to, purple_conversation_get_title(conv)) != NULL &&
+		      strstr(to, ST_USER) != NULL, "(b) recipient \"%s\"", to);
+		CHECK(strstr(details, "16 × 16") != NULL && strstr(details, "PNG") != NULL,
+		      "(b) details \"%s\"", details);
+		CHECK(GTK_IS_BUTTON(gtk_window_get_default_widget(dialog)) &&
+		      purple_strequal(gtk_button_get_label(
+		          GTK_BUTTON(gtk_window_get_default_widget(dialog))), _("_Send")),
+		      "(b) Send is not the default");
+	}
+	confirm_answer(conv, TRUE);
+	CHECK(confirm_dialog(conv) == NULL, "(b) confirmation left after Send");
+	CHECK(count_paste_files(&path) == files + 1, "(b) Send: no pasted file");
+	expect = g_strdup_printf(ST_BUDDY "|%s|", path);
+	CHECK(purple_strequal(call("send-file"), expect), "(b) Send: send-file %s (expected %s)",
+	      call("send-file"), expect);
+	g_free(expect);
+	xfer = pidgin_selftest_prpl_get_last_xfer();
+	CHECK(xfer != NULL, "(b) Send: no transfer");
+	if (xfer != NULL) {
+		purple_xfer_cancel_local(xfer);
+		pidgin_selftest_prpl_forget_xfer();
+		spin(300);
+	}
+	CHECK(path == NULL || !g_file_test(path, G_FILE_TEST_EXISTS), "(b) %s left", path);
+	g_free(path);
+	path = NULL;
+
+	/* ... Cancel (Escape): no file, no send */
+	pidgin_selftest_prpl_clear_call("send-file");
+	files = count_paste_files(NULL);
+	paste_image_clipboard(entry, NULL);
+	CHECK(confirm_dialog(conv) != NULL, "(b) no confirmation to cancel");
+	confirm_answer(conv, FALSE);
+	CHECK(confirm_dialog(conv) == NULL, "(b) confirmation left after Cancel");
+	CHECK(count_paste_files(NULL) == files, "(b) Cancel left a file");
+	CHECK(call("send-file") == NULL, "(b) Cancel sent %s", call("send-file"));
+
+	/* ... a dropped file of another type: its icon, name and size; Send
+	 * sends it as it is */
+	path = g_build_filename(purple_user_dir(), "selftest-drop.txt", NULL);
+	CHECK(g_file_set_contents(path, "not an image\n", -1, NULL), "writing %s", path);
+	text = drop_file(conv, path);
+	g_free(text);
+	dialog = confirm_dialog(conv);
+	CHECK(dialog != NULL, "(b) no confirmation for a dropped file");
+	CHECK(call("send-file") == NULL, "(b) dropped file sent before Send: %s",
+	      call("send-file"));
+	if (dialog != NULL) {
+		CHECK(GTK_IS_IMAGE(find_named(GTK_WIDGET(dialog), "file-confirm-preview")),
+		      "(b) dropped file: no icon");
+		CHECK(strstr(confirm_label(dialog, "file-confirm-details"), "13 bytes") != NULL,
+		      "(b) dropped file details \"%s\"",
+		      confirm_label(dialog, "file-confirm-details"));
+	}
+	confirm_answer(conv, TRUE);
+	expect = g_strdup_printf(ST_BUDDY "|%s|", path);
+	CHECK(purple_strequal(call("send-file"), expect), "(b) dropped send-file: %s (expected %s)",
+	      call("send-file"), expect);
+	g_free(expect);
+	xfer = pidgin_selftest_prpl_get_last_xfer();
+	if (xfer != NULL) {
+		purple_xfer_cancel_local(xfer);
+		pidgin_selftest_prpl_forget_xfer();
+		spin(300);
+	}
+	CHECK(g_file_test(path, G_FILE_TEST_EXISTS), "(b) the dropped file was removed");
+	g_unlink(path);
+	g_free(path);
+	path = NULL;
+
+	/* ... the conversation closing drops an open confirmation */
+	{
+		PurpleConversation *other = purple_conversation_new(PURPLE_CONV_TYPE_IM, st_account,
+		                                                    "other@example.invalid");
+		GBytes *png;
+		gsize len;
+		gpointer data = make_png(12, 10, &len);
+
+		pidgin_conv_update_buttons_by_protocol(other);
+		pidgin_selftest_prpl_clear_call("send-file");
+		files = count_paste_files(NULL);
+		png = g_bytes_new_take(data, len);
+		CHECK(pidgin_conv_offer_image(PIDGIN_CONVERSATION(other), png, "pasted-close.png"),
+		      "(b) close: not taken");
+		g_bytes_unref(png);
+		dialog = confirm_dialog(other);
+		CHECK(dialog != NULL, "(b) close: no confirmation");
+		if (dialog != NULL)
+			g_object_add_weak_pointer(G_OBJECT(dialog), (gpointer *)&dialog);
+		purple_conversation_destroy(other);
+		spin(300);
+		CHECK(dialog == NULL, "(b) confirmation left after its conversation closed");
+		if (dialog != NULL) {
+			g_signal_handlers_disconnect_by_data(dialog, &dialog);
+			gtk_window_destroy(dialog);
+		}
+		if (dialog != NULL)
+			g_object_remove_weak_pointer(G_OBJECT(dialog), (gpointer *)&dialog);
+		CHECK(count_paste_files(NULL) == files, "(b) close left a file");
+		CHECK(call("send-file") == NULL, "(b) close sent %s", call("send-file"));
+	}
+	pidgin_conv_window_switch_gtkconv(gtkconv->win, gtkconv);
 
 	/* (c) neither: the text paste, and nothing else */
 	pidgin_selftest_prpl_set_caps(FALSE, FALSE);

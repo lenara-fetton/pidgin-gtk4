@@ -30,6 +30,8 @@ void pidgin_selftest_account_remove(PurpleAccount *account);
  * or of the "op" command ("cmd-op"), joined with '|', or NULL.
  */
 const char *pidgin_selftest_prpl_get_call(const char *command);
+/** Forgets the last call of @command (get_call() returns NULL again). */
+void pidgin_selftest_prpl_clear_call(const char *command);
 
 /**
  * Toggles OPT_PROTO_IM_IMAGE and file transfer (send_file,
