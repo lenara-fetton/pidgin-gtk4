@@ -80,4 +80,14 @@ void pidgin_account_init(void);
  */
 void pidgin_account_uninit(void);
 
+/**
+ * Test hook. If the environment variable PIDGIN4_ACCOUNT_SELFTEST is set
+ * (to anything), opens an Add dialog and cycles its protocol drop-down
+ * through every protocol, opens the Modify dialog of every account, and
+ * closes them all again a few seconds later without saving anything.
+ * It never saves, enables or connects an account. Does nothing (and is
+ * cheap) when the variable is unset; runs at most once per process.
+ */
+void pidgin_account_selftest(void);
+
 #endif /* _PIDGINACCOUNT_H_ */
