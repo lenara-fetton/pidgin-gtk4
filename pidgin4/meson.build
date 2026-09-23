@@ -166,6 +166,14 @@ test_singleui = executable('test-singleui',
 	install : false)
 test('singleui', test_singleui)
 
+# M3: the buddy list model (links libpurple and GTK; needs no display).
+test_blistmodel = executable('test-blistmodel',
+	'tests/test-blistmodel.c', 'pidginblistmodel.c', 'gtkeventloop.c',
+	dependencies : [glib_dep, gio_dep, gobject_dep, gtk_dep, purple_dep],
+	build_rpath : purple_libdir,
+	install : false)
+test('blistmodel', test_blistmodel)
+
 desktop_validate = find_program('desktop-file-validate', required : false)
 if desktop_validate.found()
 	test('desktop-file', desktop_validate,
