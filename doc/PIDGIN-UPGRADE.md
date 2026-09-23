@@ -173,6 +173,112 @@ Channel binding:
 - `gtkrequest.c` has to cover every field type the plugins use, including **image fields**, which Discord's QR login uses (via libqrencode), and multi-step input prompts (Steam Guard code and approve, captcha flows).
 - Menus: a shared helper converts a `PurpleMenuAction` tree into `GMenuModel` + a per-menu `GSimpleActionGroup`. It replaces `pidgin_append_menu_action` (`gtkutils.c:1770`) and is used for blist-node, protocol, plugin, and conversation extended menus.
 
+**Status: done, except the sign-in checks, which are left to the user** (see `pidgin4/TESTING.md`).
+
+**Build and run:**
+- `scripts/build-pidgin4.sh [--test] [--reconfigure] [--no-install] [--desktop-integration | --remove-desktop-integration]` does the Meson setup, compile, test and install.
+- It builds against `PURPLE_PREFIX` and installs into `PIDGIN4_PREFIX`; both default to `~/.local/pidgin4`. The binary gets a runpath to `$PURPLE_PREFIX/lib`, and the script refuses `/usr`.
+- `--desktop-integration` symlinks the installed `.desktop` file and icons into `~/.local/share`, and only then touches it.
+- Run it with `~/.local/pidgin4/bin/pidgin4 -c ~/.purple-gtk4 [-n] [-d]`.
+- Options: `-c DIR`, `-d` (stdout plus the debug window for this session), `-f`, `-l[NAME]`, `-m`/`--allow-multiple`, `-n`, `-v`. `--help` comes from GOption.
+
+**What's in `pidgin4/`:**
+- **Build files**
+  - `meson.build`: `export_dynamic`, runpath, `config.h`, `package_revision.h` via `vcs_tag`.
+  - The GResource with the app icon and the jabber/irc/gtalk/facebook protocol icons as themed icon names.
+  - `style.css`, the desktop file and the hicolor icons.
+- **`pidgin-internal.h`**: replaces libpurple's `internal.h`.
+- **`gtkmain.c`**: GtkApplication startup.
+  - It keeps Pidgin 2's core-init order.
+  - It uses `g_unix_signal_add` for SIGINT, SIGTERM and SIGHUP (save and exit 0).
+  - GApplication uniqueness: a second launch raises the running instance, and `-m` turns uniqueness off.
+  - App actions `quit` (Ctrl+Q), `accounts`, `debug` and `about`.
+  - The app holds itself, so it keeps running with no window open.
+- **`gtkeventloop.c`**: unchanged.
+- **Ported UI**
+  - **`gtkconn.c`**: auto-reconnect as before. A fatal error disables the account and shows a `GtkAlertDialog` (Close / Modify Account / Re-enable).
+  - **`gtkrequest.c`**: fully async. All field types, including image (QR code, integer-scaled to at least 256 px), account and list; file and folder via `GtkFileDialog`.
+  - **`gtknotify.c`**:
+    - messages use `GtkAlertDialog`;
+    - formatted text and user info use a selectable label, with purple HTML turned into Pango markup;
+    - search results use a `GtkColumnView`;
+    - there is a simple New Mail window;
+    - URIs open via `GtkUriLauncher`.
+  - **`gtkdebug.c`**: a `GtkTextView` with level and regex filter, pause, clear and save.
+  - **`gtkaccount.c`**:
+    - the accounts window is a `GtkColumnView` with enable toggles, status and error, an Account Actions menu and a main menu;
+    - the editor has Basic, Advanced and Proxy tabs, and its save logic follows `ok_account_prefs_cb`;
+    - the account UI ops (added, add request, authorize) are small windows.
+- **Helpers**
+  - `gtkutils.[ch]`: `PidginItem`; item, account and protocol `GtkDropDown`s; protocol `GIcon`s, with a fallback to Pidgin 2's `pixmaps/pidgin/protocols` directories for third-party prpls; dialog windows; HTML → Pango; URI opening.
+  - `pidginmenu.[ch]`: `PurpleMenuAction` and `PurplePluginAction` → `GMenu` + `GSimpleActionGroup`.
+  - `pidginsingleui.[ch]`: the `/proc` single-UI check.
+  - `gtkdialogs.c`: About.
+  - `gtkprefs.c`: the `/pidgin4` pref registration.
+- **Tests**: `meson test` runs the `pidginmenu` test (nested submenus, separators, callbacks, plugin actions), the `singleui` test (cmdline parsing) and a `desktop-file-validate` check.
+- **Headless selftests**: `PIDGIN4_REQUEST_SELFTEST=1` and `PIDGIN4_ACCOUNT_SELFTEST=1`.
+
+**Profile contract, as implemented:**
+- The UI id is `gtk-gaim`.
+- Every pidgin4 pref is under `/pidgin4`: `plugins/loaded`, `debug/*`, `accounts/dialog/*`, `filelocations/*` and `last_version`. `/pidgin/…` is never written; `/pidgin/filelocations` is only read, as a fallback.
+- Plugin search paths are `<profile>/pidgin4/plugins` (created), `<profile>/plugins`, `<prefix>/lib/pidgin4`, and libpurple's own `<purple prefix>/lib/purple-2`, with no `/usr` path. The debug log confirms this.
+- The single-UI check matches Pidgin 2 by argv[0] or exe name. It handles `-c`, `-cDIR`, `--config[=]`, clustered short options and relative paths (via `/proc/PID/cwd`), and falls back to `$HOME/.purple` from `/proc/PID/environ`. It was tested against a live Pidgin 2 on a scratch profile (exit 1) and read-only against the running one on `~/.purple` (detected).
+
+**UI ops left NULL** (libpurple checks every call site):
+- conversations (M4): messages are logged but not shown;
+- xfers, privacy and roomlist (M5);
+- sound and idle (M6): see below;
+- whiteboard and media: dropped.
+
+**Exceptions to "libpurple tolerates NULL ops":**
+- **Blist ops.** libpurple saves `blist.xml` only through the blist UI ops: `purple_blist_set_ui_ops()` fills in its own savers for NULL slots, but only when the struct is set. So `stubs.c` sets an all-NULL `PurpleBlistUiOps`. TODO(M3).
+- **Pounces.** While parsing `pounces.xml`, libpurple drops an action's `<param>`s unless the UI registered that action when the pounce was created, and then rewrites the file without them. This is a real data loss seen on the dev profile: the `execute-command` command vanished. `stubs.c` registers the pounce handler and the five actions as `gtkpounce.c` does, and runs `execute-command`. The editor and the other actions are TODO(M5).
+
+**Stubs and TODOs by milestone:**
+- **M3**
+  - the buddy list (`stubs.c` blist ops);
+  - connection-error mini-dialogs (alerts for now);
+  - the status box and connecting throbber;
+  - buddy icons in the account editor;
+  - moving the account request windows into the blist;
+  - add-buddy from the account request;
+  - `pidgin_dialogs_destroy_all`.
+- **M4**
+  - conversations;
+  - rich text in notify/request (`pidgin_html_to_pango_markup` for now; images in user info are dropped);
+  - the "html" input hint;
+  - "Send IM" from the authorize window.
+- **M5**
+  - the preferences window;
+  - the pounce UI;
+  - account DnD reordering;
+  - the GTK 2 mail dialog;
+  - xfer, privacy and roomlist;
+  - `~/.purple/pidgin4/gtk4.css`.
+- **M6**
+  - system idle (`gtkidle.c` returns no ops, so with the shared `idle_reporting=system` libpurple falls back to its own "purple" last-activity timer for auto-away and reports no idle time);
+  - sounds (`gtksound.c` returns no ops);
+  - the tray.
+
+**Verification done:**
+- **Build**: clean, with zero warnings under `-Wall -Wextra` and `GDK_VERSION_MIN_REQUIRED=4.14` (so no deprecated GTK 4 API). All 3 unit tests pass.
+- **Headless**: Xvfb, `GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`, `dbus-run-session`, `pidgin4 -c ~/.purple-gtk4 -n -d`.
+  - It starts, probes the Discord and Steam plugins from the profile, loads all 34 accounts and opens the accounts window.
+  - The account selftest opened 34 Modify editors and cycled Add through all 4 protocols.
+  - The request selftest opened every request kind. The request port was also driven with xdotool; the callbacks received the typed values, and required fields blocked OK.
+  - The debug window works.
+  - SIGTERM saves and exits 0.
+  - `prefs.xml` gains the `/pidgin4` subtree, and `<profile>/pidgin4/plugins/` is created.
+- **Wayland**: the same run under the Sway session with `GDK_BACKEND=wayland` is clean and exits 0.
+- **Profile round-trip**: `scripts/check-profile-compat.sh --pidgin4 ~/.local/pidgin4-m2/bin/pidgin4` **PASSES**. The script now always passes `-n -d` to pidgin4 and applies the Pidgin 2 log checks to it.
+- **No account was signed in.**
+
+**Known gaps:**
+- **libpurple criticals.** With the dev profile, libpurple logs about 120 of them, which pidgin4 does not cause: `purple_presence_set_status_active: assertion 'status != NULL'` for buddies of accounts whose prpl is gone, and more of the same kind at quit. `G_DEBUG=fatal-criticals` would abort on them. pidgin4 therefore uses `g_test_log_set_fatal_handler` to make criticals without a log domain (libpurple, prpls) non-fatal; GTK, GLib and `pidgin4`-domain criticals stay fatal.
+- **GtkAlertDialog** has no title or icon, so error, warning and info messages look alike.
+- **GTK 4 structured logs.** The debug window hooks the classic `g_log` handlers, as Pidgin 2 did. Messages GTK emits through structured logging probably go straight to stderr and never reach the window (not checked).
+- **Sign-in not yet run**: Discord QR login, Steam Guard prompts and real sign-in have not been run. They are the checklist in `pidgin4/TESTING.md`.
+
 ### M3: Buddy list and status
 - Rewrite `gtkblist.c` on `GtkListView` + `GtkTreeListModel` over `PurpleBlistNode` (no deprecated GtkTreeView in new code).
 - Rows are widgets with icon, name, status, and emblems, replacing `gtkcellrendererexpander.c` and the theme-driven cell drawing.

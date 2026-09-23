@@ -102,3 +102,5 @@ GTAGS
 
 # Agent worktrees
 /.claude/worktrees/
+# pidgin4 Meson build directories
+/build-pidgin4*/
