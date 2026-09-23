@@ -154,6 +154,7 @@ components_sources = files(
 	'pidginrichlabel.c',
 	'pidginnickcolor.c',
 	'pidginanimation.c',
+	'pidginconvmeta.c',
 )
 
 components_lib = static_library('pidgin4-components',
@@ -224,6 +225,7 @@ component_tests = [
 	'backfill',
 	'imageloader',
 	'nickcolor',
+	'convmeta',
 ]
 foreach name : component_tests
 	test_exe = executable('test-' + name,
