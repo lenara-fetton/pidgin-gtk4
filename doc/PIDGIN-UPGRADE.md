@@ -347,6 +347,127 @@ Then port `gtkconv.c`:
 - Typing and infopane.
 - Drag-and-drop file send.
 
+**Status (components): done (M4a).** Items 1–6 above, the message index with its backfill, the remote-image loader and the construction helpers are in `pidgin4/`, tested, and used by notify and request. `gtkconv.c` is not ported yet: that is M4b.
+
+**Build and layout:**
+- `meson.build` now needs gtksourceview-5, libspelling-1, libsoup-3.0 and sqlite3 (FTS5).
+- The reusable code (`gtkutils`, `pidginmenu` and every M4 file) is a static library, `pidgin4-components`. It is linked whole into the executable, so `export_dynamic` still exports every `pidgin_*` symbol to plugins, and it is linked into the tests.
+- `pidgin_utils_init()` starts the M4 parts: the link schemes, the smiley theme, the conversation signals and the message index.
+
+**Public API by component:**
+- **`pidginmarkup.[ch]`**
+  - Parsing:
+    - `pidgin_markup_parse_html(html, options)` returns a `PidginMarkupResult` (`text`, `attrs`, `objects`). `PidginMarkupOptions` holds the flags `NO_COLOURS`, `NO_FONTS`, `NO_SIZES`, `NO_FORMATTING`, `NO_INCOMING_FORMATTING`, `NO_SMILEYS`, `NO_LINKIFY`, `SHOW_COMMENTS`, `USE_POINTSIZE`, `WBFO`, `NO_IMAGES`, `KEEP_NEWLINES` and `STYLING` (parse the body as XEP-0393 if it is plain), plus `protocol_sml` and a custom smiley matcher.
+    - `pidgin_markup_parse_styling(text, options)` parses XEP-0393.
+    - Helpers: `pidgin_markup_is_plain()`, `_plain_from_html()`, `_html_to_plain()` and `_parse_color()`, and for sizes `_size_scale()`, `_size_to_points()` and `_points_to_size()`.
+  - Results:
+    - `pidgin_markup_result_ref()` and `_unref()`, `_has_graphics()` and `_has_object()`.
+    - `_to_pango_markup(result, revealed_spoilers)` makes GtkLabel markup: `<a href>` for links, and hidden spoilers become `pidgin-spoiler:N` links.
+    - Object types: `IMAGE` (imgstore id), `REMOTE_IMAGE`, `SMILEY` (id 1 marks a custom smiley), `HR`, `LINK`, `SPOILER`, `QUOTE` (id is the depth) and `CODE_BLOCK`. Every object's range holds a text fallback, so `text` is always usable as plain text.
+  - Compose buffer:
+    - `pidgin_markup_buffer_ensure_tags()`, `_get_size_tag()`, `_get_face_tag()`, `_get_fore_tag()`, `_get_back_tag()`, `_create_link_tag()` and `_remove_family()`.
+    - `_insert_html(buffer, iter, html, caps, flags, insert_object_cb, data)` loads HTML into the buffer.
+    - `_to_html(buffer, start, end, flags)` gives `gtk_imhtml_get_markup()`'s output, with `USE_POINTSIZE` and `WBFO`. `_to_styling(buffer, start, end)` gives XEP-0393.
+    - Anchors carry their HTML as object data under `PIDGIN_MARKUP_HTML_KEY`.
+  - Capabilities: `PidginFormatCaps`, `pidgin_format_caps_from_features(PurpleConnectionFlags)` and `pidgin_format_caps_for_account(account)`. XMPP gets `PIDGIN_FORMAT_STYLING_ALL`: bold, italic, strike, code and smileys, serialized as 0393.
+  - Link schemes: `pidgin_markup_register_scheme(scheme, activate_cb, menu_cb, data)`, `_uri_is_known()`, `_activate_uri()` and `_populate_link_menu()`. The built-in schemes are http, https, ftp, mailto, xmpp, irc and ircs, all opened through `pidgin_open_uri()`.
+- **`pidginsmileytheme.[ch]`**
+  - Themes: `pidgin_smiley_themes_init()`, `_get_names()`, `pidgin_smiley_theme_get_current()` and `_set_current()`, `_load_file()`, `_get_smileys(sml)`, `_match()` and `_lookup()`. The current theme comes from the shared `/pidgin/smileys/theme` pref, read only.
+  - Smileys: `pidgin_smiley_get_shortcut()`, `_get_file()`, `_is_hidden()` and `_get_paintable()` (the paintable is shared).
+  - Custom smileys: `pidgin_custom_smiley_match()`, `_get_paintable()` and `_match_func()`.
+- **`pidginanimation.[ch]`**: `pidgin_paintable_new_from_data()`, `_from_file()` and `_from_imgstore()` (a `PidginAnimation` or a `GdkTexture`), `pidgin_texture_new_from_pixbuf()` and `pidgin_animation_set_playing()`.
+- **`pidginnickcolor.[ch]`**: `pidgin_nick_color_get(scheme, name, bg, &color)` with the schemes `PIDGIN` and `XEP0392`, plus `pidgin_nick_colors_generate()`, `pidgin_nick_color_xep0392_hue()`, `pidgin_hsluv_to_rgb()` and `pidgin_color_is_visible()`.
+- **`pidginmessage.[ch]`** (`PidginMessage`; every property notifies):
+  - Creation: `pidgin_message_new(sender, alias, html, flags, time)`, `_new_marker()`, and `_apply_meta(meta)`, which takes the `receiving-message-meta` table.
+  - Body: `_set_parse_options()`, `_get_markup()` (parsed on first use) and `_get_plain_text()`.
+  - Ids: getters and setters for the stanza, origin, server and occupant ids, and `_has_id()`.
+  - Corrections and replies: `_get/_set_correction_of()`, `_apply_correction(new_html, new_id)`, `_get_edited()` and `_get_history()`; `_set_reply(id, sender, preview)` and its getters.
+  - State: `_get/_set_receipt()` (it only moves forward) and `pidgin_receipt_state_from_string()`.
+  - Reactions: `_add_reaction()`, `_remove_reaction()`, `_has_reaction()`, `_get_reactions()` (emoji → GList of senders), `_get_reaction_emojis()` and the "reactions-changed" signal.
+  - Also `_get/_set_retracted()` and `_get/_set_index_id()`.
+- **`pidginmessageview.[ch]`** (`PidginMessageView`)
+  - Messages: `pidgin_message_view_new()`, `_append()`, `_prepend()`, `_prepend_many()`, `_clear()`, `_get_model()`, `_find_by_id()` and `_get_last_sent()`.
+  - Scrolling: `_scroll_to_message()`, `_scroll_to_bottom()` and `_is_at_bottom()`.
+  - Marker: `_set_marker()` and `_remove_marker()`.
+  - Find: `_get_search_bar()`, `_set_search_mode()`, `_set_search_text()` and `_get_n_visible()`.
+  - Settings: `_set_scrollback()` (the default is the shared `/pidgin/conversations/scrollback_lines`), `_set_conversation()`, `_set_is_chat()`, `_set_nick_color_scheme()` and `_set_self_id()`.
+  - Signals: "reaction-toggled" (msg, emoji, add), "reply-requested", "edit-requested", "retract-requested", and "populate-menu" (msg, GMenu section), the context-menu hook for plugins.
+  - Conversation UI signals, with Pidgin 2's signatures, on `pidgin_message_view_get_conv_handle()`: `conversation-timestamp`, `displaying-im-msg`, `displayed-im-msg`, `displaying-chat-msg` and `displayed-chat-msg`. Helpers: `pidgin_message_view_format_timestamp()`, `_emit_displaying()`, `_emit_displayed()` and `_signals_init()`/`_signals_uninit()`.
+- **`pidgincomposeentry.[ch]`** (`PidginComposeEntry`, a GtkSourceView)
+  - Setup: `pidgin_compose_entry_new()`, `_setup(features)` (which applies the default-formatting prefs), `_set_caps()`, `_get_caps()`, `_set_markup_flags()` (`USE_POINTSIZE`), `_set_smiley_category()`, `_set_return_inserts_newline()` and `_set/_get_spellcheck()`.
+  - Content: `_get_markup()`, `_get_text()`, `_set_markup()`, `_clear()`, `_is_empty()`, `_send()`, `_insert_smiley()`, `_insert_image(imgstore_id)` and `_insert_link()`.
+  - Formatting: `_toggle_bold()`, `_toggle_italic()`, `_toggle_underline()`, `_toggle_strike()` and `_toggle_code()`; `_grow_font()` and `_shrink_font()`; `_set_font_face()`, `_set_forecolor()` and `_set_backcolor()`; `_clear_formatting()`, `_get_format()` and `_get_font_size()`.
+  - History: `_history_up()`, `_history_down()` and `_get_history()`.
+  - Signals: "message-send" (markup) → gboolean handled, "typing-changed" (PurpleTypingState), "edit-last-requested" and "format-changed".
+- **`pidginformattoolbar.[ch]`**: `pidgin_format_toolbar_new(entry)`, `_set_entry()`, `_get_entry()`, `_update()` and `_get_smiley_grid()`.
+- **`pidginrichlabel.[ch]`**: `pidgin_rich_label_new()`, `_set_html()`, `_set_result()`, `_set_text()`, `_get_text()`, `_set_highlight()`, `_set_force_text_view()`, `_set_extra_menu()`, `_set_max_image_size()`, `_is_text_view()`, `_get_inner()`, `_get_image(x, y, &id)` and `_get_link_at(x, y)`.
+- **`pidginmessageindex.[ch]`** (`<profile>/pidgin4/messages.db`)
+  - Setup: `pidgin_message_index_open()`, `_get_default()` and `_ui_init()`/`_ui_uninit()`. `_ui_init()` registers the prefs, answers `jabber-kv-load`/`jabber-kv-store`, and starts the backfill on the first sign-on.
+  - Keys: `_account_key(account)` and `_conv_key(account, name)`, which match the log directory layout.
+  - Messages: `_insert()`, `_set_ids()`, `_get()`, `_delete()`, `_find_by_id(account, conv, id)`, `_find_fuzzy(account, conv, time, sender, plain)`, `_search(query, account, conv, limit)`, `_get_recent()` and `_count()`.
+  - Reactions and receipts: `_add_reaction()`, `_remove_reaction()`, `_get_reactions()`, `_set_receipt()` and `_get_receipt()`.
+  - Key/value store: `_kv_get()` and `_kv_set()`.
+  - Log positions: `_mark_log_position()`, plus the file-cursor calls the backfill uses.
+  - `PidginIndexedMessage` is the boxed row type.
+- **`pidginbackfill.[ch]`**
+  - `pidgin_backfill_new(idx, logs_dir)`, `_get_default()`, `_start()`, `_pause()`, `_resume()`, `_cancel()`, `_is_running()` and `_run_sync()`.
+  - Signals: "progress" (files_done, files_total, bytes_done, bytes_total) and "finished" (completed).
+  - Line parsers: `_parse_html_line()`, `_parse_txt_line()` and `_parse_file_name()`.
+- **`pidginimageloader.[ch]`**: `pidgin_image_loader_get_default()`, `_new(cache_dir)`, `_allow_host()`, `_is_allowed()`, `_load_async()` and `_load_finish()` (which gives a `GdkTexture`, or the errors `NOT_ALLOWED`, `TOO_LARGE`, `HTTP`, `DECODE` or `DECRYPT`), `_lookup_cached()`, `_set_max_image_size()`, `_set_cache_limit()` and `_trim_cache()`.
+- **`gtkutils`**: `pidgin_create_message_view()` and `pidgin_create_compose_entry(features, with_toolbar, &entry, &toolbar)`.
+
+**What M4b has to do to port `gtkconv.c`:**
+- **Signal handle.** `pidgin_conversations_get_handle()` must return `pidgin_message_view_get_conv_handle()`. The conversation-timestamp and displaying/displayed signals are registered there already, so M4b registers its other conversation signals on the same handle.
+- **Replacing the IMHtml widgets.** Use `pidgin_create_message_view()` and `pidgin_create_compose_entry(features, TRUE, &entry, &toolbar)`, then:
+  - call `pidgin_message_view_set_conversation()` on the view;
+  - on the entry, call `set_markup_flags(USE_POINTSIZE)` for `OPT_PROTO_USE_POINTSIZE` prpls, and `set_caps(pidgin_format_caps_for_account())` whenever the connection flags change;
+  - on the view, call `set_self_id()`, and `set_nick_color_scheme(XEP0392)` for XMPP.
+- **`pidgin_conv_write_conv()`** (`gtkconv.c:5803`):
+  - Linkify unless `NO_LINKIFY`, then call `pidgin_message_view_emit_displaying()`.
+  - Build a `PidginMessage` with parse options:
+    - `NO_INCOMING_FORMATTING` when `show_incoming_formatting` is off;
+    - `STYLING` for XMPP;
+    - `protocol_sml` set to the prpl name;
+    - a custom smiley matcher for the conversation's custom smileys, which libpurple feeds through the `custom_smiley_*` conversation ops.
+  - Call `pidgin_message_apply_meta()` with the pending `receiving-message-meta` table, then `pidgin_message_view_append()`, then `_emit_displayed()`.
+  - Index the message: `pidgin_message_index_insert()` and `mark_log_position()`.
+- **Message-event signals.** Handle `message-corrected`, `-reaction`, `-receipt` and `-retracted` with `find_by_id` on the view, falling back to the index, and the matching `PidginMessage` setters. Write the text fallback line to the log (contract rule 7).
+- **The entry.** Connect "message-send" to the send path and return TRUE. Connect "typing-changed" to `purple_conv_im_set_typing_state()`/`serv_send_typing()`. Connect "edit-last-requested" to `pidgin_message_view_get_last_sent()` + `set_markup()`, with the next send going out as a correction.
+- **View actions.** Wire "reaction-toggled", "reply-requested" and "retract-requested" to the M8 IPC (`send-reaction` and friends). Add `"message-meta" = "1"` to the UI info only once those handlers exist.
+- **Menus and plugins.** Bind Find (Ctrl+F) to `pidgin_message_view_set_search_mode()`. Markerline uses `set_marker()` when the window loses focus. History and MAM scroll-back use `prepend_many()`. The timestamp_format context menu uses "populate-menu".
+
+**Verification:**
+- **Build and unit tests.** `scripts/build-pidgin4.sh --test` passes all 9 tests: pidginmenu, singleui, desktop-file, pidginmarkup, nickcolor, imageloader, messageindex, backfill and msgview-selftest. The build has 0 warnings.
+  - msgview-selftest runs only when `PIDGIN4_TEST_DISPLAY` names an Xvfb display; otherwise it is skipped.
+- **The selftest.** `msgview-demo` with `PIDGIN4_MSGVIEW_SELFTEST=1` appends 5000 messages in about 2.7 s, using about 30 MB more RSS. It also checks find (1250 of 5000 shown), prepend while scrolled (the view stays put), scrollback trim, the marker, compose to HTML and to 0393, and the send history. It passes on Xvfb and under Sway (Wayland) with `G_DEBUG=fatal-criticals` and `GTK_A11Y=none`.
+- **The demo.** Showing the samples plus a real dev-profile log produced no criticals.
+- **The backfill scale run.** Over about 130 MB of dev-profile logs it processed 12k files and 1.04M rows in 12 s unthrottled (55 s at the default throttle), with a peak RSS of 23 MB. The database came to 253 MB, and an incremental rerun took 0.15 s.
+- **Profile round-trip.** `scripts/check-profile-compat.sh --pidgin4 ~/.local/pidgin4-m4a/bin/pidgin4` passes. The allowed changes are the new `/pidgin4/index` prefs and `pidgin4/messages.db`.
+  - It passes only with the three `/plugins/core/omemo` prefs allowed. Those come from the `omemo.so` that the concurrent M8 OMEMO work installed into the shared libpurple prefix, not from M4.
+- **Sign-in.** No account was signed in; the backfill therefore never ran in pidgin4 itself.
+
+**Gaps and notes:**
+- **Deprecated gdk-pixbuf.** `GdkPixbufAnimation` has been deprecated since gdk-pixbuf 2.44 and has no GTK 4 replacement without GStreamer. `pidginanimation.c` confines its use and silences the warnings.
+- **Link menus.** In label mode, links get GtkLabel's own link menu items; the scheme registry's context-menu callbacks only apply in the text view.
+- **Formatting limits:**
+  - An HR in label mode is a line of box-drawing characters.
+  - XEP-0393 quotes are indented only in text-view mode.
+  - `<sub>`/`<sup>` in the text view approximate the baseline shift with rise.
+- **XEP-0393 output.** Overlapping bold/italic ranges are split to nest, and formatting in the middle of a word is written as-is (receivers won't style it).
+- **Smiley matching** is longest-prefix at any position, as in GtkIMHtml, so a smiley can match inside a word.
+- **The compose entry:**
+  - Undo does not cover tag-only changes (GtkTextBuffer history).
+  - The Enter handling runs before the input method; composing with an IME that uses Enter is untested.
+- **The index and backfill:**
+  - Only numeric timestamp formats are recognised.
+  - Text logs don't record direction.
+  - A file that changes but keeps its size is not reindexed.
+  - The database is roughly 2× the size of the logs, so the full 1.5 GB of non-system logs will give about 3 GB. Consider an opt-in to leave out old years.
+- **The image loader:**
+  - It uses the system proxy (GProxyResolver), not libpurple's per-account proxy.
+  - The successful aesgcm decrypt path is untested until the OMEMO plugin provides the IPC below.
+- **Not covered by tests:** the context-menu actions (save image, emoji chooser) and the toolbar dialogs (font, colour, file) were built but only exercised in the demo, not by the selftest.
+
 ### M5: Remaining windows
 Prefs, pounces, saved statuses, log viewer, privacy, room list, certificate manager, file transfers, smiley manager, plugins dialog, about/build info, join chat.
 - Lists become `GtkListView`/`GtkColumnView`.
@@ -414,6 +535,11 @@ Features in `libpurple/protocols/jabber/`:
   - It needs **libomemo-c** (the maintained fork of libsignal-protocol-c used by Dino); 0.5.1 is installed. Crypto uses libgcrypt.
   - It includes device list PEP, bundles, trust-on-first-use, and a fingerprint trust UI in pidgin4 (conversation info + a lock indicator).
   - Encrypted media (aesgcm) download is decrypted too.
+  - The IPC contract `pidgin4/pidginimageloader.c` calls (M4):
+    - The plugin id is `core-omemo`, and the command is `"omemo-decrypt-url"`.
+    - Its signature is `gboolean (const char *aesgcm_url, GByteArray *data)`, marshalled with `purple_marshal_BOOLEAN__POINTER_POINTER` and registered with two `PURPLE_TYPE_POINTER` parameters.
+    - `data` is the downloaded ciphertext followed by the 16-byte GCM tag. The plugin decrypts it in place with the IV and key from the URL fragment, resizes it to the plaintext and returns TRUE.
+    - It is called on the main thread. Decrypted images are cached in memory only, never on disk.
 - **Low-cost extras:**
   - direct TLS via `_xmpps-client` SRV (XEP-0368);
   - bookmarks with autojoin (XEP-0402, 0048 fallback);
