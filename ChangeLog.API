@@ -1,5 +1,20 @@
 Pidgin and Finch: The Pimpin' Penguin IM Clients That're Good for the Soul
 
+version 2.14.14-gtk4 (additive):
+	libpurple:
+		Added:
+		* purple_ssl_get_channel_binding(gsc, type, &len): returns TLS
+		  channel binding data for an established connection (newly
+		  allocated, g_free() it), or NULL if the backend or the
+		  negotiated protocol does not support the type. ssl-nss
+		  implements "tls-exporter" (RFC 9266, TLS 1.3 only) and
+		  "tls-server-end-point" (RFC 5929); "tls-unique" is not
+		  available. Intended for SCRAM-SHA-*-PLUS.
+		* PurpleSslOps.get_channel_binding: the backend hook for the
+		  above. It takes the former _purple_reserved2 padding slot, so
+		  the struct's size and layout are unchanged; backends built
+		  against the old header leave it NULL ("not supported").
+
 version 2.14.10:
 	* no changes
 

@@ -135,7 +135,25 @@ typedef struct
 	 */
 	GList * (* get_peer_certificates)(PurpleSslConnection * gsc);
 
-	void (*_purple_reserved2)(void);
+	/** Obtains TLS channel binding data (RFC 5929, RFC 9266) for an
+	 *  established connection.
+	 *
+	 *  This member occupies what was the @c _purple_reserved2 padding slot
+	 *  in 2.14.x, so the size and layout of the struct are unchanged. SSL
+	 *  backends built against an older header leave it @c NULL, which
+	 *  purple_ssl_get_channel_binding() treats as "not supported".
+	 *
+	 * @param gsc   Connection context (the handshake must be complete)
+	 * @param type  The channel binding type, e.g. @c "tls-exporter"
+	 * @param len   Return location for the length of the returned data
+	 * @return      A newly allocated buffer, or @c NULL if @a type is not
+	 *              supported for this connection.
+	 * @see purple_ssl_get_channel_binding
+	 * @since 2.14.14-gtk4
+	 */
+	guchar * (* get_channel_binding)(PurpleSslConnection *gsc,
+	                                 const char *type, gsize *len);
+
 	void (*_purple_reserved3)(void);
 	void (*_purple_reserved4)(void);
 } PurpleSslOps;
@@ -302,6 +320,39 @@ size_t purple_ssl_write(PurpleSslConnection *gsc, const void *buffer, size_t len
  * @since 2.2.0
  */
 GList * purple_ssl_get_peer_certificates(PurpleSslConnection *gsc);
+
+/**
+ * Obtains TLS channel binding data for an established connection, for use
+ * with channel-binding SASL mechanisms such as SCRAM-SHA-*-PLUS.
+ *
+ * Supported types depend on the SSL backend. ssl-nss supports:
+ * - @c "tls-exporter" (RFC 9266): 32 bytes of keying material exported
+ *   with the label @c "EXPORTER-Channel-Binding" and no context. This is
+ *   the only type defined for TLS 1.3.
+ *   ssl-nss returns it for TLS 1.3 only: NSS cannot export with the
+ *   zero-length context RFC 9266 requires under TLS 1.2, where SCRAM keeps
+ *   using tls-unique anyway (RFC 9266 section 3).
+ * - @c "tls-server-end-point" (RFC 5929): a hash of the server's DER
+ *   certificate, using the certificate's signature hash algorithm (MD5 and
+ *   SHA-1 are replaced by SHA-256). Certificates signed with algorithms that
+ *   have no single hash (RSA-PSS, EdDSA) return @c NULL.
+ *
+ * @c "tls-unique" is not available from ssl-nss (NSS has no public API for
+ * the Finished message) and is undefined for TLS 1.3.
+ *
+ * @param gsc   The SSL connection handle. The handshake must be complete,
+ *              i.e. this is valid from the connect callback onwards.
+ * @param type  The channel binding type name.
+ * @param len   Return location for the length of the returned data.
+ *
+ * @return A newly allocated buffer (free with g_free()) holding the channel
+ *         binding data, or @c NULL if the backend or the negotiated
+ *         protocol does not support @a type.
+ *
+ * @since 2.14.14-gtk4
+ */
+guchar *purple_ssl_get_channel_binding(PurpleSslConnection *gsc,
+                                       const char *type, gsize *len);
 
 /*@}*/
 
