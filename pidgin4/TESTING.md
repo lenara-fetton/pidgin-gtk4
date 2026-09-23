@@ -1,4 +1,4 @@
-# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status)
+# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status, M6 desktop integration)
 
 The automated checks (unit tests, the headless selftests and
 `scripts/check-profile-compat.sh`) never sign an account in. The checks
@@ -41,10 +41,12 @@ $P -c ~/.purple-gtk4 -l 'user@host' -d   # enable/sign in only this account
 $P -c ~/.purple-gtk4 -n                  # no sign-in at all
 ```
 
-The buddy list is the main window (M3). Closing it quits pidgin4 (saving
-everything) unless `/pidgin4/blist/close_hides` is set in `prefs.xml`,
-until the tray arrives in M6. Quit also with Ctrl+Q, Buddies → Quit, or
-`kill -TERM`. Starting pidgin4 again raises the buddy list. The accounts
+The buddy list is the main window (M3). While the tray icon is shown (M6:
+a StatusNotifierWatcher such as Waybar's tray accepted it), closing the
+list hides it into the tray; without a tray, closing it quits pidgin4
+(saving everything) unless `/pidgin4/blist/close_hides` is set in
+`prefs.xml`. Quit also with Ctrl+Q, Buddies → Quit, the tray menu's Quit,
+or `kill -TERM`. Starting pidgin4 again raises the buddy list. The accounts
 window (Accounts → Manage Accounts) opens by itself only when no account
 is enabled.
 
@@ -230,6 +232,92 @@ for you. Sign in as above (quit Pidgin 2 first, or use `-l NAME`).
       sent with a file transfer (the transfer window is M5; watch the
       debug window).
 
+## M6: desktop integration
+
+Install with `scripts/build-pidgin4.sh --desktop-integration` once: it
+links the `.desktop` file (with `X-GNOME-UsesNotifications=true` and
+`StartupNotify=true`) and the icons, including the tray's
+`com.minowick.Pidgin4-<status>` icons, into `~/.local/share`. The tray also
+works without it (the item sends its icons as pixmaps and names the
+prefix's `share/icons` as its `IconThemePath`), but GNOME's notifications
+need the `.desktop` file.
+
+### Sway (Waybar)
+- [ ] **Workspace rule.** Pidgin 2 is `class="Pidgin"` (XWayland);
+      pidgin4 is native Wayland with `app_id` `com.minowick.Pidgin4`. To
+      keep it on the chat workspace, add next to the existing
+      `assign [class="Pidgin"] 2:chat` in `~/.config/sway/config`:
+      ```
+      assign [app_id="com.minowick.Pidgin4"] 2:chat
+      ```
+      and `swaymsg reload`.
+- [ ] **Tray.** The Pidgin icon appears in Waybar's tray (the `tray`
+      module must be in the bar). `busctl --user call
+      org.kde.StatusNotifierWatcher /StatusNotifierWatcher
+      org.freedesktop.DBus.Properties Get ss org.kde.StatusNotifierWatcher
+      RegisteredStatusNotifierItems` lists `org.kde.StatusNotifierItem-<pid>-1`.
+      The icon follows the status (available, away, busy, extended away,
+      invisible, offline, connecting).
+- [ ] **Left click** toggles the buddy list (hidden ↔ shown and focused);
+      with unread messages it presents the next conversation instead.
+- [ ] **Right click** shows the menu: Show Buddy List (check), Unread
+      Messages (one entry per conversation, presents it), New Message,
+      Join Chat (both disabled while offline), Change Status (Available …
+      Offline as radio items with status icons, the popular saved statuses,
+      New…/Saved… which log TODO(M5) until the status editor exists),
+      Accounts, Plugins, Preferences, File Transfers (M5 windows), Mute
+      Sounds (check, the same pref as Buddies → Mute Sounds), plugin
+      actions, Quit. Each item does what it says.
+- [ ] **Unread messages** (needs M4b conversations): an IM arriving in an
+      unfocused conversation turns the icon into the "pending" icon (Waybar
+      shows the attention icon for NeedsAttention), the tooltip lists "N
+      unread messages from X" and the title says "Pidgin (N unread
+      messages)". Reading the conversation clears it.
+- [ ] **Closing the buddy list** hides it into the tray; quitting while it
+      is hidden and starting again keeps it hidden (in the tray).
+      `killall waybar` (restart it afterwards): the list is shown again at
+      once, and the icon comes back when Waybar is back.
+- [ ] **Idle.** Set Preferences → Status/Idle "Change status when idle"
+      after 1 minute (or `/purple/away/mins_before_away` = 1 with
+      `idle_reporting` = `system`), don't touch the keyboard or mouse:
+      after about a minute the status goes to Away (idle), and back on
+      the first input. With `-d` the log shows `idle: ext-idle-notify:
+      idled` / `resumed`. `swayidle` keeps working alongside.
+- [ ] **Sounds.** Receiving an IM plays the receive sound (unless Mute
+      Sounds is on, or the conversation has the focus and
+      `/pidgin/sound/conv_focus` is off). Custom files from Pidgin 2's
+      sound prefs are used. `/pidgin4/sound/method` = `command` with
+      `/pidgin4/sound/command` = `paplay %s` plays through that command.
+- [ ] **Notifications.** An IM in an unfocused conversation shows a
+      notification (mako) with the sender, the text and the buddy icon;
+      clicking it presents the conversation. Several messages within 10 s
+      give one notification ("N new messages"). It disappears when you
+      read the conversation. `/pidgin4/notifications/new_message` = false
+      turns them off.
+- [ ] **Attention.** With the buddy list on another workspace, presenting
+      it from the tray or a notification: Sway follows its
+      `focus_on_window_activation` setting (default `urgent`: the
+      workspace is marked urgent in Waybar instead of switching).
+
+### GNOME 49
+- [ ] **Tray.** GNOME has no tray of its own. Without the
+      "AppIndicator and KStatusNotifierItem Support" Shell extension there
+      is no StatusNotifierWatcher: no icon, and closing the buddy list
+      quits pidgin4 (as intended). With the extension enabled, the icon,
+      its menu and left click behave as under Sway (the extension shows
+      NeedsAttention by its own style, not always with the attention
+      icon).
+- [ ] **Idle.** Mutter does not offer ext-idle-notify to applications;
+      the log says `idle method: system, org.gnome.Mutter.IdleMonitor
+      (polled every 10 s)`. Auto-away after the configured minutes and
+      back on input (within 10 s).
+- [ ] **Notifications** go to GNOME Shell (org.gtk.Notifications) and
+      need the installed `com.minowick.Pidgin4.desktop` (desktop
+      integration). Clicking one presents the conversation; they appear
+      under "Pidgin 4" in Settings → Notifications. Run without `-m` so
+      GNOME can activate the running instance.
+- [ ] **Sounds** play through GSound (PipeWire/PulseAudio) as under Sway.
+
 ## Developer aids
 
 For headless test runs only:
@@ -246,6 +334,22 @@ For headless test runs only:
   status box and checks the current saved status, then quits. It only
   runs when **no account is enabled** (otherwise it logs "skipped"), so
   use it on a scratch profile whose accounts are all disabled.
+
+- `PIDGIN4_DOCKLET_SELFTEST=<seconds>` adds a stand-in conversation with
+  3 unread messages that only the tray sees (pending icon,
+  NeedsAttention, tooltip, Unread Messages menu) and clears it after
+  the given time. With `PIDGIN4_DOCKLET_CLOSE_BLIST=1` it then closes the
+  buddy list: hidden into the tray when there is one, else pidgin4 quits.
+- `build-pidgin4/fake-sni-watcher` is a minimal
+  org.kde.StatusNotifierWatcher: start it inside `dbus-run-session`
+  before pidgin4 to get a tray headless (it prints registrations).
+- `PIDGIN4_IDLE_TIMEOUT=<seconds>` shortens the ext-idle-notify threshold
+  (default 60); `PIDGIN4_IDLE_DEBUG=1` logs a sync round trip through the
+  idle event queue every 5 s.
+- `PIDGIN4_SOUND_SELFTEST=1` plays the default receive sound at startup
+  (even when muted; you will hear it).
+- `PIDGIN4_NOTIFY_SELFTEST=1` sends one test notification and withdraws
+  it after 5 s.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
 for the Xvfb setup (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`,

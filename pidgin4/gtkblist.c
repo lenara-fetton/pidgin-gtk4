@@ -64,6 +64,7 @@
 #include "gtkblist.h"
 #include "gtkdebug.h"
 #include "gtkdialogs.h"
+#include "gtkdocklet.h"
 #include "gtkstatusbox.h"
 #include "gtkutils.h"
 #include "pidginblistmodel.h"
@@ -4497,16 +4498,23 @@ window_close_request_cb(GtkWindow *window, gpointer data)
 {
 	save_window_size();
 
-	/* Until the tray exists (TODO(M6)) closing the buddy list quits,
-	 * unless /pidgin4/blist/close_hides is set. */
-	if (purple_prefs_get_bool(BLIST4_PREFS "/close_hides")) {
+	/* With a tray icon (M6: a StatusNotifierWatcher accepted it) closing
+	 * the buddy list hides it into the tray, as in Pidgin 2; without one it
+	 * quits, unless /pidgin4/blist/close_hides is set. */
+	if (purple_prefs_get_bool(BLIST4_PREFS "/close_hides") ||
+	    pidgin_docklet_is_embedded()) {
 		purple_signal_emit(pidgin_blist_get_handle(), "gtkblist-hiding", purple_get_blist());
 		gtk_widget_set_visible(GTK_WIDGET(window), FALSE);
 		purple_prefs_set_bool(BLIST4_PREFS "/list_visible", FALSE);
 		return TRUE;
 	}
 
-	pidgin_application_quit();
+	/* Quit from an idle, not inside the close-request emission: GTK holds
+	 * a reference on the window until the emission ends, so the window
+	 * (and the status box's destroy handler, which disconnects libpurple
+	 * signals) would otherwise be finalized after libpurple has shut
+	 * down. */
+	g_idle_add_once((GSourceOnceFunc)pidgin_application_quit, NULL);
 	return TRUE;
 }
 
@@ -4689,10 +4697,13 @@ pidgin_blist_show(PurpleBuddyList *list)
 
 	show_initial_account_errors();
 
-	/* The buddy list is the main window (always shown at startup; the
-	 * tray that could keep it hidden is TODO(M6)). */
-	gtk_window_present(GTK_WINDOW(gtkblist->window));
-	purple_prefs_set_bool(BLIST4_PREFS "/list_visible", TRUE);
+	/* The buddy list is the main window, shown at startup unless it was
+	 * hidden in the tray at the last quit and a tray host is running (M6,
+	 * gtkdocklet.c shows it if the tray icon does not appear). */
+	if (!pidgin_docklet_start_hidden()) {
+		gtk_window_present(GTK_WINDOW(gtkblist->window));
+		purple_prefs_set_bool(BLIST4_PREFS "/list_visible", TRUE);
+	}
 
 	purple_signal_emit(pidgin_blist_get_handle(), "gtkblist-created", list);
 
@@ -4774,9 +4785,13 @@ pidgin_blist_set_visible(PurpleBuddyList *list, gboolean show)
 		if (!gtk_widget_get_visible(gtkblist->window))
 			purple_signal_emit(pidgin_blist_get_handle(), "gtkblist-unhiding", list);
 		gtk_window_present(GTK_WINDOW(gtkblist->window));
-	} else if (purple_prefs_get_bool(BLIST4_PREFS "/close_hides")) {
+		purple_prefs_set_bool(BLIST4_PREFS "/list_visible", TRUE);
+	} else if (purple_prefs_get_bool(BLIST4_PREFS "/close_hides") ||
+	           pidgin_docklet_is_embedded()) {
+		/* M6: hidden into the tray. */
 		purple_signal_emit(pidgin_blist_get_handle(), "gtkblist-hiding", list);
 		gtk_widget_set_visible(gtkblist->window, FALSE);
+		purple_prefs_set_bool(BLIST4_PREFS "/list_visible", FALSE);
 	} else {
 		gtk_window_minimize(GTK_WINDOW(gtkblist->window));
 	}

@@ -54,6 +54,8 @@
 #include "gtkconn.h"
 #include "gtkdebug.h"
 #include "gtkdialogs.h"
+#include "gtkdocklet.h"
+#include "pidginnotify.h"
 #include "gtkeventloop.h"
 #include "gtkidle.h"
 #include "gtknotify.h"
@@ -154,7 +156,8 @@ pidgin_ui_init(void)
 	 *     still logged, and received IMs/chats are not shown;
 	 *   xfers, privacy, roomlist (TODO(M5)): transfers are neither offered
 	 *     nor shown, privacy and room list windows do not exist;
-	 *   sound, idle (TODO(M6)): see gtksound.c and gtkidle.c;
+	 *   (sound and idle are set since M6: gtksound.c, gtkidle.c; idle
+	 *   ops are NULL when no system idle source exists);
 	 *   whiteboard, media: dropped (no voice/video, no Doodle).
 	 * The blist ops (gtkblist.c) leave save_node/remove_node/
 	 * save_account NULL: libpurple then uses its own savers, which is
@@ -170,6 +173,8 @@ pidgin_ui_init(void)
 
 	pidgin_account_init();
 	pidgin_blist_init();
+	pidgin_docklet_init();   /* M6: after the blist (its prefs and signals) */
+	pidgin_notification_init();
 	pidgin_connection_init();
 	pidgin_pounces_init();
 	pidgin_utils_init();
@@ -183,6 +188,9 @@ pidgin_quit(void)
 	pidgin_utils_uninit();
 	pidgin_notify_uninit();
 	pidgin_connection_uninit();
+	pidgin_notification_uninit();
+	pidgin_docklet_uninit();
+	pidgin_idle_uninit();
 	pidgin_blist_uninit();
 	pidgin_account_uninit();
 	pidgin_debug_uninit();
@@ -489,6 +497,10 @@ startup_cb(GApplication *app, gpointer data)
 	 * accounts window opens (gtkaccount.c). */
 	if (g_getenv("PIDGIN4_REQUEST_SELFTEST") != NULL)
 		pidgin_request_selftest();
+
+	/* M6 developer aids (no-ops unless their variable is set). */
+	pidgin_docklet_selftest();
+	pidgin_notification_selftest();
 
 	if (opts.login) {
 		/* disable all accounts */
