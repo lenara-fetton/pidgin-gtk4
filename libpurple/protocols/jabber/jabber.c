@@ -71,6 +71,8 @@
 #include "pep.h"
 #include "adhoccommands.h"
 #include "stream_management.h"
+#include "sasl2.h"
+#include "csi.h"
 
 #include "jingle/jingle.h"
 #include "jingle/rtp.h"
@@ -90,6 +92,11 @@ static gint plugin_ref = 0;
 
 static void jabber_unregister_account_cb(JabberStream *js);
 static void try_srv_connect(JabberStream *js);
+static void jabber_connect_targets_free(JabberStream *js);
+static void jabber_ssl_connect_failure(PurpleSslConnection *gsc,
+                                       PurpleSslErrorType error, gpointer data);
+static void jabber_login_callback_ssl(gpointer data, PurpleSslConnection *gsc,
+                                      PurpleInputCondition cond);
 
 static void jabber_stream_init(JabberStream *js)
 {
@@ -100,11 +107,25 @@ static void jabber_stream_init(JabberStream *js)
 		js->stream_id = NULL;
 	}
 
-	open_stream = g_strdup_printf("<stream:stream to='%s' "
-				          "xmlns='" NS_XMPP_CLIENT "' "
-						  "xmlns:stream='" NS_XMPP_STREAMS "' "
-						  "version='1.0'>",
-						  js->user->domain);
+	if (js->gsc) {
+		/* RFC 6120 4.7.1: once the stream is encrypted, say who we are.
+		 * XEP-0484 servers only offer FAST when they know the user. */
+		gchar *bare = jabber_id_get_bare_jid(js->user);
+		gchar *from = g_markup_escape_text(bare, -1);
+		open_stream = g_strdup_printf("<stream:stream to='%s' from='%s' "
+					          "xmlns='" NS_XMPP_CLIENT "' "
+							  "xmlns:stream='" NS_XMPP_STREAMS "' "
+							  "version='1.0'>",
+							  js->user->domain, from);
+		g_free(from);
+		g_free(bare);
+	} else {
+		open_stream = g_strdup_printf("<stream:stream to='%s' "
+					          "xmlns='" NS_XMPP_CLIENT "' "
+							  "xmlns:stream='" NS_XMPP_STREAMS "' "
+							  "version='1.0'>",
+							  js->user->domain);
+	}
 	/* setup the parser fresh for each stream */
 	jabber_parser_setup(js);
 	jabber_send_raw(js, open_stream, -1);
@@ -152,23 +173,10 @@ static void jabber_bind_result_cb(JabberStream *js, const char *from,
 		xmlnode *jid;
 		char *full_jid;
 		if((jid = xmlnode_get_child(bind, "jid")) && (full_jid = xmlnode_get_data(jid))) {
-			jabber_id_free(js->user);
-
-			js->user = jabber_id_new(full_jid);
-			if (js->user == NULL) {
-				purple_connection_error_reason(js->gc,
-					PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
-					_("Invalid response from server"));
-				g_free(full_jid);
-				return;
-			}
-
-			js->user_jb = jabber_buddy_find(js, full_jid, TRUE);
-			js->user_jb->subscription |= JABBER_SUB_BOTH;
-
-			purple_connection_set_display_name(js->gc, full_jid);
-
+			gboolean ok = jabber_stream_set_bound_jid(js, full_jid);
 			g_free(full_jid);
+			if (!ok)
+				return;
 		}
 	} else {
 		PurpleConnectionError reason = PURPLE_CONNECTION_ERROR_NETWORK_ERROR;
@@ -182,7 +190,30 @@ static void jabber_bind_result_cb(JabberStream *js, const char *from,
 	if (js->sm_state == SM_PLANNED) {
 		jabber_sm_enable(js);
 	}
+	jabber_sm_session_started(js);
 	jabber_session_init(js);
+}
+
+gboolean
+jabber_stream_set_bound_jid(JabberStream *js, const char *full_jid)
+{
+	JabberID *jid = jabber_id_new(full_jid);
+
+	if (jid == NULL) {
+		purple_connection_error_reason(js->gc,
+			PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
+			_("Invalid response from server"));
+		return FALSE;
+	}
+
+	jabber_id_free(js->user);
+	js->user = jid;
+
+	js->user_jb = jabber_buddy_find(js, full_jid, TRUE);
+	js->user_jb->subscription |= JABBER_SUB_BOTH;
+
+	purple_connection_set_display_name(js->gc, full_jid);
+	return TRUE;
 }
 
 static char *jabber_prep_resource(char *input) {
@@ -268,11 +299,56 @@ jabber_process_starttls(JabberStream *js, xmlnode *packet)
 	return FALSE;
 }
 
+void
+jabber_bind_start(JabberStream *js)
+{
+	xmlnode *bind, *resource;
+	char *requested_resource;
+	JabberIq *iq = jabber_iq_new(js, JABBER_IQ_SET);
+	bind = xmlnode_new_child(iq->node, "bind");
+	xmlnode_set_namespace(bind, NS_XMPP_BIND);
+	requested_resource = jabber_prep_resource(js->user->resource);
+
+	if (requested_resource != NULL) {
+		resource = xmlnode_new_child(bind, "resource");
+		xmlnode_insert_data(resource, requested_resource, -1);
+		g_free(requested_resource);
+	}
+
+	jabber_iq_set_callback(iq, jabber_bind_result_cb, NULL);
+
+	jabber_iq_send(iq);
+}
+
+/* XEP-0440: which channel-binding types the server supports. */
+static void
+jabber_stream_features_parse_cb_types(JabberStream *js, xmlnode *packet)
+{
+	xmlnode *cb, *type;
+
+	cb = xmlnode_get_child_with_namespace(packet, "sasl-channel-binding", NS_SASL_CB);
+	if (cb == NULL)
+		return;
+
+	g_slist_free_full(js->server_cb_types, g_free);
+	js->server_cb_types = NULL;
+
+	for (type = xmlnode_get_child(cb, "channel-binding"); type;
+			type = xmlnode_get_next_twin(type)) {
+		const char *t = xmlnode_get_attrib(type, "type");
+		if (t && *t)
+			js->server_cb_types = g_slist_prepend(js->server_cb_types, g_strdup(t));
+	}
+}
+
 void jabber_stream_features_parse(JabberStream *js, xmlnode *packet)
 {
 	PurpleAccount *account = purple_connection_get_account(js->gc);
 	const char *connection_security =
 		purple_account_get_string(account, "connection_security", JABBER_DEFAULT_REQUIRE_TLS);
+
+	/* An XMPP server answered; no more XEP-0368 fallbacks. */
+	jabber_connect_targets_free(js);
 
 	if (xmlnode_get_child(packet, "starttls")) {
 		if (jabber_process_starttls(js, packet)) {
@@ -286,28 +362,26 @@ void jabber_stream_features_parse(JabberStream *js, xmlnode *packet)
 		return;
 	}
 
+	jabber_stream_features_parse_cb_types(js, packet);
+	if (xmlnode_get_child_with_namespace(packet, "csi", NS_CSI))
+		js->csi_supported = TRUE;
+
 	if(js->registration) {
 		jabber_register_start(js);
+	} else if (xmlnode_get_child_with_namespace(packet, "authentication", NS_SASL2)
+			&& jabber_sasl2_start(js, packet)) {
+		/* XEP-0388: authentication, binding (and maybe SM resumption)
+		 * in one go; no stream restart follows. */
+		return;
 	} else if(xmlnode_get_child(packet, "mechanisms")) {
 		jabber_stream_set_state(js, JABBER_STREAM_AUTHENTICATING);
 		jabber_auth_start(js, packet);
 	} else if(xmlnode_get_child(packet, "bind")) {
-		xmlnode *bind, *resource;
-		char *requested_resource;
-		JabberIq *iq = jabber_iq_new(js, JABBER_IQ_SET);
-		bind = xmlnode_new_child(iq->node, "bind");
-		xmlnode_set_namespace(bind, NS_XMPP_BIND);
-		requested_resource = jabber_prep_resource(js->user->resource);
-
-		if (requested_resource != NULL) {
-			resource = xmlnode_new_child(bind, "resource");
-			xmlnode_insert_data(resource, requested_resource, -1);
-			g_free(requested_resource);
-		}
-
-		jabber_iq_set_callback(iq, jabber_bind_result_cb, NULL);
-
-		jabber_iq_send(iq);
+		/* XEP-0198: resume a dropped session instead of binding anew. */
+		if (xmlnode_get_child_with_namespace(packet, "sm", NS_STREAM_MANAGEMENT)
+				&& jabber_sm_resume_start(js))
+			return;
+		jabber_bind_start(js);
 	} else if (xmlnode_get_child_with_namespace(packet, "ver", NS_ROSTER_VERSIONING)) {
 		js->server_caps |= JABBER_CAP_ROSTER_VERSIONING;
 	} else /* if(xmlnode_get_child_with_namespace(packet, "auth")) */ {
@@ -387,6 +461,11 @@ void jabber_process_packet(JabberStream *js, xmlnode **packet)
 		}
 	} else if (purple_strequal(xmlns, NS_STREAM_MANAGEMENT)) {
 		jabber_sm_process_packet(js, *packet);
+	} else if (purple_strequal(xmlns, NS_SASL2)) {
+		if (js->state != JABBER_STREAM_AUTHENTICATING || !js->sasl2)
+			purple_debug_warning("jabber", "Ignoring spurious SASL2 element %s\n", name);
+		else
+			jabber_sasl2_process_packet(js, *packet);
 	} else {
 		purple_debug_warning("jabber", "Unknown packet: %s\n", (*packet)->name);
 	}
@@ -499,6 +578,11 @@ void jabber_send_raw(JabberStream *js, const char *data, int len)
 				/* Either <auth> or <query><password>... */
 				(((tag_start = strstr(data, "<auth ")) &&
 					strstr(data, "xmlns='" NS_XMPP_SASL "'")) ||
+				/* ...or the SASL2 <authenticate><initial-response> (PLAIN,
+				 * or a FAST hashed token)... */
+				(strstr(data, "<authenticate ") &&
+					strstr(data, "xmlns='" NS_SASL2 "'") &&
+					(tag_start = strstr(data, "<initial-response>"))) ||
 				((tag_start = strstr(data, "<query ")) &&
 					strstr(data, "xmlns='jabber:iq:auth'>") &&
 					(tag_start = strstr(tag_start, "<password>"))))) {
@@ -677,6 +761,29 @@ void jabber_keepalive(PurpleConnection *gc)
 	}
 }
 
+/*
+ * XEP-0368: the TLS handshake on a direct TLS port worked, but no XMPP
+ * stream came back.  Drop it and try the next target (in the end the
+ * STARTTLS ones).  Returns FALSE if that doesn't apply.
+ */
+static gboolean
+jabber_direct_tls_fallback(JabberStream *js, const char *why)
+{
+	if (!js->direct_tls || js->connect_targets == NULL || js->stream_id != NULL)
+		return FALSE;
+
+	purple_debug_warning("jabber", "Direct TLS: %s; trying the next server\n", why);
+	if (js->gsc) {
+		purple_ssl_close(js->gsc);
+		js->gsc = NULL;
+	}
+	jabber_parser_free(js);
+	js->direct_tls = FALSE;
+	jabber_stream_set_state(js, JABBER_STREAM_CONNECTING);
+	try_srv_connect(js);
+	return TRUE;
+}
+
 static void
 jabber_recv_cb_ssl(gpointer data, PurpleSslConnection *gsc,
 		PurpleInputCondition cond)
@@ -695,7 +802,17 @@ jabber_recv_cb_ssl(gpointer data, PurpleSslConnection *gsc,
 	while((len = purple_ssl_read(gsc, buf, sizeof(buf) - 1)) > 0) {
 		gc->last_received = time(NULL);
 		buf[len] = '\0';
-		purple_debug_info("jabber", "Recv (ssl)(%d): %s\n", len, buf);
+		/* Don't put XEP-0484 FAST tokens in the debug log. */
+		if (!purple_debug_is_unsafe() && js->state != JABBER_STREAM_CONNECTED &&
+				strstr(buf, "<token ") && strstr(buf, NS_FAST))
+			purple_debug_info("jabber", "Recv (ssl)(%d): (SASL2 success with a FAST token, not shown)\n", len);
+		else
+			purple_debug_info("jabber", "Recv (ssl)(%d): %s\n", len, buf);
+		/* A direct TLS port that doesn't speak XMPP (e.g. a multiplexer
+		 * that wanted ALPN): try the next server. */
+		if (js->stream_id == NULL && buf[strspn(buf, " \t\r\n")] != '<' &&
+				jabber_direct_tls_fallback(js, "not an XMPP stream"))
+			return;
 		jabber_parser_process(js, buf, len);
 		if(js->reinit)
 			jabber_stream_init(js);
@@ -705,6 +822,8 @@ jabber_recv_cb_ssl(gpointer data, PurpleSslConnection *gsc,
 		return;
 	else {
 		gchar *tmp;
+		if (jabber_direct_tls_fallback(js, "connection closed before the stream started"))
+			return;
 		if (len == 0)
 			tmp = g_strdup(_("Server closed the connection"));
 		else
@@ -805,7 +924,7 @@ jabber_login_callback(gpointer data, gint source, const gchar *error)
 	JabberStream *js = purple_connection_get_protocol_data(gc);
 
 	if (source < 0) {
-		if (js->srv_rec != NULL) {
+		if (js->connect_targets != NULL) {
 			purple_debug_error("jabber", "Unable to connect to server: %s.  Trying next SRV record or connecting directly.\n", error);
 			try_srv_connect(js);
 		} else {
@@ -816,8 +935,23 @@ jabber_login_callback(gpointer data, gint source, const gchar *error)
 		return;
 	}
 
-	g_free(js->srv_rec);
-	js->srv_rec = NULL;
+	if (js->direct_tls) {
+		/* XEP-0368: TLS right away, verified against the XMPP domain
+		 * (certificate_CN), not the SRV target.  The remaining targets
+		 * stay around in case the handshake fails. */
+		purple_debug_info("jabber", "Connected; starting direct TLS\n");
+		js->gsc = purple_ssl_connect_with_host_fd(purple_connection_get_account(gc),
+				source, jabber_login_callback_ssl, jabber_ssl_connect_failure,
+				js->certificate_CN, gc);
+		if (js->gsc == NULL) {
+			close(source);
+			js->direct_tls = FALSE;
+			try_srv_connect(js);
+		}
+		return;
+	}
+
+	jabber_connect_targets_free(js);
 
 	js->fd = source;
 
@@ -840,6 +974,18 @@ jabber_ssl_connect_failure(PurpleSslConnection *gsc, PurpleSslErrorType error,
 
 	js = gc->proto_data;
 	js->gsc = NULL;
+
+	/* A failed direct TLS handshake falls back to the next target (in the
+	 * end the STARTTLS ones).  A rejected certificate doesn't: the next
+	 * server would show the same one. */
+	if (js->direct_tls && error != PURPLE_SSL_CERTIFICATE_INVALID &&
+			js->state == JABBER_STREAM_CONNECTING) {
+		purple_debug_warning("jabber", "Direct TLS failed (%d), trying the next server\n",
+		                     error);
+		js->direct_tls = FALSE;
+		try_srv_connect(js);
+		return;
+	}
 
 	purple_connection_ssl_error (gc, error);
 }
@@ -881,38 +1027,137 @@ static gboolean jabber_login_connect(JabberStream *js, const char *domain, const
 	return TRUE;
 }
 
+/*
+ * Where to connect, in order.  Built from the _xmpps-client (XEP-0368
+ * direct TLS) and _xmpp-client SRV records, direct TLS first, then the
+ * domain itself on the "port" setting (5222) as the last resort.
+ */
+typedef struct {
+	char *host;
+	int port;
+	gboolean direct_tls;
+} JabberConnectTarget;
+
+static void
+jabber_connect_target_free(gpointer p)
+{
+	JabberConnectTarget *t = p;
+	g_free(t->host);
+	g_free(t);
+}
+
+static void
+jabber_connect_targets_free(JabberStream *js)
+{
+	g_list_free_full(js->connect_targets, jabber_connect_target_free);
+	js->connect_targets = NULL;
+}
+
+static void
+jabber_connect_targets_add(JabberStream *js, const char *host, int port,
+                           gboolean direct_tls)
+{
+	JabberConnectTarget *t;
+
+	/* RFC 2782: a target of "." means the service is not available. */
+	if (host == NULL || *host == '\0' || purple_strequal(host, ".") || port <= 0)
+		return;
+
+	t = g_new0(JabberConnectTarget, 1);
+	t->host = g_strdup(host);
+	t->port = port;
+	t->direct_tls = direct_tls;
+	js->connect_targets = g_list_append(js->connect_targets, t);
+}
+
 static void try_srv_connect(JabberStream *js)
 {
-	while (js->srv_rec != NULL && js->srv_rec_idx < js->max_srv_rec_idx) {
-		PurpleSrvResponse *tmp_resp = js->srv_rec + (js->srv_rec_idx++);
-		if (jabber_login_connect(js, tmp_resp->hostname, tmp_resp->hostname, tmp_resp->port, FALSE))
+	while (js->connect_targets != NULL) {
+		JabberConnectTarget *t = js->connect_targets->data;
+		gboolean ok;
+
+		js->connect_targets = g_list_delete_link(js->connect_targets,
+		                                         js->connect_targets);
+		js->direct_tls = t->direct_tls;
+		purple_debug_info("jabber", "Connecting to %s:%d%s\n", t->host, t->port,
+		                  t->direct_tls ? " (direct TLS)" : "");
+		ok = jabber_login_connect(js, t->host, t->host, t->port, FALSE);
+		jabber_connect_target_free(t);
+		if (ok)
 			return;
 	}
 
-	g_free(js->srv_rec);
-	js->srv_rec = NULL;
+	js->direct_tls = FALSE;
+	purple_connection_error_reason(js->gc,
+		PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
+		_("Unable to connect"));
+}
+
+/* Both SRV lookups are done (or the direct TLS one wasn't made). */
+static void
+jabber_srv_lookups_done(JabberStream *js)
+{
+	int i;
+
+	if (js->srv_pending || js->srvs_pending)
+		return;
+
+	jabber_connect_targets_free(js);
+
+	for (i = 0; js->srvs_resp && i < js->srvs_resp_count; i++)
+		jabber_connect_targets_add(js, js->srvs_resp[i].hostname,
+		                           js->srvs_resp[i].port, TRUE);
+	for (i = 0; js->srv_rec && i < (int)js->max_srv_rec_idx; i++)
+		jabber_connect_targets_add(js, js->srv_rec[i].hostname,
+		                           js->srv_rec[i].port, FALSE);
 
 	/* Fall back to the defaults (I'm not sure if we should actually do this) */
-	jabber_login_connect(js, js->user->domain, js->user->domain,
+	jabber_connect_targets_add(js, js->user->domain,
 			purple_account_get_int(purple_connection_get_account(js->gc), "port", 5222),
-			TRUE);
+			FALSE);
+
+	g_free(js->srvs_resp);
+	js->srvs_resp = NULL;
+	js->srvs_resp_count = 0;
+	g_free(js->srv_rec);
+	js->srv_rec = NULL;
+	js->max_srv_rec_idx = 0;
+
+	try_srv_connect(js);
 }
 
 static void srv_resolved_cb(PurpleSrvResponse *resp, int results, gpointer data)
 {
 	JabberStream *js = data;
 	js->srv_query_data = NULL;
+	js->srv_pending = FALSE;
 
-	if(results) {
-		js->srv_rec = resp;
-		js->srv_rec_idx = 0;
-		js->max_srv_rec_idx = results;
-		try_srv_connect(js);
-	} else {
-		jabber_login_connect(js, js->user->domain, js->user->domain,
-				purple_account_get_int(purple_connection_get_account(js->gc), "port", 5222),
-				TRUE);
-	}
+	g_free(js->srv_rec);
+	js->srv_rec = results > 0 ? resp : NULL;
+	js->srv_rec_idx = 0;
+	js->max_srv_rec_idx = results > 0 ? results : 0;
+	if (results <= 0)
+		g_free(resp);
+
+	jabber_srv_lookups_done(js);
+}
+
+static void srvs_resolved_cb(PurpleSrvResponse *resp, int results, gpointer data)
+{
+	JabberStream *js = data;
+	js->srvs_query_data = NULL;
+	js->srvs_pending = FALSE;
+
+	g_free(js->srvs_resp);
+	js->srvs_resp = results > 0 ? resp : NULL;
+	js->srvs_resp_count = results > 0 ? results : 0;
+	if (results <= 0)
+		g_free(resp);
+
+	purple_debug_info("jabber", "%d _xmpps-client SRV record(s) for %s\n",
+	                  js->srvs_resp_count, js->user->domain);
+
+	jabber_srv_lookups_done(js);
 }
 
 static JabberStream *
@@ -1071,9 +1316,59 @@ jabber_stream_connect(JabberStream *js)
 		jabber_login_connect(js, js->user->domain, connect_server,
 				purple_account_get_int(account, "port", 5222), TRUE);
 	} else {
+		/*
+		 * XEP-0368: look up _xmpps-client (direct TLS) alongside
+		 * _xmpp-client (STARTTLS).  Every remaining connection_security
+		 * value ("require_tls", "opportunistic_tls", or unset) wants
+		 * encryption, so direct TLS records go first; the STARTTLS ones
+		 * and the domain on "port" are the fallbacks.
+		 */
+		gboolean want_direct_tls = purple_ssl_is_supported();
+
+		js->srv_pending = TRUE;
+		js->srvs_pending = want_direct_tls;
 		js->srv_query_data = purple_srv_resolve_account(account, "xmpp-client",
 				"tcp", js->user->domain, srv_resolved_cb, js);
+		if (want_direct_tls)
+			js->srvs_query_data = purple_srv_resolve_account(account, "xmpps-client",
+					"tcp", js->user->domain, srvs_resolved_cb, js);
 	}
+}
+
+static void
+jabber_connection_error_cb(PurpleConnection *gc, PurpleConnectionError reason,
+                           const char *description, PurplePlugin *plugin)
+{
+	JabberStream *js;
+
+	if (purple_connection_get_prpl(gc) != plugin)
+		return;
+
+	js = purple_connection_get_protocol_data(gc);
+	if (js != NULL && !purple_connection_error_is_fatal(reason))
+		js->sm_network_drop = TRUE;
+}
+
+/*
+ * Core signals the prpl listens to.  Prpls are loaded (plugin probe) before
+ * libpurple registers the connection and account signals, so this can't be
+ * done in jabber_plugin_init(); it's done at the first login instead.
+ */
+static void
+jabber_hook_core_signals(PurplePlugin *plugin)
+{
+	static gboolean hooked = FALSE;
+
+	if (hooked)
+		return;
+	hooked = TRUE;
+
+	/* XEP-0198: tell network drops from sign-offs, for resumption. */
+	purple_signal_connect(purple_connections_get_handle(), "connection-error",
+			plugin, PURPLE_CALLBACK(jabber_connection_error_cb), plugin);
+
+	/* XEP-0352: away/extended away means inactive. */
+	jabber_csi_hook_signals(plugin);
 }
 
 void
@@ -1082,6 +1377,8 @@ jabber_login(PurpleAccount *account)
 	PurpleConnection *gc = purple_account_get_connection(account);
 	JabberStream *js;
 	PurpleStoredImage *image;
+
+	jabber_hook_core_signals(purple_connection_get_prpl(gc));
 
 	gc->flags |= PURPLE_CONNECTION_HTML |
 		PURPLE_CONNECTION_ALLOW_CUSTOM_SMILEY;
@@ -1618,12 +1915,29 @@ void jabber_close(PurpleConnection *gc)
 	if (js->bosh)
 		jabber_bosh_connection_close(js->bosh);
 	else if ((js->gsc && js->gsc->fd > 0) || js->fd > 0) {
-		jabber_sm_ack_send(js);
-		jabber_send_raw(js, "</stream:stream>", -1);
+		/* After a network error, leave the stream open (just drop the
+		 * socket) so the server keeps the XEP-0198 session resumable. */
+		if (!jabber_sm_stream_closing(js)) {
+			jabber_sm_ack_send(js);
+			jabber_send_raw(js, "</stream:stream>", -1);
+		}
+	} else {
+		jabber_sm_stream_closing(js);
 	}
 
 	if (js->srv_query_data)
 		purple_srv_cancel(js->srv_query_data);
+	if (js->srvs_query_data)
+		purple_srv_cancel(js->srvs_query_data);
+	jabber_connect_targets_free(js);
+	g_free(js->srvs_resp);
+	g_slist_free_full(js->server_cb_types, g_free);
+	g_slist_free_full(js->fast_mechs, g_free);
+	g_free(js->fast_request_mech);
+	if (js->sasl2_features)
+		xmlnode_free(js->sasl2_features);
+	if (js->legacy_sasl_features)
+		xmlnode_free(js->legacy_sasl_features);
 
 	if(js->gsc) {
 		purple_ssl_close(js->gsc);
@@ -1797,6 +2111,9 @@ void jabber_stream_set_state(JabberStream *js, JabberStreamState state)
 			jabber_stream_restart_inactivity_timer(js);
 
 			purple_connection_set_state(js->gc, PURPLE_CONNECTED);
+
+			/* XEP-0352: tell the server if we start out idle/away. */
+			jabber_csi_update(js);
 			break;
 	}
 
@@ -1818,6 +2135,9 @@ void jabber_idle_set(PurpleConnection *gc, int idle)
 	/* send out an updated prescence */
 	purple_debug_info("jabber", "sending updated presence for idle\n");
 	jabber_presence_send(js, FALSE);
+
+	/* XEP-0352 */
+	jabber_csi_update(js);
 }
 
 void jabber_blocklist_parse_push(JabberStream *js, const char *from,
@@ -3963,6 +4283,7 @@ jabber_do_uninit(void)
 	jabber_cmds = NULL;
 }
 
+
 void jabber_plugin_init(PurplePlugin *plugin)
 {
 	++plugin_ref;
@@ -4051,6 +4372,9 @@ void jabber_plugin_init(PurplePlugin *plugin)
 			purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_XMLNODE));
 
 	jabber_kv_init(plugin);
+
+	/* XEP-0352 (the IPC command; the signals are hooked at first login) */
+	jabber_csi_init(plugin);
 
 	purple_signal_register(plugin, "jabber-receiving-iq",
 			purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
