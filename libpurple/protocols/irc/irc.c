@@ -344,6 +344,41 @@ static GList *irc_status_types(PurpleAccount *account)
 	return types;
 }
 
+/* The away message, set from away-notify. */
+static char *irc_status_text(PurpleBuddy *buddy)
+{
+	PurpleStatus *status = purple_presence_get_active_status(purple_buddy_get_presence(buddy));
+	const char *msg;
+
+	if (purple_status_type_get_primitive(purple_status_get_type(status)) != PURPLE_STATUS_AWAY)
+		return NULL;
+	msg = purple_status_get_attr_string(status, "message");
+	return (msg && *msg) ? g_markup_escape_text(msg, -1) : NULL;
+}
+
+/* Shows the away message and the services account (account-notify,
+ * extended-join). */
+static void irc_tooltip_text(PurpleBuddy *buddy, PurpleNotifyUserInfo *user_info, gboolean full)
+{
+	PurpleConnection *gc = purple_account_get_connection(purple_buddy_get_account(buddy));
+	struct irc_conn *irc;
+	struct irc_buddy *ib;
+	char *msg;
+
+	if (gc == NULL || (irc = gc->proto_data) == NULL)
+		return;
+
+	msg = irc_status_text(buddy);
+	if (msg) {
+		purple_notify_user_info_add_pair(user_info, _("Away"), msg);
+		g_free(msg);
+	}
+
+	ib = g_hash_table_lookup(irc->buddies, purple_buddy_get_name(buddy));
+	if (ib && ib->account)
+		purple_notify_user_info_add_pair_plaintext(user_info, _("Account"), ib->account);
+}
+
 static GList *irc_actions(PurplePlugin *plugin, gpointer context)
 {
 	GList *list = NULL;
@@ -647,7 +682,11 @@ static int irc_im_send(PurpleConnection *gc, const char *who, const char *what, 
 
 	irc_cmd_privmsg(irc, "msg", NULL, args);
 	g_free(plain);
-	return 1;
+
+	/* With echo-message the server echoes the message back and we show
+	 * it then (irc_msg_privmsg), with the server's timestamp. Returning
+	 * 0 tells the core not to echo it itself. */
+	return irc_cap_enabled(irc, "echo-message") ? 0 : 1;
 }
 
 static void irc_get_info(PurpleConnection *gc, const char *who)
@@ -902,7 +941,9 @@ static int irc_chat_send(PurpleConnection *gc, int id, const char *what, PurpleM
 
 	irc_cmd_privmsg(irc, "msg", NULL, args);
 
-	serv_got_chat_in(gc, id, purple_connection_get_display_name(gc), flags, what, time(NULL));
+	/* With echo-message, the server's echo is displayed instead. */
+	if (!irc_cap_enabled(irc, "echo-message"))
+		serv_got_chat_in(gc, id, purple_connection_get_display_name(gc), flags, what, time(NULL));
 	g_free(tmp);
 	return 0;
 }
@@ -1014,8 +1055,8 @@ static PurplePluginProtocolInfo prpl_info =
 	NO_BUDDY_ICONS,		/* icon_spec */
 	irc_blist_icon,		/* list_icon */
 	NULL,			/* list_emblems */
-	NULL,					/* status_text */
-	NULL,					/* tooltip_text */
+	irc_status_text,	/* status_text */
+	irc_tooltip_text,	/* tooltip_text */
 	irc_status_types,	/* away_states */
 	NULL,					/* blist_node_menu */
 	irc_chat_join_info,	/* chat_info */

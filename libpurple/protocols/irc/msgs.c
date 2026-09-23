@@ -58,6 +58,46 @@ static void irc_msg_handle_privmsg(struct irc_conn *irc, const char *name,
 static void irc_sasl_finish(struct irc_conn *irc);
 #endif
 
+/*
+ * Emits "receiving-message-meta" (account, conversation name, GHashTable of
+ * string keys) for the message being dispatched, just before it is handed
+ * to serv_got_im()/serv_got_chat_in(), when the message carries a msgid tag.
+ * Keys: "stanza-id" (msgid) and "reply-to" (+draft/reply). The table is only
+ * valid during the emission; a handler that keeps it must ref it.
+ *
+ * The signal is registered by libpurple's conversation code, but only
+ * builds whose UI advertises "message-meta" = "1" in its ui_info have it,
+ * so we check that first; stock libpurple would log "Signal data not
+ * found" otherwise. This is the only place that knows about the signal.
+ */
+static void
+irc_emit_message_meta(struct irc_conn *irc, const char *convname)
+{
+	GHashTable *ui_info, *meta;
+	const char *msgid, *reply;
+
+	msgid = irc_msg_tag(irc, "msgid");
+	if (msgid == NULL || *msgid == '\0' || convname == NULL)
+		return;
+
+	ui_info = purple_core_get_ui_info();
+	if (ui_info == NULL ||
+	    !purple_strequal(g_hash_table_lookup(ui_info, "message-meta"), "1"))
+		return;
+
+	meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_hash_table_insert(meta, g_strdup("stanza-id"), g_strdup(msgid));
+	reply = irc_msg_tag(irc, "+draft/reply");
+	if (reply == NULL)
+		reply = irc_msg_tag(irc, "+reply");
+	if (reply && *reply)
+		g_hash_table_insert(meta, g_strdup("reply-to"), g_strdup(reply));
+
+	purple_signal_emit(purple_conversations_get_handle(),
+	                   "receiving-message-meta", irc->account, convname, meta);
+	g_hash_table_unref(meta);
+}
+
 static char *irc_mask_nick(const char *mask)
 {
 	char *end, *buf;
@@ -538,15 +578,28 @@ void irc_msg_who(struct irc_conn *irc, const char *name, const char *from, char 
 
 		flags = cb->flags;
 
-		/* FIXME: I'm not sure this is really a good idea, now
-		 * that we no longer do periodic WHO.  It seems to me
-		 * like it's more likely to be confusing than not.
-		 * Comments? */
-		if (args[6][0] == 'G' && !(flags & PURPLE_CBFLAGS_AWAY)) {
-			purple_conv_chat_user_set_flags(chat, cb->name, flags | PURPLE_CBFLAGS_AWAY);
-		} else if(args[6][0] == 'H' && (flags & PURPLE_CBFLAGS_AWAY)) {
-			purple_conv_chat_user_set_flags(chat, cb->name, flags & ~PURPLE_CBFLAGS_AWAY);
+		/* The WHO status is H (here) or G (gone), optionally "*"
+		 * for an IRC operator, then the channel prefixes: all of
+		 * them with multi-prefix, else the highest. Away changes
+		 * after this arrive as AWAY messages with away-notify. */
+		if (args[6][0] == 'G')
+			flags |= PURPLE_CBFLAGS_AWAY;
+		else if (args[6][0] == 'H')
+			flags &= ~PURPLE_CBFLAGS_AWAY;
+
+		if (args[6][0]) {
+			PurpleConvChatBuddyFlags prefixes = PURPLE_CBFLAGS_NONE;
+			const char *c;
+
+			for (c = args[6] + 1; *c; c++)
+				prefixes |= irc_prefix_char_flag(*c);
+			flags = (flags & ~(PURPLE_CBFLAGS_FOUNDER | PURPLE_CBFLAGS_OP |
+			                   PURPLE_CBFLAGS_HALFOP | PURPLE_CBFLAGS_VOICE))
+				| prefixes;
 		}
+
+		if (flags != cb->flags)
+			purple_conv_chat_user_set_flags(chat, cb->name, flags);
 	}
 }
 
@@ -714,25 +767,22 @@ void irc_msg_names(struct irc_conn *irc, const char *name, const char *from, cha
 			GList *flags = NULL;
 
 			while (*cur) {
-				PurpleConvChatBuddyFlags f = PURPLE_CBFLAGS_NONE;
+				PurpleConvChatBuddyFlags f;
+				const char *nick;
+
 				end = strchr(cur, ' ');
 				if (!end)
 					end = cur + strlen(cur);
-				if (*cur == '@') {
-					f = PURPLE_CBFLAGS_OP;
+				if (end == cur) {	/* repeated space */
 					cur++;
-				} else if (*cur == '%') {
-					f = PURPLE_CBFLAGS_HALFOP;
-					cur++;
-				} else if(*cur == '+') {
-					f = PURPLE_CBFLAGS_VOICE;
-					cur++;
-				} else if(irc->mode_chars
-					  && strchr(irc->mode_chars, *cur)) {
-					if (*cur == '~')
-						f = PURPLE_CBFLAGS_FOUNDER;
-					cur++;
+					continue;
 				}
+				/* With multi-prefix a nick can carry several
+				 * prefixes ("@+nick"); keep them all. */
+				f = irc_nick_prefix_flags(irc->mode_chars, cur, &nick);
+				if (nick > end)
+					nick = end;
+				cur = (char *)nick;
 				tmp = g_strndup(cur, end - cur);
 				users = g_list_prepend(users, tmp);
 				flags = g_list_prepend(flags, GINT_TO_POINTER(f));
@@ -968,10 +1018,32 @@ void irc_msg_join(struct irc_conn *irc, const char *name, const char *from, char
 	PurpleConvChatBuddy *cb;
 
 	char *nick, *userhost, *buf;
+	char *channel, *account = NULL, *realname = NULL;
+	gboolean extended = FALSE;
 	struct irc_buddy *ib;
 	static int id = 1;
 
 	g_return_if_fail(gc);
+
+	/* With extended-join: "JOIN #chan account :Real Name", where the
+	 * account is "*" when not logged in. Channel names have no spaces. */
+	channel = strchr(args[0], ' ');
+	if (channel) {
+		char *rest = channel + 1;
+
+		extended = TRUE;
+
+		*channel = '\0';
+		channel = strchr(rest, ' ');
+		if (channel) {
+			*channel = '\0';
+			realname = channel + 1;
+			if (*realname == ':')
+				realname++;
+		}
+		if (*rest && !purple_strequal(rest, "*"))
+			account = rest;
+	}
 
 	nick = irc_mask_nick(from);
 
@@ -1018,9 +1090,18 @@ void irc_msg_join(struct irc_conn *irc, const char *name, const char *from, char
 
 	if (cb) {
 		purple_conv_chat_cb_set_attribute(chat, cb, "userhost", userhost);
+		if (account)
+			purple_conv_chat_cb_set_attribute(chat, cb, "account", account);
+		if (realname && *realname)
+			purple_conv_chat_cb_set_attribute(chat, cb, "realname", realname);
 	}
 
 	if ((ib = g_hash_table_lookup(irc->buddies, nick)) != NULL) {
+		if (extended) {
+			/* extended-join tells us the account either way. */
+			g_free(ib->account);
+			ib->account = g_strdup(account);
+		}
 		ib->new_online_status = TRUE;
 		irc_buddy_status(nick, ib, irc);
 	}
@@ -1326,11 +1407,32 @@ static void irc_msg_handle_privmsg(struct irc_conn *irc, const char *name, const
 	char *msg;
 	char *nick;
 
+	gboolean self, to_me;
+	time_t mtime;
+
 	if (!gc)
 		return;
 
 	nick = irc_mask_nick(from);
-	tmp = irc_parse_ctcp(irc, nick, to, rawmsg, notice);
+	mtime = irc_msg_timestamp(irc);
+
+	/* A message from our own nick is one we sent: with echo-message the
+	 * server echoes everything we send, and bouncers relay what our other
+	 * clients sent. Show it as sent, and never answer our own CTCPs. */
+	self = !purple_utf8_strcasecmp(nick, purple_connection_get_display_name(gc));
+	to_me = !purple_utf8_strcasecmp(to, purple_connection_get_display_name(gc));
+
+	if (self && rawmsg[0] == '\001') {
+		if (strncmp(rawmsg + 1, "ACTION ", 7) != 0) {
+			g_free(nick);
+			return;
+		}
+		tmp = g_strdup_printf("/me %s", rawmsg + 8);
+		if (tmp[strlen(tmp) - 1] == '\001')
+			tmp[strlen(tmp) - 1] = '\0';
+	} else {
+		tmp = irc_parse_ctcp(irc, nick, to, rawmsg, notice);
+	}
 	if (!tmp) {
 		g_free(nick);
 		return;
@@ -1348,13 +1450,25 @@ static void irc_msg_handle_privmsg(struct irc_conn *irc, const char *name, const
 		msg = tmp;
 	}
 
-	if (!purple_utf8_strcasecmp(to, purple_connection_get_display_name(gc))) {
-		serv_got_im(gc, nick, msg, 0, time(NULL));
+	if (self && !irc_ischannel(irc_nick_skip_mode(irc, to))) {
+		/* Sent to a nick (or to ourselves). */
+		PurpleConversation *im;
+
+		im = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, to, irc->account);
+		if (im == NULL)
+			im = purple_conversation_new(PURPLE_CONV_TYPE_IM, irc->account, to);
+		irc_emit_message_meta(irc, purple_conversation_get_name(im));
+		purple_conv_im_write(PURPLE_CONV_IM(im), nick, msg, PURPLE_MESSAGE_SEND, mtime);
+	} else if (to_me) {
+		irc_emit_message_meta(irc, nick);
+		serv_got_im(gc, nick, msg, 0, mtime);
 	} else {
 		convo = purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, irc_nick_skip_mode(irc, to), irc->account);
-		if (convo)
-			serv_got_chat_in(gc, purple_conv_chat_get_id(PURPLE_CONV_CHAT(convo)), nick, 0, msg, time(NULL));
-		else
+		if (convo) {
+			irc_emit_message_meta(irc, purple_conversation_get_name(convo));
+			serv_got_chat_in(gc, purple_conv_chat_get_id(PURPLE_CONV_CHAT(convo)), nick,
+			                 self ? PURPLE_MESSAGE_SEND : 0, msg, mtime);
+		} else
 			purple_debug_error("irc", "Got a %s on %s, which does not exist\n",
 			                   notice ? "NOTICE" : "PRIVMSG", to);
 	}
