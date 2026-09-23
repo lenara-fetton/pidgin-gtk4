@@ -119,7 +119,9 @@ JABBERSOURCES = \
 			  displayed.c \
 			  displayed.h \
 			  blocking.c \
-			  blocking.h
+			  blocking.h \
+			  sfs.c \
+			  sfs.h
 
 AM_CFLAGS = $(st)
 

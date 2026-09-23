@@ -357,6 +357,11 @@ jabber_message_emit_meta(JabberMessage *jm, const char *conv_name,
 		meta_set(meta, "markable", "1");
 	if (jm->unstyled)
 		meta_set(meta, "unstyled", "1");
+	/* XEP-0380: encrypted with something we couldn't decrypt */
+	meta_set(meta, "eme-namespace", jm->eme_ns);
+	meta_set(meta, "eme-name", jm->eme_name);
+	/* XEP-0447/0385: sfs-* (the body keeps the URL for older UIs) */
+	jabber_sfs_to_meta(jm->sfs, meta);
 
 	tmp = jabber_fallback_ranges_to_string(jm->fallbacks);
 	meta_set(meta, "fallback-ranges", tmp);
@@ -443,6 +448,10 @@ void jabber_message_free(JabberMessage *jm)
 	g_free(jm->retract_id);
 	g_free(jm->moderated_by);
 	g_free(jm->retract_reason);
+
+	jabber_sfs_file_free(jm->sfs);
+	g_free(jm->eme_ns);
+	g_free(jm->eme_name);
 
 	g_free(jm);
 }
@@ -1030,6 +1039,118 @@ jabber_message_parse_modern_child(JabberMessage *jm, xmlnode *child,
 	return FALSE;
 }
 
+/**************************************************************************
+ * XEP-0380 Explicit Message Encryption
+ **************************************************************************/
+
+#define NS_OMEMO_LEGACY "eu.siacs.conversations.axolotl"
+
+const char *
+jabber_eme_name(const char *ns, const char *name)
+{
+	static const struct {
+		const char *ns;
+		const char *name;
+	} known[] = {
+		{ "urn:xmpp:otr:0", "OTR" },
+		{ "jabber:x:encrypted", "Legacy OpenPGP" },
+		{ "urn:xmpp:openpgp:0", "OpenPGP for XMPP" },
+		{ NS_OMEMO_LEGACY, "OMEMO" },
+		{ "urn:xmpp:omemo:1", "OMEMO" },
+		{ "urn:xmpp:omemo:2", "OMEMO" },
+	};
+	gsize i;
+
+	if (name && *name)
+		return name;
+	for (i = 0; i < G_N_ELEMENTS(known); i++)
+		if (purple_strequal(ns, known[i].ns))
+			return known[i].name;
+	return ns;
+}
+
+gboolean
+jabber_eme_is_fallback_body(const char *body, const char *name)
+{
+	static const char * const texts[] = {
+		/* Conversations; also this tree's OMEMO plugin */
+		"I sent you an OMEMO encrypted message but your client doesn't seem to support that",
+		"I sent you a PGP encrypted message but your client doesn't seem to support that",
+		/* Dino */
+		"[This message is OMEMO encrypted]",
+		"[This message is OpenPGP encrypted]",
+		/* Gajim */
+		"You received a message encrypted with OMEMO but your client doesn't support OMEMO",
+		"This message was encrypted with OMEMO and could not be decrypted",
+		"This message is encrypted with OMEMO",
+		NULL
+	};
+	char *text, *lower, *lname;
+	gboolean match = FALSE;
+	int i;
+
+	if (body == NULL)
+		return FALSE;
+	text = g_strstrip(g_strdup(body));
+
+	for (i = 0; texts[i] && !match; i++)
+		if (g_str_has_prefix(text, texts[i]))
+			match = TRUE;
+	/* OTR payloads and query messages */
+	if (!match && g_str_has_prefix(text, "?OTR"))
+		match = TRUE;
+	/* Anything short that says it is encrypted with @a name */
+	if (!match && *text && strlen(text) <= 300 && name && *name) {
+		lower = g_utf8_strdown(text, -1);
+		lname = g_utf8_strdown(name, -1);
+		match = strstr(lower, "encrypt") != NULL && strstr(lower, lname) != NULL;
+		g_free(lower);
+		g_free(lname);
+	}
+	g_free(text);
+	return match;
+}
+
+static void
+jabber_message_parse_eme(JabberMessage *jm, xmlnode *packet)
+{
+	xmlnode *eme = xmlnode_get_child_with_namespace(packet, "encryption", NS_EME);
+	const char *ns;
+
+	ns = eme ? xmlnode_get_attrib(eme, "namespace") : NULL;
+	if (ns == NULL || *ns == '\0')
+		return;
+
+	/* The OMEMO plugin rewrites what it decrypts before we see it and
+	 * removes <encrypted/> (and normally <encryption/>).  Anything still
+	 * encrypted, in any scheme, is unreadable here. */
+	if (purple_strequal(ns, NS_OMEMO_LEGACY) &&
+	    xmlnode_get_child_with_namespace(packet, "encrypted", ns) == NULL)
+		return;
+
+	jm->eme_ns = g_strdup(ns);
+	jm->eme_name = g_strdup(jabber_eme_name(ns, xmlnode_get_attrib(eme, "name")));
+	purple_debug_info("jabber", "XEP-0380: message %s is encrypted with %s "
+	                  "(%s) and was not decrypted\n", jm->id ? jm->id : "(no id)",
+	                  jm->eme_name, ns);
+
+	/* A UI without message-meta can only show text: say what it is
+	 * instead of the sender's "your client can't do this" boilerplate. */
+	if (!jabber_ui_supports_message_meta() &&
+	    jabber_eme_is_fallback_body(jm->body_raw, jm->eme_name)) {
+		char *text = g_strdup_printf(
+			_("[Encrypted with %s, which this client does not support]"),
+			jm->eme_name);
+		char *escaped = purple_markup_escape_text(text, -1);
+
+		g_free(jm->body);
+		jm->body = escaped;
+		g_free(jm->xhtml);
+		jm->xhtml = NULL;
+		g_free(text);
+	}
+}
+
 /* Fills the M8 fields after the child loop.  Returns FALSE if the message
  * must be dropped (a duplicate, or not acceptable in its context). */
 static gboolean
@@ -1105,6 +1226,21 @@ jabber_message_post_process(JabberMessage *jm, xmlnode *packet)
 
 	if (keep && jm->server_id && jm->origin != JABBER_MESSAGE_ORIGIN_MAM)
 		jabber_mam_note_live_id(js, jm->server_id_by, jm->server_id);
+
+	/* XEP-0380 */
+	jabber_message_parse_eme(jm, packet);
+
+	/* XEP-0447 stateless file sharing (or XEP-0385 SIMS) */
+	jm->sfs = jabber_sfs_parse(js, jm->from, packet);
+	if (jm->sfs)
+		purple_debug_info("jabber", "sfs: %s (%s, %" G_GINT64_FORMAT
+		                  " bytes%s%s) %s\n",
+		                  jm->sfs->name ? jm->sfs->name : "(no name)",
+		                  jm->sfs->media_type ? jm->sfs->media_type : "?",
+		                  (gint64)jm->sfs->size,
+		                  jm->sfs->hash ? ", " : "",
+		                  jm->sfs->hash ? jm->sfs->hash : "",
+		                  jm->sfs->url ? jm->sfs->url : "(no url)");
 
 	/* XEP-0428: record the ranges; strip the ones for features the UI
 	 * renders natively. */
@@ -2342,6 +2478,9 @@ jabber_message_semantics_init(PurplePlugin *plugin)
 	jabber_add_feature(NS_RETRACT_LEGACY, NULL);
 	jabber_add_feature(NS_REPLY, NULL);
 	jabber_add_feature(NS_STYLING, NULL);
+	/* M8 round 2 */
+	jabber_add_feature(NS_SFS, NULL);
+	jabber_add_feature(NS_EME, NULL);
 }
 
 void

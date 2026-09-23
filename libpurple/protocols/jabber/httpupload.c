@@ -41,6 +41,7 @@
 #include "iq.h"
 #include "jabber.h"
 #include "namespaces.h"
+#include "sfs.h"
 
 /* What an upload service looks like, per connection. */
 typedef struct {
@@ -67,6 +68,12 @@ typedef struct {
 	JabberHttpUploadSlot *slot;
 	JabberHttpUploadPut *put;
 	gint64 last_progress;   /* monotonic time of the last UI update */
+
+	/* XEP-0447/0446: file metadata, computed in a thread (SHA-256) while
+	 * the slot is requested and the file uploaded. */
+	JabberSfsFile *sfs;
+	gboolean sfs_done;      /* the thread has finished (sfs may be NULL) */
+	gboolean put_done;      /* uploaded, waiting for the metadata */
 } JabberHttpUpload;
 
 struct _JabberHttpUploadPut {
@@ -794,6 +801,7 @@ upload_free(JabberHttpUpload *up)
 	g_hash_table_remove(uploads, up->xfer);
 
 	jabber_http_upload_slot_free(up->slot);
+	jabber_sfs_file_free(up->sfs);
 	g_free(up->content_type);
 	g_free(up->to);
 	purple_xfer_unref(up->xfer);
@@ -879,6 +887,17 @@ send_url_message(JabberHttpUpload *up)
 	child = xmlnode_new_child(x, "url");
 	xmlnode_insert_data(child, url, -1);
 
+	/* XEP-0447 stateless file sharing: the same URL with the file's
+	 * metadata, for clients that show a file card instead of a link. */
+	if (up->sfs) {
+		g_free(up->sfs->url);
+		up->sfs->url = g_strdup(url);
+		xmlnode_insert_child(message, jabber_sfs_build(up->sfs));
+		purple_debug_info("jabber", "http-upload: with file-sharing metadata "
+		                  "(%s, %dx%d)\n", up->sfs->hash ? up->sfs->hash : "no hash",
+		                  up->sfs->width, up->sfs->height);
+	}
+
 	jabber_send(up->js, message);
 	xmlnode_free(message);
 
@@ -914,18 +933,11 @@ put_progress_cb(goffset sent, gpointer data)
 	}
 }
 
+/* Uploaded and the metadata is known: send the URL, finish the transfer. */
 static void
-put_finished_cb(const char *error, gpointer data)
+upload_complete(JabberHttpUpload *up)
 {
-	JabberHttpUpload *up = data;
 	PurpleXfer *xfer = up->xfer;
-
-	up->put = NULL;  /* frees itself */
-
-	if (error != NULL) {
-		upload_fail(up, error, FALSE);
-		return;
-	}
 
 	purple_debug_info("jabber", "http-upload: %s uploaded to %s\n",
 	                  purple_xfer_get_filename(xfer), up->slot->get_url);
@@ -936,6 +948,93 @@ put_finished_cb(const char *error, gpointer data)
 	purple_xfer_set_completed(xfer, TRUE);
 	/* Calls xfer_end_cb(), which frees @up. */
 	purple_xfer_end(xfer);
+}
+
+static void
+put_finished_cb(const char *error, gpointer data)
+{
+	JabberHttpUpload *up = data;
+
+	up->put = NULL;  /* frees itself */
+
+	if (error != NULL) {
+		upload_fail(up, error, FALSE);
+		return;
+	}
+
+	up->put_done = TRUE;
+	if (!up->sfs_done) {
+		purple_debug_info("jabber", "http-upload: %s uploaded, waiting for "
+		                  "its metadata\n", purple_xfer_get_filename(up->xfer));
+		return;
+	}
+	upload_complete(up);
+}
+
+typedef struct {
+	char *path;
+	char *name;
+	char *content_type;
+} SfsJob;
+
+static void
+sfs_job_free(SfsJob *job)
+{
+	g_free(job->path);
+	g_free(job->name);
+	g_free(job->content_type);
+	g_free(job);
+}
+
+static void
+sfs_thread(GTask *task, gpointer source, gpointer data, GCancellable *cancel)
+{
+	SfsJob *job = data;
+
+	g_task_return_pointer(task,
+			jabber_sfs_file_from_path(job->path, job->name, job->content_type),
+			(GDestroyNotify)jabber_sfs_file_free);
+}
+
+static void
+sfs_done_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	PurpleXfer *xfer = data;
+	JabberHttpUpload *up = uploads ? g_hash_table_lookup(uploads, xfer) : NULL;
+	JabberSfsFile *sfs = g_task_propagate_pointer(G_TASK(res), NULL);
+
+	if (up == NULL || up->sfs_done) {
+		/* cancelled, failed or handed to SI meanwhile */
+		jabber_sfs_file_free(sfs);
+		purple_xfer_unref(xfer);
+		return;
+	}
+
+	up->sfs = sfs;
+	up->sfs_done = TRUE;
+	if (sfs == NULL)
+		purple_debug_warning("jabber", "http-upload: couldn't read %s for "
+		                     "its metadata\n", purple_xfer_get_local_filename(xfer));
+	if (up->put_done)
+		upload_complete(up);
+	purple_xfer_unref(xfer);
+}
+
+static void
+sfs_start(JabberHttpUpload *up)
+{
+	SfsJob *job = g_new0(SfsJob, 1);
+	GTask *task;
+
+	job->path = g_strdup(purple_xfer_get_local_filename(up->xfer));
+	job->name = g_strdup(purple_xfer_get_filename(up->xfer));
+	job->content_type = g_strdup(up->content_type);
+
+	purple_xfer_ref(up->xfer);
+	task = g_task_new(NULL, NULL, sfs_done_cb, up->xfer);
+	g_task_set_task_data(task, job, (GDestroyNotify)sfs_job_free);
+	g_task_run_in_thread(task, sfs_thread);
+	g_object_unref(task);
 }
 
 static void
@@ -1048,6 +1147,7 @@ jabber_http_upload_send_xfer(JabberStream *js, PurpleXfer *xfer,
 
 	g_hash_table_insert(uploads, xfer, up);
 	service->uploads = g_list_prepend(service->uploads, up);
+	sfs_start(up);
 
 	purple_debug_info("jabber", "http-upload: sending %s (%" G_GINT64_FORMAT
 	                  " bytes, %s) to %s via %s\n",
