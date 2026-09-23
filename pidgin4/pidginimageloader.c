@@ -73,8 +73,18 @@ G_DEFINE_TYPE(PidginImageLoader, pidgin_image_loader, G_TYPE_OBJECT)
 G_DEFINE_QUARK(pidgin-image-loader-error-quark, pidgin_image_loader_error)
 
 static const char *const builtin_hosts[] = {
+	/* Discord: CDN (emoji, attachments, PNG/APNG stickers) and media
+	 * proxy (attachments, GIF stickers) */
 	"cdn.discordapp.com",
 	"media.discordapp.net",
+	/* Discord's proxy for embed thumbnails and images (proxy_url) */
+	"images-ext-1.discordapp.net",
+	"images-ext-2.discordapp.net",
+	/* GIF services whose embeds Discord shows (gifv) */
+	"media.tenor.com",
+	"c.tenor.com",
+	"media.giphy.com",
+	"i.giphy.com",
 };
 
 static PidginImageLoader *default_loader = NULL;
