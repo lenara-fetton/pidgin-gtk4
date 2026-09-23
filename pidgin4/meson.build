@@ -153,6 +153,7 @@ pidgin4_sources = files(
 	'stubs.c',
 	# M6
 	'pidginidle-wayland.c',
+	'pidginnotify.c',
 ) + idle_notify_sources
 
 pidgin4_deps = [glib_dep, gio_dep, gio_unix_dep, gobject_dep, gmodule_dep,
