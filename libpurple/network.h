@@ -335,7 +335,8 @@ void purple_network_remove_port_mapping(gint fd);
  * @param out     The output buffer where an allocated string will be returned.
  *                The caller is responsible for freeing this.
  * @returns       0 on success, -1 if the out is NULL, or an error code
- *                that currently corresponds to the Idna_rc enum in libidn.
+ *                that currently corresponds to the idn2_rc enum in libidn2
+ *                (before pidgin4: the Idna_rc enum in libidn).
  * @since 2.6.0
  */
 int purple_network_convert_idn_to_ascii(const gchar *in, gchar **out);

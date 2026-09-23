@@ -54,7 +54,7 @@
 #include "dnsquery.h"
 
 #ifdef USE_IDN
-#include <idna.h>
+#include <idn2.h>
 #endif
 
 #ifdef __HAIKU__
@@ -1161,6 +1161,36 @@ purple_network_remove_port_mapping(gint fd)
 	}
 }
 
+#ifdef USE_IDN
+/*
+ * STD3 ASCII rules on an ACE (ToASCII result): only letters, digits, hyphens
+ * and dots, and no label starts or ends with a hyphen. This is checked by
+ * hand because libidn2's IDN2_USE_STD3_ASCII_RULES silently deletes the
+ * offending characters ("exa_mple.com" becomes "example.com").
+ */
+static gboolean
+purple_network_ace_is_std3(const char *ace)
+{
+	const char *c;
+	char prev = '.';
+
+	for (c = ace; *c != '\0'; c++) {
+		if (*c == '.') {
+			if (prev == '-')
+				return FALSE;
+		} else if (*c == '-') {
+			if (prev == '.')
+				return FALSE;
+		} else if (!g_ascii_isalnum(*c)) {
+			return FALSE;
+		}
+		prev = *c;
+	}
+
+	return prev != '-';
+}
+#endif
+
 int purple_network_convert_idn_to_ascii(const gchar *in, gchar **out)
 {
 #ifdef USE_IDN
@@ -1169,15 +1199,21 @@ int purple_network_convert_idn_to_ascii(const gchar *in, gchar **out)
 
 	g_return_val_if_fail(out != NULL, -1);
 
-	ret = idna_to_ascii_8z(in, &tmp, IDNA_USE_STD3_ASCII_RULES);
-	if (ret != IDNA_SUCCESS) {
+	/* IDNA2008 with UTS #46 non-transitional processing (so "ß" stays "ß"
+	 * rather than becoming "ss" as with libidn's IDNA2003), and the same
+	 * STD3 ASCII rules libidn applied. */
+	ret = idn2_to_ascii_8z(in, &tmp, IDN2_NFC_INPUT | IDN2_NONTRANSITIONAL);
+	if (ret == IDN2_OK && !purple_network_ace_is_std3(tmp)) {
+		idn2_free(tmp);
+		ret = IDN2_DISALLOWED;
+	}
+	if (ret != IDN2_OK) {
 		*out = NULL;
 		return ret;
 	}
 
 	*out = g_strdup(tmp);
-	/* This *MUST* be freed with free, not g_free */
-	free(tmp);
+	idn2_free(tmp);
 	return 0;
 #else
 	g_return_val_if_fail(out != NULL, -1);

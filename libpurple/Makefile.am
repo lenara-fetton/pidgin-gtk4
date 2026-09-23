@@ -305,14 +305,13 @@ libpurple_la_LIBADD = \
 	$(DBUS_LIBS) \
 	$(GLIB_LIBS) \
 	$(LIBXML_LIBS) \
-	$(NETWORKMANAGER_LIBS) \
 	$(INTLLIBS) \
 	$(FARSTREAM_LIBS) \
 	$(GSTREAMER_LIBS) \
 	$(GSTVIDEO_LIBS) \
 	$(GSTAPP_LIBS) \
 	$(GSTINTERFACES_LIBS) \
-	$(IDN_LIBS) \
+	$(IDN2_LIBS) \
 	$(LIBM) \
 	ciphers/libpurple-ciphers.la
 
@@ -330,8 +329,7 @@ AM_CPPFLAGS = \
 	$(GSTVIDEO_CFLAGS) \
 	$(GSTAPP_CFLAGS) \
 	$(GSTINTERFACES_CFLAGS) \
-	$(IDN_CFLAGS) \
-	$(NETWORKMANAGER_CFLAGS)
+	$(IDN2_CFLAGS)
 
 # INSTALL_SSL_CERTIFICATES is true when SSL_CERTIFICATES_DIR is empty.
 # We want to use SSL_CERTIFICATES_DIR when it's not empty.

@@ -25,6 +25,7 @@
 #include "cipher.h"
 #include "conversation.h"
 #include "debug.h"
+#include "network.h"
 #include "server.h"
 #include "util.h"
 #include "xmlnode.h"
@@ -33,26 +34,204 @@
 #include "presence.h"
 #include "jutil.h"
 
-#ifdef USE_IDN
-#include <idna.h>
-#include <stringprep.h>
-static char idn_buffer[1024];
-#endif
+/*
+ * XMPP string preparation: the RFC 3920 nodeprep and resourceprep profiles,
+ * the nameprep mapping for domains, and RFC 4013 SASLprep.
+ *
+ * These used to call libidn 1.x's stringprep, which libidn2 does not provide.
+ * They are now implemented with GLib's Unicode support. Behavioural
+ * differences from the libidn implementation:
+ *  - GLib's Unicode tables are current, while stringprep is pinned to
+ *    Unicode 3.2. Code points unassigned in 3.2 were already accepted (libidn
+ *    was called without STRINGPREP_NO_UNASSIGNED); they are now mapped with
+ *    current case folding and normalization data.
+ *  - Table B.2 (case folding for use with NFKC) is approximated by full
+ *    Unicode case folding applied before and after NFKC for nodes.
+ *  - The bidi rule (RFC 3454 section 6) is not checked, since GLib has no
+ *    bidi class API. Strings that mix right-to-left and left-to-right text in
+ *    ways libidn rejected are accepted now.
+ *  - Domains are no longer nameprep'd and checked with IDNA2003 ToASCII.
+ *    They are lowercased (not case folded, so that IDNA2008 keeps "ß" and
+ *    "straße.de" no longer turns into "strasse.de") and NFKC-normalized, kept
+ *    in Unicode as before, and validated with
+ *    purple_network_convert_idn_to_ascii() (IDNA2008 with UTS #46
+ *    non-transitional processing, libidn2) plus jabber_domain_validate().
+ *    IDNA2008 rejects some symbols IDNA2003 accepted (for example U+2603
+ *    SNOWMAN).
+ *  - Without libidn2, node, resource and SASLprep now get the full GLib
+ *    implementation instead of the old ad-hoc checks.
+ * The ASCII fast path in jabber_id_new_internal() is unchanged.
+ */
+typedef enum {
+	JABBER_PREP_NODE,
+	JABBER_PREP_NAME,
+	JABBER_PREP_RESOURCE,
+	JABBER_PREP_SASL
+} JabberPrepProfile;
 
-#ifdef USE_IDN
-static gboolean jabber_nodeprep(char *str, size_t buflen)
+/* RFC 3454 table B.1: commonly mapped to nothing */
+static gboolean
+jabber_prep_maps_to_nothing(gunichar ch)
 {
-	return stringprep_xmpp_nodeprep(str, buflen) == STRINGPREP_OK;
+	return ch == 0x00AD || ch == 0x034F || ch == 0x1806 ||
+		(ch >= 0x180B && ch <= 0x180D) ||
+		(ch >= 0x200B && ch <= 0x200D) || ch == 0x2060 ||
+		(ch >= 0xFE00 && ch <= 0xFE0F) || ch == 0xFEFF;
 }
 
-static gboolean jabber_resourceprep(char *str, size_t buflen)
+/* RFC 3454 table C.1.2: non-ASCII space characters */
+static gboolean
+jabber_prep_is_non_ascii_space(gunichar ch)
 {
-	return stringprep_xmpp_resourceprep(str, buflen) == STRINGPREP_OK;
+	return ch == 0x00A0 || ch == 0x1680 ||
+		(ch >= 0x2000 && ch <= 0x200B) || ch == 0x202F ||
+		ch == 0x205F || ch == 0x3000;
+}
+
+/* RFC 3454 tables C.1.2 to C.9, plus C.1.1 and the RFC 3920 appendix A.5
+ * characters for nodeprep. */
+static gboolean
+jabber_prep_is_prohibited(gunichar ch, JabberPrepProfile profile)
+{
+	if (profile == JABBER_PREP_NODE &&
+			(ch == ' ' || ch == '"' || ch == '&' || ch == '\'' ||
+			 ch == '/' || ch == ':' || ch == '<' || ch == '>' || ch == '@'))
+		return TRUE;
+
+	return jabber_prep_is_non_ascii_space(ch) ||
+		/* C.2.1 ASCII control characters */
+		ch < 0x20 || ch == 0x7F ||
+		/* C.2.2 non-ASCII control characters */
+		(ch >= 0x80 && ch <= 0x9F) || ch == 0x06DD || ch == 0x070F ||
+		ch == 0x180E || ch == 0x200C || ch == 0x200D || ch == 0x2028 ||
+		ch == 0x2029 || (ch >= 0x2060 && ch <= 0x2063) ||
+		(ch >= 0x206A && ch <= 0x206F) || ch == 0xFEFF ||
+		(ch >= 0xFFF9 && ch <= 0xFFFC) || (ch >= 0x1D173 && ch <= 0x1D17A) ||
+		/* C.3 private use */
+		(ch >= 0xE000 && ch <= 0xF8FF) || (ch >= 0xF0000 && ch <= 0xFFFFD) ||
+		(ch >= 0x100000 && ch <= 0x10FFFD) ||
+		/* C.4 non-character code points */
+		(ch >= 0xFDD0 && ch <= 0xFDEF) || (ch & 0xFFFE) == 0xFFFE ||
+		/* C.5 surrogates */
+		(ch >= 0xD800 && ch <= 0xDFFF) ||
+		/* C.6 inappropriate for plain text */
+		(ch >= 0xFFF9 && ch <= 0xFFFD) ||
+		/* C.7 inappropriate for canonical representation */
+		(ch >= 0x2FF0 && ch <= 0x2FFB) ||
+		/* C.8 change display properties or deprecated */
+		ch == 0x0340 || ch == 0x0341 || ch == 0x200E || ch == 0x200F ||
+		(ch >= 0x202A && ch <= 0x202E) ||
+		/* C.9 tagging characters */
+		ch == 0xE0001 || (ch >= 0xE0020 && ch <= 0xE007F);
+}
+
+static void
+jabber_prep_free(char *str, gboolean wipe)
+{
+	if (str != NULL && wipe)
+		memset(str, 0, strlen(str));
+	g_free(str);
+}
+
+/*
+ * Apply a stringprep profile to the first len bytes of in (len < 0: all of
+ * it). Returns a newly allocated string, or NULL if the input is not valid
+ * UTF-8, contains a prohibited character, or is longer than 1023 bytes after
+ * preparation.
+ */
+static char *
+jabber_stringprep(const char *in, gssize len, JabberPrepProfile profile)
+{
+	gboolean fold = (profile == JABBER_PREP_NODE || profile == JABBER_PREP_NAME);
+	gchar *(*fold_func)(const gchar *, gssize) =
+		(profile == JABBER_PREP_NAME) ? g_utf8_strdown : g_utf8_casefold;
+	gboolean wipe = (profile == JABBER_PREP_SASL);
+	GString *mapped;
+	const char *c, *end;
+	char *tmp, *out;
+
+	if (len < 0)
+		len = strlen(in);
+
+	if (!g_utf8_validate(in, len, NULL))
+		return NULL;
+
+	/* Mapping: B.1 to nothing; for SASLprep, C.1.2 to U+0020 */
+	mapped = g_string_sized_new(len);
+	for (c = in, end = in + len; c < end; c = g_utf8_next_char(c)) {
+		gunichar ch = g_utf8_get_char(c);
+
+		if (jabber_prep_maps_to_nothing(ch))
+			continue;
+		if (profile == JABBER_PREP_SASL && jabber_prep_is_non_ascii_space(ch))
+			ch = ' ';
+		g_string_append_unichar(mapped, ch);
+	}
+
+	/* Mapping (B.2 for nodes, lowercasing for domains) and NFKC */
+	if (fold) {
+		tmp = fold_func(mapped->str, mapped->len);
+		out = g_utf8_normalize(tmp, -1, G_NORMALIZE_NFKC);
+		g_free(tmp);
+		if (out != NULL) {
+			tmp = fold_func(out, -1);
+			g_free(out);
+			out = g_utf8_normalize(tmp, -1, G_NORMALIZE_NFKC);
+			g_free(tmp);
+		}
+	} else {
+		out = g_utf8_normalize(mapped->str, mapped->len, G_NORMALIZE_NFKC);
+	}
+
+	if (wipe)
+		memset(mapped->str, 0, mapped->len);
+	g_string_free(mapped, TRUE);
+
+	if (out == NULL)
+		return NULL;
+
+	/* Prohibited output */
+	for (c = out; *c; c = g_utf8_next_char(c)) {
+		if (jabber_prep_is_prohibited(g_utf8_get_char(c), profile)) {
+			jabber_prep_free(out, wipe);
+			return NULL;
+		}
+	}
+
+	if (strlen(out) > 1023) {
+		jabber_prep_free(out, wipe);
+		return NULL;
+	}
+
+	return out;
+}
+
+/* Prepare a (non-IP-literal) domain. See the comment above. */
+static char *
+jabber_domain_prep(const char *in, gssize len)
+{
+	char *out = jabber_stringprep(in, len, JABBER_PREP_NAME);
+	char *ascii = NULL;
+	int rc;
+
+	if (out == NULL)
+		return NULL;
+
+	rc = purple_network_convert_idn_to_ascii(out, &ascii);
+	g_free(ascii);
+	if (rc != 0 || !jabber_domain_validate(out)) {
+		purple_debug_info("jabber", "Invalid domain '%s' (IDNA error %d)\n",
+		                  out, rc);
+		g_free(out);
+		return NULL;
+	}
+
+	return out;
 }
 
 static JabberID*
-jabber_idn_validate(const char *str, const char *at, const char *slash,
-                    const char *null)
+jabber_id_prep(const char *str, const char *at, const char *slash,
+               const char *null)
 {
 	const char *node = NULL;
 	const char *domain = NULL;
@@ -60,7 +239,6 @@ jabber_idn_validate(const char *str, const char *at, const char *slash,
 	int node_len = 0;
 	int domain_len = 0;
 	int resource_len = 0;
-	char *out;
 	JabberID *jid;
 
 	/* Ensure no parts are > 1023 bytes */
@@ -98,81 +276,49 @@ jabber_idn_validate(const char *str, const char *at, const char *slash,
 	jid = g_new0(JabberID, 1);
 
 	if (node) {
-		strncpy(idn_buffer, node, node_len);
-		idn_buffer[node_len] = '\0';
-
-		if (!jabber_nodeprep(idn_buffer, sizeof(idn_buffer))) {
-			jabber_id_free(jid);
-			jid = NULL;
-			goto out;
-		}
-
-		jid->node = g_strdup(idn_buffer);
+		jid->node = jabber_stringprep(node, node_len, JABBER_PREP_NODE);
+		if (jid->node == NULL)
+			goto fail;
 	}
 
 	/* domain *must* be here */
-	strncpy(idn_buffer, domain, domain_len);
-	idn_buffer[domain_len] = '\0';
 	if (domain[0] == '[') { /* IPv6 address */
 		gboolean valid = FALSE;
 
-		if (idn_buffer[domain_len - 1] == ']') {
-			idn_buffer[domain_len - 1] = '\0';
-			valid = purple_ipv6_address_is_valid(idn_buffer + 1);
+		if (domain_len > 2 && domain[domain_len - 1] == ']') {
+			char *addr = g_strndup(domain + 1, domain_len - 2);
+			valid = purple_ipv6_address_is_valid(addr);
+			g_free(addr);
 		}
 
-		if (!valid) {
-			jabber_id_free(jid);
-			jid = NULL;
-			goto out;
-		}
+		if (!valid)
+			goto fail;
 
 		jid->domain = g_strndup(domain, domain_len);
 	} else {
-		/* Apply nameprep */
-		if (stringprep_nameprep(idn_buffer, sizeof(idn_buffer)) != STRINGPREP_OK) {
-			jabber_id_free(jid);
-			jid = NULL;
-			goto out;
-		}
-
-		/* And now ToASCII */
-		if (idna_to_ascii_8z(idn_buffer, &out, IDNA_USE_STD3_ASCII_RULES) != IDNA_SUCCESS) {
-			jabber_id_free(jid);
-			jid = NULL;
-			goto out;
-		}
-
-		/* This *MUST* be freed using 'free', not 'g_free' */
-		free(out);
-		jid->domain = g_strdup(idn_buffer);
+		jid->domain = jabber_domain_prep(domain, domain_len);
+		if (jid->domain == NULL)
+			goto fail;
 	}
 
-	if (resource) {
-		strncpy(idn_buffer, resource, resource_len);
-		idn_buffer[resource_len] = '\0';
-
-		if (!jabber_resourceprep(idn_buffer, sizeof(idn_buffer))) {
-			jabber_id_free(jid);
-			jid = NULL;
-			goto out;
-		} else
-			jid->resource = g_strdup(idn_buffer);
+	if (resource && resource_len > 0) {
+		jid->resource = jabber_stringprep(resource, resource_len,
+		                                  JABBER_PREP_RESOURCE);
+		if (jid->resource == NULL)
+			goto fail;
 	}
 
-out:
 	return jid;
+
+fail:
+	jabber_id_free(jid);
+	return NULL;
 }
 
-#endif /* USE_IDN */
-
-gboolean jabber_nodeprep_validate(const char *str)
+static gboolean
+jabber_prep_validate(const char *str, JabberPrepProfile profile)
 {
-#ifdef USE_IDN
-	gboolean result;
-#else
-	const char *c;
-#endif
+	char *prepped;
 
 	if(!str)
 		return TRUE;
@@ -180,24 +326,15 @@ gboolean jabber_nodeprep_validate(const char *str)
 	if(strlen(str) > 1023)
 		return FALSE;
 
-#ifdef USE_IDN
-	strncpy(idn_buffer, str, sizeof(idn_buffer) - 1);
-	idn_buffer[sizeof(idn_buffer) - 1] = '\0';
-	result = jabber_nodeprep(idn_buffer, sizeof(idn_buffer));
-	return result;
-#else /* USE_IDN */
-	c = str;
-	while(c && *c) {
-		gunichar ch = g_utf8_get_char(c);
-		if(ch == '\"' || ch == '&' || ch == '\'' || ch == '/' || ch == ':' ||
-				ch == '<' || ch == '>' || ch == '@' || !g_unichar_isgraph(ch)) {
-			return FALSE;
-		}
-		c = g_utf8_next_char(c);
-	}
+	prepped = jabber_stringprep(str, -1, profile);
+	g_free(prepped);
 
-	return TRUE;
-#endif /* USE_IDN */
+	return prepped != NULL;
+}
+
+gboolean jabber_nodeprep_validate(const char *str)
+{
+	return jabber_prep_validate(str, JABBER_PREP_NODE);
 }
 
 gboolean jabber_domain_validate(const char *str)
@@ -247,73 +384,15 @@ gboolean jabber_domain_validate(const char *str)
 
 gboolean jabber_resourceprep_validate(const char *str)
 {
-#ifdef USE_IDN
-	gboolean result;
-#else
-	const char *c;
-#endif
-
-	if(!str)
-		return TRUE;
-
-	if(strlen(str) > 1023)
-		return FALSE;
-
-#ifdef USE_IDN
-	strncpy(idn_buffer, str, sizeof(idn_buffer) - 1);
-	idn_buffer[sizeof(idn_buffer) - 1] = '\0';
-	result = jabber_resourceprep(idn_buffer, sizeof(idn_buffer));
-	return result;
-#else /* USE_IDN */
-	c = str;
-	while(c && *c) {
-		gunichar ch = g_utf8_get_char(c);
-		if(!g_unichar_isgraph(ch) && ch != ' ')
-			return FALSE;
-
-		c = g_utf8_next_char(c);
-	}
-
-	return TRUE;
-#endif /* USE_IDN */
+	return jabber_prep_validate(str, JABBER_PREP_RESOURCE);
 }
 
 char *jabber_saslprep(const char *in)
 {
-#ifdef USE_IDN
-	char *out;
-
 	g_return_val_if_fail(in != NULL, NULL);
-	g_return_val_if_fail(strlen(in) <= sizeof(idn_buffer) - 1, NULL);
+	g_return_val_if_fail(strlen(in) <= 1023, NULL);
 
-	strncpy(idn_buffer, in, sizeof(idn_buffer) - 1);
-	idn_buffer[sizeof(idn_buffer) - 1] = '\0';
-
-	if (STRINGPREP_OK != stringprep(idn_buffer, sizeof(idn_buffer), 0,
-	                                stringprep_saslprep)) {
-		memset(idn_buffer, 0, sizeof(idn_buffer));
-		return NULL;
-	}
-
-	out = g_strdup(idn_buffer);
-	memset(idn_buffer, 0, sizeof(idn_buffer));
-	return out;
-#else /* USE_IDN */
-	/* TODO: Something better than disallowing all non-ASCII characters */
-	/* TODO: Is this even correct? */
-	const guchar *c;
-
-	c = (const guchar *)in;
-	for ( ; *c; ++c) {
-		if (*c > 0x7f || /* Non-ASCII characters */
-				*c == 0x7f || /* ASCII Delete character */
-				(*c < 0x20 && *c != '\t' && *c != '\n' && *c != '\r'))
-					/* ASCII control characters */
-			return NULL;
-	}
-
-	return g_strdup(in);
-#endif /* USE_IDN */
+	return jabber_stringprep(in, -1, JABBER_PREP_SASL);
 }
 
 static JabberID*
@@ -325,10 +404,6 @@ jabber_id_new_internal(const char *str, gboolean allow_terminating_slash)
 	gboolean needs_validation = FALSE;
 #if 0
 	gboolean node_is_required = FALSE;
-#endif
-#ifndef USE_IDN
-	char *node = NULL;
-	char *domain;
 #endif
 	JabberID *jid;
 
@@ -451,52 +526,7 @@ jabber_id_new_internal(const char *str, gboolean allow_terminating_slash)
 	if (!g_utf8_validate(str, -1, NULL))
 		return NULL;
 
-#ifdef USE_IDN
-	return jabber_idn_validate(str, at, slash, c /* points to the null */);
-#else /* USE_IDN */
-
-	jid = g_new0(JabberID, 1);
-
-	/* normalization */
-	if(at) {
-		node = g_utf8_casefold(str, at-str);
-		if(slash) {
-			domain = g_utf8_casefold(at+1, slash-(at+1));
-			if (*(slash + 1))
-				jid->resource = g_utf8_normalize(slash+1, -1, G_NORMALIZE_NFKC);
-		} else {
-			domain = g_utf8_casefold(at+1, -1);
-		}
-	} else {
-		if(slash) {
-			domain = g_utf8_casefold(str, slash-str);
-			if (*(slash + 1))
-				jid->resource = g_utf8_normalize(slash+1, -1, G_NORMALIZE_NFKC);
-		} else {
-			domain = g_utf8_casefold(str, -1);
-		}
-	}
-
-	if (node) {
-		jid->node = g_utf8_normalize(node, -1, G_NORMALIZE_NFKC);
-		g_free(node);
-	}
-
-	if (domain) {
-		jid->domain = g_utf8_normalize(domain, -1, G_NORMALIZE_NFKC);
-		g_free(domain);
-	}
-
-	/* and finally the jabber nodeprep */
-	if(!jabber_nodeprep_validate(jid->node) ||
-			!jabber_domain_validate(jid->domain) ||
-			!jabber_resourceprep_validate(jid->resource)) {
-		jabber_id_free(jid);
-		return NULL;
-	}
-
-	return jid;
-#endif /* USE_IDN */
+	return jabber_id_prep(str, at, slash, c /* points to the null */);
 }
 
 void
