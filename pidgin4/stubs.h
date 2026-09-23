@@ -24,38 +24,7 @@ void pidgin_pounces_init(void);
 #include "conversation.h"
 #include "savedstatuses.h"
 
-#if __has_include("gtkconv.h")
 #include "gtkconv.h"
-#else
-/* The names and values of pidgin/gtkconv.h. */
-typedef enum
-{
-	PIDGIN_UNSEEN_NONE,
-	PIDGIN_UNSEEN_EVENT,
-	PIDGIN_UNSEEN_NO_LOG,
-	PIDGIN_UNSEEN_TEXT,
-	PIDGIN_UNSEEN_NICK
-} PidginUnseenState;
-
-/**
- * pidgin/gtkconv.h: the conversations of @type with an unseen state of at
- * least @min_state (@max_count 0: all). TODO(M4b): gtkconv.c. The weak
- * fallback reads the "unseen-state" conversation data, which Pidgin 2's
- * gtkconv.c keeps for conversations without a window.
- */
-GList *pidgin_conversations_find_unseen_list(PurpleConversationType type,
-                                             PidginUnseenState min_state,
-                                             gboolean hidden_only,
-                                             guint max_count);
-#endif
-
-/**
- * The number of unseen messages in @conv (PidginConversation's
- * unseen_count). TODO(M4b): gtkconv.c. The weak fallback reads the
- * "unseen-count" conversation data (as Pidgin 2's docklet did for
- * conversations without a window).
- */
-guint pidgin_conversations_get_unseen_count(PurpleConversation *conv);
 
 /** pidgin/gtksavedstatuses.h. TODO(M5): the status editor and window. */
 void pidgin_status_editor_show(gboolean edit, PurpleSavedStatus *saved_status);

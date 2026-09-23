@@ -120,7 +120,8 @@ get_pending_list(guint max)
 static guint
 conv_unseen_count(PurpleConversation *conv)
 {
-	guint count = pidgin_conversations_get_unseen_count(conv);
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	guint count = gtkconv ? gtkconv->unseen_count : 0;
 
 	/* Unseen state without a count still means something unread. */
 	return count > 0 ? count : 1;
