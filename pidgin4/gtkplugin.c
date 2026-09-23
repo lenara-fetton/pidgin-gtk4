@@ -31,7 +31,6 @@
 GtkWidget *pidgin_plugin_get_config_frame(PurplePlugin *plugin) { return NULL; }
 void pidgin_plugins_save(void) { purple_plugins_save_loaded(PIDGIN4_PREFS_ROOT "/plugins/loaded"); }
 void pidgin_plugins_load_saved(const char *key) { purple_plugins_load_saved(key); }
-gboolean pidgin_plugin_file_is_foreign_toolkit(const char *path, char **lib) { if (lib) *lib = NULL; return FALSE; }
 void pidgin_plugin_dialog_show(void) { purple_debug_info("gtkplugin", "placeholder\n"); }
 void pidgin_plugins_init(void) { }
 void pidgin_plugins_uninit(void) { }
