@@ -560,6 +560,9 @@ void (*receiving_message_meta)(PurpleAccount *account, const char *conv_name,
    - "correction-of": the id of the message this one replaces.
    - "reply-to", "reply-to-sender": the id and sender of the message this
      one replies to.
+   - "reply-to-text": a plain-text preview of the replied-to message, for
+     prpls that have it (Discord); the UI uses it when it doesn't have
+     that message itself.
    - "fallback-ranges": the fallback parts of the body, "for:start-end"
      entries separated by ";" (code point offsets, end exclusive; "for"
      is the feature's namespace, and "for:" alone means the whole body).

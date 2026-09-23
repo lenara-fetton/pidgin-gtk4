@@ -402,6 +402,29 @@ mood_icon(const char *mood)
 	return icon;
 }
 
+/* M9: rich presence. The game in the first active status that has a "game"
+ * attribute: Steam's independent "ingame" status (with "game_app_id"), or
+ * XMPP's user gaming in "tune". NULL when the buddy isn't playing. */
+static const char *
+presence_game(PurplePresence *presence)
+{
+	GList *l;
+
+	for (l = purple_presence_get_statuses(presence); l != NULL; l = l->next) {
+		PurpleStatus *status = l->data;
+		const char *game;
+
+		/* Asking a status for an attribute its type lacks is a critical */
+		if (!purple_status_is_active(status) ||
+		    purple_status_type_get_attr(purple_status_get_type(status), "game") == NULL)
+			continue;
+		game = purple_status_get_attr_string(status, "game");
+		if (game != NULL && *game != '\0')
+			return game;
+	}
+	return NULL;
+}
+
 /* Pidgin 2's pidgin_blist_get_emblem(). Returns a new reference or NULL. */
 static GIcon *
 node_emblem(PurpleBlistNode *node)
@@ -440,12 +463,12 @@ node_emblem(PurpleBlistNode *node)
 	if (purple_presence_is_status_primitive_active(p, PURPLE_STATUS_MOBILE))
 		return themed_icon_if_exists("pidgin-mood-mobile");
 
+	if (presence_game(p) != NULL)
+		return themed_icon_if_exists("pidgin-emblem-game");
+
 	tune = purple_presence_get_status(p, "tune");
-	if (tune != NULL && purple_status_is_active(tune)) {
-		if (purple_status_get_attr_string(tune, "game") != NULL)
-			return themed_icon_if_exists("pidgin-emblem-game");
+	if (tune != NULL && purple_status_is_active(tune))
 		return themed_icon_if_exists("pidgin-mood-music");
-	}
 
 	prpl = purple_find_prpl(purple_account_get_protocol_id(purple_buddy_get_account(buddy)));
 	if (prpl == NULL)
@@ -566,6 +589,26 @@ refresh_buddy_row(PidginBlistNodeItem *item, PurpleBlistNode *node,
 				purple_str_strip_char(tmp, '\r');
 			}
 			statustext = safe_markup(tmp);
+		}
+
+		/* M9: the game being played, unless the prpl's text names it
+		 * already (Steam's "In game …") */
+		if (purple_presence_is_online(presence)) {
+			const char *game = presence_game(presence);
+			char *esc = game ? g_markup_escape_text(game, -1) : NULL;
+
+			if (esc != NULL && (statustext == NULL || strstr(statustext, esc) == NULL)) {
+				char *playing = g_strdup_printf(_("Playing %s"), esc);
+
+				if (statustext != NULL) {
+					char *tmp = g_strdup_printf("%s - %s", playing, statustext);
+					g_free(playing);
+					playing = tmp;
+				}
+				g_free(statustext);
+				statustext = playing;
+			}
+			g_free(esc);
 		}
 
 		if (!purple_presence_is_online(presence) && statustext == NULL)
@@ -1006,6 +1049,23 @@ buddy_tooltip_text(PurpleBlistNode *node, gboolean full)
 
 	if (purple_account_is_connected(b->account) && prpl_info && prpl_info->tooltip_text)
 		prpl_info->tooltip_text(b, user_info, full);
+
+	/* M9: the game being played, unless the prpl listed it (Steam does) */
+	if (PURPLE_BUDDY_IS_ONLINE(b) && presence_game(presence) != NULL) {
+		const char *game = presence_game(presence);
+		char *esc = g_markup_escape_text(game, -1);
+		gboolean listed = FALSE;
+		GList *l;
+
+		for (l = purple_notify_user_info_get_entries(user_info); l != NULL && !listed; l = l->next) {
+			const char *value = purple_notify_user_info_entry_get_value(l->data);
+
+			listed = value != NULL && (purple_strequal(value, game) || purple_strequal(value, esc));
+		}
+		if (!listed)
+			purple_notify_user_info_add_pair(user_info, _("Game"), esc);
+		g_free(esc);
+	}
 
 	html = purple_notify_user_info_get_text_with_newline(user_info, "<br>");
 	purple_notify_user_info_destroy(user_info);

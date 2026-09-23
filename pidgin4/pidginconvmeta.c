@@ -998,6 +998,11 @@ pidgin_conv_meta_message_displayed(PurpleConversation *conv, PidginMessage *msg,
 				g_free(akey);
 				g_free(ckey);
 			}
+			/* M9: not here, but the prpl sent the replied-to text (Discord) */
+			if (target == NULL && pidgin_message_get_reply_preview(msg) == NULL &&
+			    g_hash_table_lookup(meta, "reply-to-text") != NULL)
+				pidgin_message_set_reply(msg, reply_to, pidgin_message_get_reply_to_sender(msg),
+				                         g_hash_table_lookup(meta, "reply-to-text"));
 		}
 	}
 
