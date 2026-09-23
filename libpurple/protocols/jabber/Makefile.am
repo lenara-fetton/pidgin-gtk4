@@ -23,6 +23,8 @@ JABBERSOURCES = \
 			  caps.h \
 			  chat.c \
 			  chat.h \
+			  csi.c \
+			  csi.h \
 			  data.c \
 			  data.h \
 			  disco.c \
@@ -86,6 +88,8 @@ JABBERSOURCES = \
 			  presence.h \
 			  roster.c \
 			  roster.h \
+			  sasl2.c \
+			  sasl2.h \
 			  si.c \
 			  si.h \
 			  stream_management.c \

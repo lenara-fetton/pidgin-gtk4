@@ -58,6 +58,25 @@ JabberSaslMech **jabber_auth_get_scram_mechs(gint *count);
 JabberSaslMech *jabber_auth_get_cyrus_mech(void);
 #endif
 
+/**
+ * Picks the best mechanism from @a server_mechs (a list of names).  -PLUS
+ * mechanisms are skipped when the connection has no channel binding data.
+ * With @a sasl2, only mechanisms that work inside XEP-0388 are considered
+ * (SCRAM-* and PLAIN; never Cyrus).
+ */
+JabberSaslMech *jabber_auth_pick_mech(JabberStream *js, GSList *server_mechs,
+                                      gboolean sasl2);
+
+/**
+ * TLS channel binding data for this stream (RFC 5929 / RFC 9266).  With
+ * @a type NULL, the preferred available type is used: tls-exporter, then
+ * tls-server-end-point, restricted to what the server advertised via
+ * XEP-0440 if it did.  Returns NULL (and *len = 0) if none is available.
+ * @a type_out receives a static string.  Free the result with g_free().
+ */
+guchar *jabber_auth_get_channel_binding(JabberStream *js, const char *type,
+                                        const char **type_out, gsize *len);
+
 void jabber_auth_add_mech(JabberSaslMech *);
 void jabber_auth_remove_mech(JabberSaslMech *);
 

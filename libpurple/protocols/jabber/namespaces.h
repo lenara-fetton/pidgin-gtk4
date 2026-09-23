@@ -159,5 +159,17 @@
 
 /* M8: XEP-0363 HTTP File Upload (httpupload.c) */
 #define NS_HTTP_UPLOAD "urn:xmpp:http:upload:0"
+/* M8 authentication/connection: SASL2 (XEP-0388), Bind2 (XEP-0386),
+ * FAST (XEP-0484), SASL channel-binding type capability (XEP-0440),
+ * Client State Indication (XEP-0352), Message Carbons (XEP-0280, only
+ * for the Bind2 inline enable). */
+#define NS_SASL2 "urn:xmpp:sasl:2"
+#define NS_BIND2 "urn:xmpp:bind:0"
+#define NS_FAST "urn:xmpp:fast:0"
+#define NS_SASL_CB "urn:xmpp:sasl-cb:0"
+#define NS_CSI "urn:xmpp:csi:0"
+#ifndef NS_CARBONS
+#define NS_CARBONS "urn:xmpp:carbons:2"
+#endif
 
 #endif /* PURPLE_JABBER_NAMESPACES_H_ */
