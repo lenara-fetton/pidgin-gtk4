@@ -474,6 +474,112 @@ test_attention(PurpleConversation *conv)
 }
 
 static gboolean
+send_to(PidginWindow *win, PurpleAccount *account, const char *name)
+{
+	return activate(win, "conv.send-to", g_variant_new("(sss)",
+		purple_account_get_protocol_id(account), purple_account_get_username(account), name));
+}
+
+/* Send To (Pidgin 2's): an IM with a buddy whose contact has more buddies
+ * gets the menu, and picking one re-targets the same conversation. */
+static void
+test_send_to(PurpleConversation *conv)
+{
+	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
+	PidginWindow *win = gtkconv->win;
+	PurpleAccount *account2;
+	PurpleGroup *group;
+	PurpleBuddy *b1, *b2, *b3;
+	PurpleContact *contact;
+	guint n, bar_items;
+
+	pidgin_conv_window_switch_gtkconv(win, gtkconv);
+	pidgin_conv_window_update_menu(win);
+	bar_items = g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model));
+	CHECK(!win->send_to_shown, "Send To without a contact");
+
+	/* A contact: two buddies on this account, one on a second account */
+	account2 = pidgin_selftest_account_new("selftest2@example.invalid");
+	group = purple_group_new("pidgin4 selftest Send To");
+	purple_blist_add_group(group, NULL);
+	b1 = purple_buddy_new(st_account, ST_BUDDY, NULL);
+	purple_blist_add_buddy(b1, NULL, group, NULL);
+	contact = purple_buddy_get_contact(b1);
+	b2 = purple_buddy_new(st_account, "buddy2@example.invalid", NULL);
+	purple_blist_add_buddy(b2, contact, group, NULL);
+	b3 = purple_buddy_new(account2, "buddy3@example.invalid", NULL);
+	purple_blist_add_buddy(b3, contact, group, NULL);
+
+	pidgin_conv_window_update_menu(win);
+	CHECK(win->send_to_shown && g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model)) ==
+	      (int)bar_items + 1, "no Send To menu");
+	CHECK(g_menu_model_get_n_items(G_MENU_MODEL(win->send_to)) == 3, "%d Send To items",
+	      g_menu_model_get_n_items(G_MENU_MODEL(win->send_to)));
+
+	/* The other buddy on the same account */
+	n = n_messages(conv);
+	CHECK(send_to(win, st_account, "buddy2@example.invalid"), "conv.send-to");
+	CHECK(purple_strequal(purple_conversation_get_name(conv), "buddy2@example.invalid"),
+	      "name %s", purple_conversation_get_name(conv));
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, "buddy2@example.invalid",
+	                                            st_account) == conv, "not found by the new name");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, ST_BUDDY, st_account) == NULL,
+	      "still found by the old name");
+	CHECK(n_messages(conv) == n, "the scrollback changed (%u, %u)", n_messages(conv), n);
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "to the second");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(purple_strequal(call("send-im"), "buddy2@example.invalid|to the second|"),
+	      "send-im: %s", call("send-im"));
+	{
+		char *path = log_path(conv);
+
+		CHECK(path != NULL && strstr(path, "buddy2@example.invalid") != NULL &&
+		      file_contains(path, "to the second"), "logged to %s", path ? path : "(none)");
+		g_free(path);
+	}
+	{
+		GVariant *state = g_action_group_get_action_state(G_ACTION_GROUP(win->actions),
+		                                                  "send-to");
+		const char *name = NULL;
+
+		g_variant_get(state, "(&s&s&s)", NULL, NULL, &name);
+		CHECK(purple_strequal(name, "buddy2@example.invalid"), "Send To state %s", name);
+		g_variant_unref(state);
+	}
+
+	/* The buddy on the other account */
+	CHECK(send_to(win, account2, "buddy3@example.invalid"), "conv.send-to (account)");
+	CHECK(purple_conversation_get_account(conv) == account2, "account not changed");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, "buddy3@example.invalid",
+	                                            account2) == conv, "not found on account 2");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, "buddy2@example.invalid",
+	                                            st_account) == NULL, "found on account 1");
+	pidgin_compose_entry_set_markup(PIDGIN_COMPOSE_ENTRY(gtkconv->entry), "to the third");
+	pidgin_compose_entry_send(PIDGIN_COMPOSE_ENTRY(gtkconv->entry));
+	CHECK(purple_strequal(call("send-im"), "buddy3@example.invalid|to the third|"),
+	      "send-im: %s", call("send-im"));
+	CHECK(n_messages(conv) == n + 2, "messages %u, %u", n_messages(conv), n);
+
+	/* and back */
+	CHECK(send_to(win, st_account, ST_BUDDY), "conv.send-to (back)");
+	CHECK(purple_conversation_get_account(conv) == st_account &&
+	      purple_strequal(purple_conversation_get_name(conv), ST_BUDDY), "not back");
+	CHECK(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, ST_BUDDY, st_account) ==
+	      conv, "not found back");
+	hold("send to");
+
+	/* The contact goes: so does the menu */
+	purple_blist_remove_buddy(b3);
+	purple_blist_remove_buddy(b2);
+	purple_blist_remove_buddy(b1);
+	purple_blist_remove_group(group);
+	pidgin_selftest_account_remove(account2);
+	pidgin_conv_window_update_menu(win);
+	CHECK(!win->send_to_shown && g_menu_model_get_n_items(G_MENU_MODEL(win->menu.model)) ==
+	      (int)bar_items, "Send To left over");
+}
+
+static gboolean
 entry_has_anchor(PidginComposeEntry *entry)
 {
 	GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(entry));
@@ -925,6 +1031,7 @@ selftest_run(gpointer data)
 	test_im(&im);
 	test_chat(&chat);
 	test_attention(im);
+	test_send_to(im);
 	spin(200);
 
 	/* Tabs: both in one window (placement "last" unless the pref says

@@ -34,6 +34,7 @@
 
 #include "account.h"
 #include "blist.h"
+#include "buddyicon.h"
 #include "cmds.h"
 #include "core.h"
 #include "debug.h"
@@ -2388,7 +2389,7 @@ pidgin_conv_attach_to_conversation(PurpleConversation *conv)
 void
 pidgin_conv_switch_active_conversation(PurpleConversation *conv)
 {
-	/* One PurpleConversation per tab in pidgin4 (no "Send To"). */
+	/* One PurpleConversation per tab in pidgin4 (Send To re-targets it). */
 	PidginConversation *gtkconv = PIDGIN_CONVERSATION(conv);
 
 	if (gtkconv != NULL && gtkconv->active_conv != conv)
@@ -3056,6 +3057,170 @@ pidgin_conv_fill_more_menu(PidginConversation *gtkconv, GMenu *menu, GSimpleActi
 }
 
 /**************************************************************************
+ * Send To (Pidgin 2's generate_send_to_items())
+ **************************************************************************/
+
+static GVariant *
+send_to_target(PurpleAccount *account, const char *name)
+{
+	return g_variant_new("(sss)", purple_account_get_protocol_id(account),
+	                     purple_account_get_username(account), name);
+}
+
+/* Pidgin 2's compare_buddy_presence(): one item per account and name */
+static gint
+compare_buddy_presence(gconstpointer a, gconstpointer b)
+{
+	PurpleBuddy *b1 = purple_presence_get_buddy((PurplePresence *)a);
+	PurpleBuddy *b2 = purple_presence_get_buddy((PurplePresence *)b);
+
+	if (purple_buddy_get_account(b1) == purple_buddy_get_account(b2) &&
+	    purple_strequal(purple_buddy_get_name(b1), purple_buddy_get_name(b2)))
+		return 0;
+	return 1;
+}
+
+guint
+pidgin_conv_fill_send_to_menu(PidginConversation *gtkconv, GMenu *menu, GVariant **current)
+{
+	PurpleConversation *conv;
+	PurpleBuddy *self;
+	GSList *buds, *l;
+	GList *list = NULL, *iter;
+	guint n = 0;
+
+	g_menu_remove_all(menu);
+	if (current != NULL)
+		*current = NULL;
+	if (gtkconv == NULL || is_chat(gtkconv))
+		return 0;
+	conv = gtkconv->active_conv;
+
+	buds = purple_find_buddies(conv->account, conv->name);
+	for (l = buds; l != NULL; l = l->next) {
+		PurpleBlistNode *node = (PurpleBlistNode *)purple_buddy_get_contact(l->data);
+
+		for (node = node->child; node != NULL; node = node->next) {
+			PurpleBuddy *buddy = (PurpleBuddy *)node;
+			PurpleAccount *account;
+			PurplePresence *presence;
+
+			if (!PURPLE_BLIST_NODE_IS_BUDDY(node))
+				continue;
+			account = purple_buddy_get_account(buddy);
+			if (!purple_account_is_connected(account) && account != conv->account)
+				continue;
+			presence = purple_buddy_get_presence(buddy);
+			if (g_list_find_custom(list, presence, compare_buddy_presence) == NULL)
+				list = g_list_prepend(list, presence);
+		}
+	}
+	g_slist_free(buds);
+
+	/* Only with more than one to choose from. */
+	if (list != NULL && list->next != NULL) {
+		for (iter = g_list_last(list); iter != NULL; iter = iter->prev) {
+			PurpleBuddy *buddy = purple_presence_get_buddy(iter->data);
+			PurpleAccount *account = purple_buddy_get_account(buddy);
+			GIcon *icon = pidgin_create_prpl_gicon(account, NULL);
+			GMenuItem *item;
+			char *label;
+
+			if (PURPLE_BUDDY_IS_ONLINE(buddy))
+				label = g_strdup_printf("%s (%s)", purple_buddy_get_name(buddy),
+				                        purple_account_get_name_for_display(account));
+			else
+				/* Pidgin 2 greyed these out */
+				label = g_strdup_printf(_("%s (%s) - Offline"), purple_buddy_get_name(buddy),
+				                        purple_account_get_name_for_display(account));
+			item = g_menu_item_new(label, NULL);
+			g_menu_item_set_action_and_target_value(item, "conv.send-to",
+				send_to_target(account, purple_buddy_get_name(buddy)));
+			if (icon != NULL)
+				g_menu_item_set_icon(item, icon);
+			g_menu_append_item(menu, item);
+			g_object_unref(item);
+			g_clear_object(&icon);
+			g_free(label);
+			n++;
+		}
+	}
+	g_list_free(list);
+
+	if (n > 0 && current != NULL) {
+		self = purple_find_buddy(conv->account, conv->name);
+		*current = g_variant_ref_sink(send_to_target(conv->account,
+			self ? purple_buddy_get_name(self) : conv->name));
+	}
+	return n;
+}
+
+void
+pidgin_conv_send_to(PidginConversation *gtkconv, PurpleAccount *account, const char *name)
+{
+	PurpleConversation *conv, *other;
+	PurpleBuddyIcon *icon;
+	gboolean logging;
+
+	g_return_if_fail(gtkconv != NULL && account != NULL && name != NULL);
+
+	conv = gtkconv->active_conv;
+	if (is_chat(gtkconv))
+		return;
+	if (account == conv->account) {
+		/* purple_normalize() returns a static buffer */
+		char *norm = g_strdup(purple_normalize(account, name));
+		gboolean same = purple_strequal(norm, purple_normalize(account, conv->name));
+
+		g_free(norm);
+		if (same)
+			return;
+	}
+
+	/* Pidgin 2 kept one PurpleConversation per buddy under the tab. pidgin4
+	 * has one per tab: a buddy with a tab of its own is shown there. */
+	other = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, name, account);
+	if (other != NULL && other != conv) {
+		pidgin_conv_present_conversation(other);
+		return;
+	}
+
+	purple_debug_info("gtkconv", "Send To: %s -> %s\n", conv->name, name);
+
+	/* The log is per buddy: the next write opens the new buddy's. */
+	logging = purple_conversation_is_logging(conv);
+	purple_conversation_close_logs(conv);
+
+	if (account != conv->account) {
+		/* libpurple's conversation cache is keyed by (account, name), and
+		 * purple_conversation_set_account() leaves it alone. Drop the old
+		 * key by renaming under the old account first; the placeholder
+		 * key that remains is never looked up. */
+		char *placeholder = g_strdup_printf("\x1bpidgin4-send-to-%p", (void *)conv);
+
+		purple_conversation_set_name(conv, placeholder);
+		g_free(placeholder);
+		conv->account = account;
+	}
+	purple_conversation_set_name(conv, name);
+	purple_conversation_set_logging(conv, logging);
+
+	purple_conv_im_set_typing_state(PURPLE_CONV_IM(conv), PURPLE_NOT_TYPING);
+	icon = purple_buddy_icons_find(account, name);
+	purple_conv_im_set_icon(PURPLE_CONV_IM(conv), icon);
+	if (icon != NULL)
+		purple_buddy_icon_unref(icon);
+	{
+		PurpleConnection *gc = purple_account_get_connection(account);
+
+		purple_conversation_set_features(conv, gc ? gc->flags : 0);
+	}
+	/* The UI (features, infopane, tab, menus) follows the account. */
+	purple_conversation_update(conv, PURPLE_CONV_UPDATE_ACCOUNT);
+	pidgin_conv_update_buddy_icon(conv);
+}
+
+/**************************************************************************
  * Updates from libpurple
  **************************************************************************/
 
@@ -3114,10 +3279,21 @@ buddy_status_changed_cb(PurpleBuddy *buddy, PurpleStatus *old, PurpleStatus *new
 	update_for_buddy(buddy);
 }
 
+/* The Send To menus list the contacts' buddies that are online. */
+static void
+update_window_menus(void)
+{
+	GList *l;
+
+	for (l = pidgin_conv_windows_get_list(); l != NULL; l = l->next)
+		pidgin_conv_window_update_menu(l->data);
+}
+
 static void
 buddy_signed_cb(PurpleBuddy *buddy)
 {
 	update_for_buddy(buddy);
+	update_window_menus();
 }
 
 static void
@@ -3163,6 +3339,7 @@ account_signed_cb(PurpleConnection *gc, gpointer data)
 			update_tab_and_infopane(gtkconv);
 		}
 	}
+	update_window_menus();
 }
 
 static void
