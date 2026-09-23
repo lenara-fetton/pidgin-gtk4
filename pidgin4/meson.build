@@ -106,6 +106,7 @@ add_project_arguments(
 
 pidgin4_sources = files(
 	'gtkaccount.c',
+	'gtkblist.c',
 	'gtkconn.c',
 	'gtkdebug.c',
 	'gtkdialogs.c',
@@ -116,8 +117,11 @@ pidgin4_sources = files(
 	'gtkprefs.c',
 	'gtkrequest.c',
 	'gtksound.c',
+	'gtkstatusbox.c',
 	'gtkutils.c',
+	'pidginblistmodel.c',
 	'pidginmenu.c',
+	'pidginminidialog.c',
 	'pidginsingleui.c',
 	'stubs.c',
 )

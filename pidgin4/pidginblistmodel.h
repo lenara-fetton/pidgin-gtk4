@@ -73,7 +73,6 @@ G_DECLARE_FINAL_TYPE(PidginBlistNodeItem, pidgin_blist_node_item,
  *   "protocol-icon"  GIcon or NULL (NULL hides it)
  *   "buddy-icon"     GdkPaintable or NULL
  *   "style"          string: CSS class of the row (pidgin-blist-online, ...)
- *   "tooltip-key"    int, bumped whenever the tooltip content may change
  */
 
 /** The node. Never NULL; the item does not own it. */
@@ -195,7 +194,10 @@ void pidgin_blist_model_update_all(PidginBlistModel *model);
 /** Drops every item (the buddy list is being destroyed). */
 void pidgin_blist_model_clear(PidginBlistModel *model);
 
-/** NULL means buddy list order ("none"). Call update_all() afterwards. */
+/**
+ * NULL means buddy list order ("none"). Re-sorts the groups' stores; items
+ * hidden at the time are placed by later updates.
+ */
 void pidgin_blist_model_set_sort_func(PidginBlistModel *model,
                                       PidginBlistSortFunc func);
 PidginBlistSortFunc pidgin_blist_model_get_sort_func(PidginBlistModel *model);

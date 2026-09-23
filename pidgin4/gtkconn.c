@@ -37,6 +37,7 @@
 #include "gtkaccount.h"
 #include "gtkconn.h"
 #include "gtkdialogs.h"
+#include "gtkstatusbox.h"
 #include "gtkutils.h"
 
 #define INITIAL_RECON_DELAY_MIN  8000
@@ -57,35 +58,22 @@ typedef struct {
  */
 static GHashTable *auto_reconns = NULL;
 
-/**
- * Open error alerts, one per account. The key is the PurpleAccount, the
- * value the GCancellable that dismisses its GtkAlertDialog.
- *
- * TODO(M3): Pidgin 2 shows connection errors as mini-dialogs in the buddy
- * list (gtkblist.c, "account-error-changed"). Until the buddy list exists
- * they are alerts, and the accounts window shows the current error.
+/*
+ * Connection errors are shown by the buddy list, as in Pidgin 2: libpurple
+ * records them (purple_account_get_current_error()) and gtkblist.c turns
+ * "account-error-changed" into mini-dialogs with Reconnect / Re-enable /
+ * Modify Account buttons. This file only reconnects and disables.
  */
-static GHashTable *error_alerts = NULL;
 
 static void
 pidgin_connection_connect_progress(PurpleConnection *gc,
 		const char *text, size_t step, size_t step_count)
 {
-	/* TODO(M3): the status box's connecting throbber. */
+	/* The status box shows a spinner while any account connects
+	 * (gtkstatusbox.c watches the connection signals). */
 	purple_debug_misc("gtkconn", "%s: %s (%" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT ")\n",
 	                  purple_account_get_username(purple_connection_get_account(gc)),
 	                  text ? text : "", step, step_count);
-}
-
-static void
-close_error_alert(PurpleAccount *account)
-{
-	/* Cancelling makes the alert close itself; the callback then removes
-	 * the entry. */
-	GCancellable *cancellable = g_hash_table_lookup(error_alerts, account);
-
-	if (cancellable != NULL)
-		g_cancellable_cancel(cancellable);
 }
 
 static void
@@ -96,7 +84,6 @@ pidgin_connection_connected(PurpleConnection *gc)
 	account  = purple_connection_get_account(gc);
 
 	g_hash_table_remove(auto_reconns, account);
-	close_error_alert(account);
 }
 
 static void
@@ -144,84 +131,6 @@ do_signon(gpointer data)
 	return FALSE;
 }
 
-typedef struct {
-	PurpleAccount *account;
-	GCancellable *cancellable;
-} ErrorAlert;
-
-static void
-error_alert_cb(GObject *source, GAsyncResult *result, gpointer data)
-{
-	ErrorAlert *alert = data;
-	GError *error = NULL;
-	int button;
-
-	button = gtk_alert_dialog_choose_finish(GTK_ALERT_DIALOG(source), result, &error);
-
-	/* Only forget the entry if it is still ours (not replaced). */
-	if (error_alerts != NULL &&
-	    g_hash_table_lookup(error_alerts, alert->account) == alert->cancellable)
-		g_hash_table_remove(error_alerts, alert->account);
-
-	if (error == NULL && button == 1 &&
-	    g_list_find(purple_accounts_get_all(), alert->account) != NULL) {
-		pidgin_account_dialog_show(PIDGIN_MODIFY_ACCOUNT_DIALOG, alert->account);
-	} else if (error == NULL && button == 2 &&
-	           g_list_find(purple_accounts_get_all(), alert->account) != NULL) {
-		purple_account_set_enabled(alert->account, PIDGIN_UI, TRUE);
-	}
-
-	g_clear_error(&error);
-	g_object_unref(alert->cancellable);
-	g_free(alert);
-}
-
-static void
-show_error_alert(PurpleAccount *account, const char *text, gboolean fatal)
-{
-	static const char *fatal_buttons[] = { N_("_Close"), N_("_Modify Account"),
-	                                       N_("Re-_enable"), NULL };
-	const char *buttons[4];
-	GtkAlertDialog *dialog;
-	ErrorAlert *alert;
-	char *primary, *detail;
-	int i;
-
-	close_error_alert(account);
-
-	primary = g_strdup_printf(_("%s disconnected"),
-	                          purple_account_get_username(account));
-	if (fatal)
-		detail = g_strdup_printf(_("%s\n\n%s will not attempt to reconnect "
-			"the account until you correct the error and re-enable the "
-			"account."), text ? text : "", PIDGIN_NAME);
-	else
-		detail = g_strdup(text ? text : "");
-
-	for (i = 0; fatal_buttons[i] != NULL; i++)
-		buttons[i] = _(fatal_buttons[i]);
-	buttons[i] = NULL;
-
-	dialog = gtk_alert_dialog_new("%s", primary);
-	gtk_alert_dialog_set_detail(dialog, detail);
-	gtk_alert_dialog_set_buttons(dialog, buttons);
-	gtk_alert_dialog_set_cancel_button(dialog, 0);
-	gtk_alert_dialog_set_default_button(dialog, 1);
-	gtk_alert_dialog_set_modal(dialog, FALSE);
-
-	alert = g_new0(ErrorAlert, 1);
-	alert->account = account;
-	alert->cancellable = g_cancellable_new();
-	g_hash_table_insert(error_alerts, account, g_object_ref(alert->cancellable));
-
-	gtk_alert_dialog_choose(dialog, pidgin_get_active_window(),
-	                        alert->cancellable, error_alert_cb, alert);
-	g_object_unref(dialog);
-
-	g_free(primary);
-	g_free(detail);
-}
-
 static void
 pidgin_connection_report_disconnect_reason (PurpleConnection *gc,
                                             PurpleConnectionError reason,
@@ -245,8 +154,8 @@ pidgin_connection_report_disconnect_reason (PurpleConnection *gc,
 		}
 		info->timeout = g_timeout_add(info->delay, do_signon, account);
 
-		/* Pidgin 2 only showed these in the buddy list; the accounts
-		 * window shows them (purple_account_get_current_error()). */
+		/* The buddy list shows the error until the account
+		 * reconnects (purple_account_get_current_error()). */
 		purple_debug_info("gtkconn", "%s disconnected (%s); reconnecting in %d s\n",
 		                  purple_account_get_username(account),
 		                  text ? text : "", info->delay / 1000);
@@ -254,9 +163,9 @@ pidgin_connection_report_disconnect_reason (PurpleConnection *gc,
 		if (info != NULL)
 			g_hash_table_remove(auto_reconns, account);
 
+		/* The buddy list shows "<account> disabled" with Re-enable
+		 * and Modify Account (gtkblist.c). */
 		purple_account_set_enabled(account, PIDGIN_UI, FALSE);
-
-		show_error_alert(account, text, TRUE);
 	}
 }
 
@@ -264,7 +173,7 @@ static void pidgin_connection_network_connected (void)
 {
 	GList *list, *l;
 
-	/* TODO(M3): pidgin_status_box_set_network_available(TRUE) */
+	pidgin_status_box_set_network_available(TRUE);
 
 	l = list = purple_accounts_get_all_active();
 	while (l) {
@@ -281,7 +190,7 @@ static void pidgin_connection_network_disconnected (void)
 {
 	GList *list, *l;
 
-	/* TODO(M3): pidgin_status_box_set_network_available(FALSE) */
+	pidgin_status_box_set_network_available(FALSE);
 
 	l = list = purple_accounts_get_all_active();
 	while (l) {
@@ -325,16 +234,8 @@ static void
 account_removed_cb(PurpleAccount *account, gpointer user_data)
 {
 	g_hash_table_remove(auto_reconns, account);
-	close_error_alert(account);
 }
 
-static void
-account_enabled_cb(PurpleAccount *account, gpointer user_data)
-{
-	/* Re-enabled from the accounts window: the old error no longer
-	 * applies. */
-	close_error_alert(account);
-}
 
 
 /**************************************************************************
@@ -355,34 +256,17 @@ pidgin_connection_init(void)
 	auto_reconns = g_hash_table_new_full(
 							g_direct_hash, g_direct_equal,
 							NULL, free_auto_recon);
-	error_alerts = g_hash_table_new_full(g_direct_hash, g_direct_equal,
-	                                     NULL, g_object_unref);
 
 	purple_signal_connect(purple_accounts_get_handle(), "account-removed",
 						pidgin_connection_get_handle(),
 						PURPLE_CALLBACK(account_removed_cb), NULL);
-	purple_signal_connect(purple_accounts_get_handle(), "account-enabled",
-						pidgin_connection_get_handle(),
-						PURPLE_CALLBACK(account_enabled_cb), NULL);
 }
 
 void
 pidgin_connection_uninit(void)
 {
-	GHashTable *alerts = error_alerts;
-	GHashTableIter iter;
-	gpointer value;
-
 	purple_signals_disconnect_by_handle(pidgin_connection_get_handle());
 
 	g_hash_table_destroy(auto_reconns);
 	auto_reconns = NULL;
-
-	/* The callbacks run later, from the main loop; they see
-	 * error_alerts == NULL and only free their own data. */
-	error_alerts = NULL;
-	g_hash_table_iter_init(&iter, alerts);
-	while (g_hash_table_iter_next(&iter, NULL, &value))
-		g_cancellable_cancel(value);
-	g_hash_table_destroy(alerts);
 }

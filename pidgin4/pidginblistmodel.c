@@ -63,7 +63,6 @@ struct _PidginBlistNodeItem
 	GIcon *emblem;
 	GIcon *protocol_icon;
 	GdkPaintable *buddy_icon;
-	int tooltip_key;
 };
 
 enum {
@@ -76,7 +75,6 @@ enum {
 	ITEM_PROP_EMBLEM,
 	ITEM_PROP_PROTOCOL_ICON,
 	ITEM_PROP_BUDDY_ICON,
-	ITEM_PROP_TOOLTIP_KEY,
 	ITEM_N_PROPS
 };
 
@@ -137,9 +135,6 @@ pidgin_blist_node_item_get_property(GObject *obj, guint prop_id,
 	case ITEM_PROP_BUDDY_ICON:
 		g_value_set_object(value, item->buddy_icon);
 		break;
-	case ITEM_PROP_TOOLTIP_KEY:
-		g_value_set_int(value, item->tooltip_key);
-		break;
 	default:
 		G_OBJECT_WARN_INVALID_PROPERTY_ID(obj, prop_id, pspec);
 	}
@@ -177,12 +172,6 @@ pidgin_blist_node_item_set_property(GObject *obj, guint prop_id,
 		/* Textures are compared by identity only. */
 		if (item->buddy_icon != g_value_get_object(value)) {
 			g_set_object(&item->buddy_icon, g_value_get_object(value));
-			g_object_notify_by_pspec(obj, pspec);
-		}
-		break;
-	case ITEM_PROP_TOOLTIP_KEY:
-		if (item->tooltip_key != g_value_get_int(value)) {
-			item->tooltip_key = g_value_get_int(value);
 			g_object_notify_by_pspec(obj, pspec);
 		}
 		break;
@@ -247,8 +236,6 @@ pidgin_blist_node_item_class_init(PidginBlistNodeItemClass *klass)
 		G_TYPE_ICON, flags);
 	item_props[ITEM_PROP_BUDDY_ICON] = g_param_spec_object("buddy-icon", NULL, NULL,
 		GDK_TYPE_PAINTABLE, flags);
-	item_props[ITEM_PROP_TOOLTIP_KEY] = g_param_spec_int("tooltip-key", NULL, NULL,
-		G_MININT, G_MAXINT, 0, flags);
 
 	g_object_class_install_properties(obj_class, ITEM_N_PROPS, item_props);
 }
@@ -493,6 +480,9 @@ static guint model_signals[N_SIGNALS];
 
 G_DEFINE_FINAL_TYPE(PidginBlistModel, pidgin_blist_model, G_TYPE_OBJECT)
 
+static int compare_items(PidginBlistModel *model, PidginBlistNodeItem *a,
+                         PidginBlistNodeItem *b);
+
 static void
 pidgin_blist_model_dispose(GObject *obj)
 {
@@ -566,11 +556,45 @@ pidgin_blist_model_ensure(PidginBlistModel *model, PurpleBlistNode *node)
 	return item;
 }
 
+static int
+store_sort_cb(gconstpointer a, gconstpointer b, gpointer data)
+{
+	return compare_items(data, (PidginBlistNodeItem *)a, (PidginBlistNodeItem *)b);
+}
+
 void
 pidgin_blist_model_set_sort_func(PidginBlistModel *model, PidginBlistSortFunc func)
 {
+	GHashTableIter iter;
+	gpointer value;
+
 	g_return_if_fail(PIDGIN_IS_BLIST_MODEL(model));
+
+	if (model->sort_func == func)
+		return;
 	model->sort_func = func;
+
+	/* Re-sort every group in one go: placing items one by one would
+	 * binary-search stores that are not in the new order yet. */
+	g_hash_table_iter_init(&iter, model->items);
+	while (g_hash_table_iter_next(&iter, NULL, &value)) {
+		PidginBlistNodeItem *gitem = value;
+		guint j, m;
+
+		if (!PURPLE_BLIST_NODE_IS_GROUP(gitem->node))
+			continue;
+
+		g_list_store_sort(gitem->children, store_sort_cb, model);
+
+		/* The rows were re-created collapsed. */
+		m = g_list_model_get_n_items(G_LIST_MODEL(gitem->children));
+		for (j = 0; j < m; j++) {
+			PidginBlistNodeItem *item = g_list_model_get_item(G_LIST_MODEL(gitem->children), j);
+			if (item->expandable && item->expanded)
+				g_signal_emit(model, model_signals[SIGNAL_ITEM_INSERTED], 0, item);
+			g_object_unref(item);
+		}
+	}
 }
 
 PidginBlistSortFunc
@@ -649,16 +673,21 @@ compare_items(PidginBlistModel *model, PidginBlistNodeItem *a, PidginBlistNodeIt
 	return 1;
 }
 
+/* The item counts as hidden (get_visible() is FALSE) while it is being
+ * removed, so handlers of the store's (and the GtkTreeListModel's)
+ * signals can tell a removal from a user action. */
 static void
 detach_item(PidginBlistNodeItem *item)
 {
+	GListStore *store = item->container;
 	guint pos;
 
-	if (item->container == NULL)
+	if (store == NULL)
 		return;
-	if (g_list_store_find(item->container, item, &pos))
-		g_list_store_remove(item->container, pos);
-	g_clear_object(&item->container);
+	item->container = NULL;
+	if (g_list_store_find(store, item, &pos))
+		g_list_store_remove(store, pos);
+	g_object_unref(store);
 }
 
 /* Where @item belongs in @store (binary search), ignoring @item itself. */
@@ -715,18 +744,16 @@ place_item(PidginBlistModel *model, PidginBlistNodeItem *item,
 		return;
 	}
 
-	if (item->container == store && g_list_store_find(store, item, &pos)) {
-		if (in_order(model, store, item, pos))
-			return;
-		/* Take it out and put it back in the right place. */
-		g_list_store_remove(store, pos);
-	} else {
-		detach_item(item);
-		item->container = g_object_ref(store);
-	}
+	if (item->container == store && g_list_store_find(store, item, &pos) &&
+	    in_order(model, store, item, pos))
+		return;
+
+	/* Take it out (of wherever it is) and put it in the right place. */
+	detach_item(item);
 
 	pos = find_position(model, store, item);
 	g_list_store_insert(store, pos, item);
+	item->container = g_object_ref(store);
 	g_signal_emit(model, model_signals[SIGNAL_ITEM_INSERTED], 0, item);
 }
 

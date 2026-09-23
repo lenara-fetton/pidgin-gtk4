@@ -13,20 +13,10 @@
 #include "pidgin-internal.h"
 #include "pidgin.h"
 
-#include "blist.h"
 #include "debug.h"
 #include "pounce.h"
 
 #include "stubs.h"
-
-/* TODO(M3): gtkblist.c. See stubs.h for why this must not be NULL. */
-static PurpleBlistUiOps blist_ui_ops = { NULL };
-
-PurpleBlistUiOps *
-pidgin_blist_get_ui_ops(void)
-{
-	return &blist_ui_ops;
-}
 
 /**************************************************************************
  * Buddy pounces. TODO(M5): gtkpounce.c (editor, pounce list, and the
