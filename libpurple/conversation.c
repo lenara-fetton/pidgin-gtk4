@@ -2756,6 +2756,69 @@ purple_conversations_init(void)
 			     purple_value_new(PURPLE_TYPE_SUBTYPE,
 					    PURPLE_SUBTYPE_CONVERSATION),
 			     purple_value_new(PURPLE_TYPE_BOXED, "GList **"));
+
+	/*
+	 * Message metadata and message events (2.14.14-gtk4, additive).
+	 *
+	 * These are emitted by prpls only when the UI advertises
+	 * "message-meta" = "1" in purple_core_get_ui_info(); see
+	 * doc/conversation-signals.dox and doc/PIDGIN-UPGRADE.md (M8).
+	 */
+	purple_signal_register(handle, "receiving-message-meta",
+			     purple_marshal_VOID__POINTER_POINTER_POINTER, NULL, 3,
+			     purple_value_new(PURPLE_TYPE_SUBTYPE,
+					    PURPLE_SUBTYPE_ACCOUNT),
+			     purple_value_new(PURPLE_TYPE_STRING), /* conv name */
+			     purple_value_new(PURPLE_TYPE_BOXED, "GHashTable *"));
+
+	purple_signal_register(handle, "sending-message-meta",
+			     purple_marshal_VOID__POINTER_POINTER_POINTER, NULL, 3,
+			     purple_value_new(PURPLE_TYPE_SUBTYPE,
+					    PURPLE_SUBTYPE_ACCOUNT),
+			     purple_value_new(PURPLE_TYPE_STRING), /* conv name */
+			     purple_value_new(PURPLE_TYPE_BOXED, "GHashTable *"));
+
+	purple_signal_register(handle, "message-corrected",
+			     purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER_POINTER,
+			     purple_value_new(PURPLE_TYPE_BOOLEAN), 6,
+			     purple_value_new(PURPLE_TYPE_SUBTYPE,
+					    PURPLE_SUBTYPE_ACCOUNT),
+			     purple_value_new(PURPLE_TYPE_STRING), /* conv name */
+			     purple_value_new(PURPLE_TYPE_STRING), /* target id */
+			     purple_value_new(PURPLE_TYPE_STRING), /* new id */
+			     purple_value_new(PURPLE_TYPE_STRING), /* new body */
+			     purple_value_new(PURPLE_TYPE_STRING)); /* sender */
+
+	purple_signal_register(handle, "message-reaction",
+			     purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER_POINTER,
+			     purple_value_new(PURPLE_TYPE_BOOLEAN), 6,
+			     purple_value_new(PURPLE_TYPE_SUBTYPE,
+					    PURPLE_SUBTYPE_ACCOUNT),
+			     purple_value_new(PURPLE_TYPE_STRING), /* conv name */
+			     purple_value_new(PURPLE_TYPE_STRING), /* target id */
+			     purple_value_new(PURPLE_TYPE_STRING), /* emoji */
+			     purple_value_new(PURPLE_TYPE_STRING), /* sender */
+			     purple_value_new(PURPLE_TYPE_BOOLEAN)); /* add, as GINT_TO_POINTER */
+
+	purple_signal_register(handle, "message-receipt",
+			     purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
+			     purple_value_new(PURPLE_TYPE_BOOLEAN), 5,
+			     purple_value_new(PURPLE_TYPE_SUBTYPE,
+					    PURPLE_SUBTYPE_ACCOUNT),
+			     purple_value_new(PURPLE_TYPE_STRING), /* conv name */
+			     purple_value_new(PURPLE_TYPE_STRING), /* message id */
+			     purple_value_new(PURPLE_TYPE_STRING), /* "delivered"/"displayed" */
+			     purple_value_new(PURPLE_TYPE_STRING)); /* sender */
+
+	purple_signal_register(handle, "message-retracted",
+			     purple_marshal_BOOLEAN__POINTER_POINTER_POINTER_POINTER_POINTER,
+			     purple_value_new(PURPLE_TYPE_BOOLEAN), 5,
+			     purple_value_new(PURPLE_TYPE_SUBTYPE,
+					    PURPLE_SUBTYPE_ACCOUNT),
+			     purple_value_new(PURPLE_TYPE_STRING), /* conv name */
+			     purple_value_new(PURPLE_TYPE_STRING), /* target id */
+			     purple_value_new(PURPLE_TYPE_STRING), /* sender */
+			     purple_value_new(PURPLE_TYPE_STRING)); /* reason, may be NULL */
 }
 
 void
