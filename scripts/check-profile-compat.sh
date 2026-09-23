@@ -31,7 +31,7 @@ Options:
   --pidgin4 BIN      pidgin4 binary; runs steps (a) and (c). Without it those
                      steps are skipped (pidgin4 does not exist before M2).
   --pidgin4-args S   extra arguments for pidgin4 (word-split), in addition to
-                     '-c <scratch profile>'
+                     '-n -d -c <scratch profile>'
   --pidgin2 BIN      Pidgin 2 binary for step (b) (default: /usr/bin/pidgin)
   --time SECS        how long each UI runs before SIGTERM (default: 20)
   --with-logs        copy logs/ too. By default logs/ (~2.6 GB) is skipped
@@ -59,8 +59,8 @@ Accounts are never signed in: Pidgin 2 runs with --nologin (-n) and
 cannot reach the running Pidgin or the keyring. --nologin makes the offline
 status current, which creates a transient status; that is an allowed change.
 
-pidgin4 hooks: pidgin4 must accept '-c DIR', save and quit on SIGTERM, and
-should get its "don't sign in" option via --pidgin4-args until it is defined.
+pidgin4 (M2 on) runs the same way: --nologin (-n) and -d are always passed,
+inside its own D-Bus session; it must save and quit on SIGTERM.
 
 Exit status: 0 = pass, 1 = gate failed, 2 = usage/environment error.
 EOF
@@ -259,8 +259,8 @@ run_ui() {
 	say "[$step] stopped cleanly (status $rc), log: $log"
 }
 
-# Pidgin 2 specific checks on its debug log (-d).
-check_pidgin2_log() {
+# Checks on a UI's debug log (-d); the same for Pidgin 2 and pidgin4.
+check_ui_log() {
 	local step=$1 log=$workdir/$1.log ok=1 files
 	# Plugins from the profile (Discord, Steam) must load.
 	if grep -E "plugins: .*$profile/plugins/.*(not usable|could not|failed)" "$log" >&2; then
@@ -287,14 +287,15 @@ pidgin4_step() {
 		return 0
 	fi
 	# shellcheck disable=SC2086  # pidgin4_args is word-split on purpose
-	run_ui "$step" pidgin4 "$pidgin4" -c "$profile" $pidgin4_args
+	run_ui "$step" pidgin4 "$pidgin4" -n -d -c "$profile" $pidgin4_args
+	check_ui_log "$step"
 	validate "$step"
 }
 
 pidgin2_step() {
 	local step=$1
 	run_ui "$step" pidgin2 "$pidgin2" -m -n -d -c "$profile"
-	check_pidgin2_log "$step"
+	check_ui_log "$step"
 	validate "$step"
 }
 
