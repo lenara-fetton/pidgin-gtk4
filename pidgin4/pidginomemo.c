@@ -43,6 +43,7 @@
 
 #include "gtkplugin.h"
 #include "gtkutils.h"
+#include "pidginconvmeta.h"
 #include "pidginomemo.h"
 #include "pidginselftest.h"
 
@@ -59,10 +60,19 @@ static const char *const trust_labels[] = {
  * IPC
  **************************************************************************/
 
+static PurplePlugin *test_plugin = NULL;
+
+void
+pidgin_omemo_set_plugin_for_tests(PurplePlugin *plugin)
+{
+	test_plugin = plugin;
+}
+
 static PurplePlugin *
 omemo_plugin(void)
 {
-	PurplePlugin *plugin = purple_plugins_find_with_id(OMEMO_PLUGIN_ID);
+	PurplePlugin *plugin = test_plugin ? test_plugin
+	                                   : purple_plugins_find_with_id(OMEMO_PLUGIN_ID);
 
 	return (plugin != NULL && purple_plugin_is_loaded(plugin)) ? plugin : NULL;
 }
@@ -225,10 +235,16 @@ typedef struct {
 	GtkWidget *filter_entry;
 	GtkWidget *columnview;
 	GtkWidget *status;
+	GtkWidget *omemo2_note;         /* round 2: contacts that use OMEMO 2 */
+	GString *omemo2_jids;
 	GListStore *store;
 	GtkCustomFilter *filter;
 	guint n_jids;
 } OmemoWindow;
+
+/* XEP-0384 v0.8+ ("OMEMO 2"); the plugin speaks the legacy
+ * eu.siacs.conversations.axolotl only. */
+#define OMEMO2_NS "urn:xmpp:omemo:2"
 
 static OmemoWindow *omemo_window = NULL;
 static int handle;
@@ -260,6 +276,13 @@ add_devices(PurpleAccount *account, const char *jid, const char *shown_jid,
 
 	if (devices != NULL)
 		omemo_window->n_jids++;
+	/* devices, but their messages came as OMEMO 2 (XEP-0380 meta) */
+	if (devices != NULL && jid != NULL &&
+	    pidgin_conv_meta_saw_encryption(account, jid, OMEMO2_NS)) {
+		if (omemo_window->omemo2_jids->len > 0)
+			g_string_append(omemo_window->omemo2_jids, ", ");
+		g_string_append(omemo_window->omemo2_jids, shown_jid);
+	}
 	for (l = devices; l != NULL; l = l->next) {
 		PidginOmemoDevice *dev = device_new(shown_jid, l->data);
 		char *key = g_strdup_printf("%s/%u", shown_jid, dev->device_id);
@@ -301,6 +324,8 @@ refresh(void)
 	gtk_widget_set_sensitive(omemo_window->body, available);
 	g_list_store_remove_all(omemo_window->store);
 	omemo_window->n_jids = 0;
+	g_string_truncate(omemo_window->omemo2_jids, 0);
+	gtk_widget_set_visible(omemo_window->omemo2_note, FALSE);
 
 	account = selected_account();
 	if (!available || account == NULL) {
@@ -357,6 +382,15 @@ refresh(void)
 		omemo_window->n_jids);
 	gtk_label_set_text(GTK_LABEL(omemo_window->status), text);
 	g_free(text);
+	if (omemo_window->omemo2_jids->len > 0) {
+		text = g_strdup_printf(_("OMEMO 2 (%s), which isn't supported, is used by: %s. "
+		                         "Messages encrypted with it can't be read here, "
+		                         "whatever the trust below."),
+		                       OMEMO2_NS, omemo_window->omemo2_jids->str);
+		gtk_label_set_text(GTK_LABEL(omemo_window->omemo2_note), text);
+		gtk_widget_set_visible(omemo_window->omemo2_note, TRUE);
+		g_free(text);
+	}
 	gtk_filter_changed(GTK_FILTER(omemo_window->filter), GTK_FILTER_CHANGE_DIFFERENT);
 }
 
@@ -428,6 +462,7 @@ window_destroy_cb(GtkWidget *window, gpointer data)
 	omemo_window = NULL;
 	g_clear_object(&win->store);
 	g_clear_object(&win->filter);
+	g_string_free(win->omemo2_jids, TRUE);
 	g_free(win);
 }
 
@@ -691,6 +726,20 @@ create_window(PurpleAccount *account)
 	gtk_label_set_xalign(GTK_LABEL(win->status), 0.0);
 	gtk_widget_add_css_class(win->status, "dim-label");
 	gtk_box_append(GTK_BOX(win->body), win->status);
+
+	win->omemo2_jids = g_string_new(NULL);
+	hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, PIDGIN_HIG_BOX_SPACE);
+	gtk_box_append(GTK_BOX(hbox), gtk_image_new_from_icon_name("dialog-warning-symbolic"));
+	label = gtk_label_new(NULL);
+	gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+	gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+	gtk_widget_set_hexpand(label, TRUE);
+	gtk_widget_set_name(label, "pidgin-omemo2-note");
+	gtk_box_append(GTK_BOX(hbox), label);
+	gtk_box_append(GTK_BOX(win->body), hbox);
+	win->omemo2_note = label;
+	g_object_bind_property(label, "visible", hbox, "visible", G_BINDING_SYNC_CREATE);
+	gtk_widget_set_visible(label, FALSE);
 
 	pidgin_dialog_add_button(win->window, _("_Close"), G_CALLBACK(close_cb), NULL);
 

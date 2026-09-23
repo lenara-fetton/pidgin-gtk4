@@ -76,6 +76,43 @@ static PurplePlugin *mam_plugin;     /* where mam-query-done is connected */
  * the body URL would get. */
 static char *writing_share_url = NULL;
 static void share_meta_taken(PurpleConversation *conv, GHashTable *meta);
+/* "<account key> <bare jid> <eme namespace>" seen this session */
+static GHashTable *seen_encryption = NULL;
+
+static char *
+encryption_key(PurpleAccount *account, const char *jid, const char *ns)
+{
+	char *akey = pidgin_message_index_account_key(account);
+	char *bare = pidgin_conv_meta_bare_jid(jid);
+	char *key = g_strdup_printf("%s %s %s", akey, purple_normalize(account, bare), ns);
+
+	g_free(akey);
+	g_free(bare);
+	return key;
+}
+
+void
+pidgin_conv_meta_note_encryption(PurpleAccount *account, const char *jid, const char *ns)
+{
+	g_return_if_fail(account != NULL && jid != NULL && ns != NULL);
+	if (seen_encryption == NULL)
+		seen_encryption = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	g_hash_table_add(seen_encryption, encryption_key(account, jid, ns));
+}
+
+gboolean
+pidgin_conv_meta_saw_encryption(PurpleAccount *account, const char *jid, const char *ns)
+{
+	char *key;
+	gboolean ret;
+
+	if (seen_encryption == NULL || account == NULL || jid == NULL || ns == NULL)
+		return FALSE;
+	key = encryption_key(account, jid, ns);
+	ret = g_hash_table_contains(seen_encryption, key);
+	g_free(key);
+	return ret;
+}
 
 /* Where the last line libpurple is about to log was going to be written
  * (from "writing-*-msg", before the log write). */
@@ -642,6 +679,16 @@ receiving_meta_cb(PurpleAccount *account, const char *conv_name, GHashTable *met
 
 	if (account == NULL || conv_name == NULL || meta == NULL)
 		return;
+
+	/* XEP-0380: who sends with which scheme we couldn't decrypt */
+	if (g_hash_table_lookup(meta, "eme-namespace") != NULL) {
+		const char *ns = g_hash_table_lookup(meta, "eme-namespace");
+		const char *sender = g_hash_table_lookup(meta, "sender");
+
+		pidgin_conv_meta_note_encryption(account, conv_name, ns);
+		if (sender != NULL)
+			pidgin_conv_meta_note_encryption(account, sender, ns);
+	}
 
 	idx = pidgin_message_index_get_default();
 	if (idx != NULL) {
@@ -1814,4 +1861,5 @@ pidgin_conv_meta_uninit(void)
 	g_clear_pointer(&last_write.path, g_free);
 	last_write.conv = NULL;
 	g_clear_pointer(&writing_share_url, g_free);
+	g_clear_pointer(&seen_encryption, g_hash_table_destroy);
 }

@@ -843,6 +843,19 @@ but no XEP-0186.
 - [ ] A text message with a file (Conversations' caption as the body):
       the text, then the card.
 
+### Encryption we can't read (XEP-0380)
+- [ ] From Gajim or Dino, send a message encrypted with OpenPGP (XEP-0373)
+      or OTR: the sender's fallback text stays, and under it an italic,
+      dimmed line with a crossed-out lock: "Encrypted with OpenPGP for
+      XMPP, which this client doesn't support" (the namespace as its
+      tooltip).
+- [ ] With the OMEMO plugin loaded, an OMEMO message it decrypts shows no
+      such line. From a client that only speaks OMEMO 2
+      (`urn:xmpp:omemo:2`, e.g. a recent Kaidan/Dino): the line says
+      "Encrypted with OMEMO…", and Tools → OMEMO Fingerprints, for that
+      contact, shows a warning that they use OMEMO 2, which isn't
+      supported.
+
 For headless test runs only:
 - `PIDGIN4_REQUEST_SELFTEST=1` opens one request of every kind at startup.
 - `PIDGIN4_ACCOUNT_SELFTEST=1` opens the accounts window, then opens and
@@ -942,7 +955,10 @@ For headless test runs only:
   caption, no inline copy of the body URL, then the image from a local
   SoupServer with its SHA-256 verified, a wrong hash shown as "hash
   mismatch", an unknown algorithm "not verified", a video's media card
-  and a PDF's file card. It removes its account and quits with
+  and a PDF's file card; the XEP-0380 line (text, italics, icon,
+  tooltip) and the OMEMO window's OMEMO 2 warning (a stand-in OMEMO
+  plugin listing devices for an unconnected XMPP account that got an
+  `urn:xmpp:omemo:2` message). It removes its account and quits with
   status 0 ("PASS (N checks)"). Scratch profile only.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`

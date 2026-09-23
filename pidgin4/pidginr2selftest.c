@@ -38,6 +38,7 @@
 #include "status.h"
 #include "util.h"
 #include "value.h"
+#include "version.h"
 
 #include "gtkblist.h"
 #include "gtkconv.h"
@@ -51,6 +52,7 @@
 #include "pidginimageloader.h"
 #include "pidginmessage.h"
 #include "pidginmessageview.h"
+#include "pidginomemo.h"
 #include "pidginselftest.h"
 #include "pidginserverfeatures.h"
 
@@ -266,6 +268,23 @@ find_class(GtkWidget *widget, const char *css_class, const char *tooltip)
 	for (child = gtk_widget_get_first_child(widget); child != NULL;
 	     child = gtk_widget_get_next_sibling(child))
 		if ((found = find_class(child, css_class, tooltip)) != NULL)
+			return found;
+	return NULL;
+}
+
+/* As find_class(), but only a visible one (rows are recycled). */
+static GtkWidget *
+find_visible_class(GtkWidget *widget, const char *css_class)
+{
+	GtkWidget *child, *found;
+
+	if (widget == NULL || !gtk_widget_get_visible(widget))
+		return NULL;
+	if (gtk_widget_has_css_class(widget, css_class))
+		return widget;
+	for (child = gtk_widget_get_first_child(widget); child != NULL;
+	     child = gtk_widget_get_next_sibling(child))
+		if ((found = find_visible_class(child, css_class)) != NULL)
 			return found;
 	return NULL;
 }
@@ -1060,6 +1079,183 @@ out:
 }
 
 /**************************************************************************
+ * 4. Explicit message encryption (XEP-0380)
+ **************************************************************************/
+
+#define OMEMO2_JID "omemo2@example.invalid"
+#define OMEMO1_JID "omemo1@example.invalid"
+
+static GList *
+fake_list_devices(PurpleAccount *account, const char *jid)
+{
+	GHashTable *h;
+
+	if (jid == NULL || (!purple_strequal(jid, OMEMO2_JID) && !purple_strequal(jid, OMEMO1_JID)))
+		return NULL;
+	h = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_hash_table_insert(h, g_strdup("device-id"), g_strdup("4711"));
+	g_hash_table_insert(h, g_strdup("fingerprint"), g_strdup("05aabbccddeeff00112233"));
+	g_hash_table_insert(h, g_strdup("trust"), g_strdup("undecided"));
+	g_hash_table_insert(h, g_strdup("active"), g_strdup("1"));
+	g_hash_table_insert(h, g_strdup("session"), g_strdup("0"));
+	g_hash_table_insert(h, g_strdup("own"), g_strdup("0"));
+	return g_list_append(NULL, h);
+}
+
+static char *
+fake_own_fingerprint(PurpleAccount *account)
+{
+	return g_strdup("05ffeeddccbbaa99887766");
+}
+
+static gboolean
+fake_omemo_load(PurplePlugin *plugin)
+{
+	purple_plugin_ipc_register(plugin, "omemo-list-devices", PURPLE_CALLBACK(fake_list_devices),
+	                           purple_marshal_POINTER__POINTER_POINTER,
+	                           purple_value_new(PURPLE_TYPE_POINTER), 2,
+	                           purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT),
+	                           purple_value_new(PURPLE_TYPE_STRING));
+	purple_plugin_ipc_register(plugin, "omemo-own-fingerprint",
+	                           PURPLE_CALLBACK(fake_own_fingerprint),
+	                           purple_marshal_POINTER__POINTER,
+	                           purple_value_new(PURPLE_TYPE_STRING), 1,
+	                           purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT));
+	/* the window connects to it (never emitted here) */
+	purple_signal_register(plugin, "omemo-new-device", purple_marshal_VOID__POINTER_POINTER_UINT,
+	                       NULL, 4,
+	                       purple_value_new(PURPLE_TYPE_SUBTYPE, PURPLE_SUBTYPE_ACCOUNT),
+	                       purple_value_new(PURPLE_TYPE_STRING),
+	                       purple_value_new(PURPLE_TYPE_UINT),
+	                       purple_value_new(PURPLE_TYPE_STRING));
+	return TRUE;
+}
+
+static gboolean
+fake_omemo_unload(PurplePlugin *plugin)
+{
+	purple_plugin_ipc_unregister_all(plugin);
+	purple_signals_unregister_by_instance(plugin);
+	return TRUE;
+}
+
+static PurplePluginInfo fake_omemo_info = {
+	.magic = PURPLE_PLUGIN_MAGIC,
+	.major_version = PURPLE_MAJOR_VERSION,
+	.minor_version = PURPLE_MINOR_VERSION,
+	.type = PURPLE_PLUGIN_STANDARD,
+	.priority = PURPLE_PRIORITY_DEFAULT,
+	.id = "core-pidgin4-r2-omemo-standin",
+	.name = "OMEMO (selftest stand-in)",
+	.version = "0",
+	.summary = "pidgin4 round-2 selftest",
+	.description = "Lists one device for two JIDs.",
+	.load = fake_omemo_load,
+	.unload = fake_omemo_unload,
+};
+
+static void
+test_omemo2_note(void)
+{
+	PurplePlugin *fake;
+	PurpleAccount *xmpp;
+	GtkWidget *win, *note;
+
+	if (purple_find_prpl("prpl-jabber") == NULL) {
+		g_print(R2 ": no XMPP protocol; OMEMO 2 note not checked\n");
+		return;
+	}
+	fake = purple_plugin_new(TRUE, NULL);
+	fake->info = &fake_omemo_info;
+	purple_plugin_register(fake);
+	CHECK(purple_plugin_load(fake), "the stand-in didn't load");
+	pidgin_omemo_set_plugin_for_tests(fake);
+	CHECK(pidgin_omemo_is_available(), "the stand-in isn't used");
+
+	/* an XMPP account (never enabled or connected) that got OMEMO 2 */
+	xmpp = purple_account_new("r2-omemo@example.invalid", "prpl-jabber");
+	purple_accounts_add(xmpp);
+	purple_signal_emit(purple_conversations_get_handle(), "receiving-message-meta", xmpp,
+	                   OMEMO2_JID, meta_new("eme-namespace", "urn:xmpp:omemo:2",
+	                                        "eme-name", "OMEMO", NULL));
+	CHECK(pidgin_conv_meta_saw_encryption(xmpp, OMEMO2_JID "/phone", "urn:xmpp:omemo:2"),
+	      "the OMEMO 2 message wasn't noted");
+	CHECK(!pidgin_conv_meta_saw_encryption(xmpp, OMEMO1_JID, "urn:xmpp:omemo:2"),
+	      "noted for someone else");
+
+	pidgin_omemo_show_fingerprints(xmpp, OMEMO2_JID);
+	spin(200);
+	win = find_window("omemo");
+	note = find_named(win, "pidgin-omemo2-note");
+	CHECK(note != NULL && gtk_widget_get_visible(note) &&
+	      strstr(gtk_label_get_text(GTK_LABEL(note)), OMEMO2_JID) != NULL &&
+	      strstr(gtk_label_get_text(GTK_LABEL(note)), "OMEMO 2") != NULL,
+	      "no OMEMO 2 note: %s", note ? gtk_label_get_text(GTK_LABEL(note)) : "-");
+	/* a contact with devices but no OMEMO 2 message: no note */
+	pidgin_omemo_show_fingerprints(xmpp, OMEMO1_JID);
+	spin(100);
+	CHECK(note != NULL && !gtk_widget_get_visible(note), "a note for an OMEMO 1 contact");
+	if (win != NULL)
+		gtk_window_destroy(GTK_WINDOW(win));
+	spin(100);
+
+	purple_accounts_delete(xmpp);
+	pidgin_omemo_set_plugin_for_tests(NULL);
+	purple_plugin_unload(fake);
+	purple_plugin_destroy(fake);
+	spin(50);
+}
+
+static void
+test_encryption_hint(void)
+{
+	PurpleConversation *conv;
+	PidginMessage *msg;
+	GtkWidget *view, *hint, *label;
+
+	conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, r2_account, FRIEND);
+	spin(200);
+	CHECK(conv != NULL && PIDGIN_CONVERSATION(conv) != NULL, "no conversation");
+	if (conv == NULL)
+		return;
+	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
+	view = GTK_WIDGET(view_of(conv));
+
+	msg = receive_meta(conv, meta_new("eme-namespace", "urn:xmpp:openpgp:0",
+		"eme-name", "OpenPGP for XMPP", "stanza-id", "r2-eme-1", NULL),
+		"This message is encrypted with OpenPGP for XMPP.");
+	CHECK(msg != NULL && purple_strequal(pidgin_message_get_encryption(msg), "OpenPGP for XMPP") &&
+	      purple_strequal(pidgin_message_get_encryption_namespace(msg), "urn:xmpp:openpgp:0"),
+	      "encryption: %s", msg ? pidgin_message_get_encryption(msg) : "-");
+	CHECK(msg != NULL && strstr(pidgin_message_get_plain_text(msg), "encrypted with") != NULL,
+	      "the body changed");
+	spin(200);
+	hint = find_visible_class(view, "pidgin-eme-hint");
+	label = hint ? find_type(hint, GTK_TYPE_LABEL) : NULL;
+	CHECK(hint != NULL && gtk_widget_get_visible(hint) && label != NULL &&
+	      purple_strequal(gtk_label_get_text(GTK_LABEL(label)),
+	                      "Encrypted with OpenPGP for XMPP, which this client doesn't support") &&
+	      g_str_has_prefix(gtk_label_get_label(GTK_LABEL(label)), "<i>"),
+	      "no hint line: %s", label ? gtk_label_get_label(GTK_LABEL(label)) : "-");
+	CHECK(hint != NULL && find_type(hint, GTK_TYPE_IMAGE) != NULL &&
+	      purple_strequal(gtk_image_get_icon_name(GTK_IMAGE(find_type(hint, GTK_TYPE_IMAGE))),
+	                      "channel-insecure-symbolic"), "no lock-slash icon");
+	CHECK(hint != NULL && purple_strequal(gtk_widget_get_tooltip_text(hint),
+	                                      "urn:xmpp:openpgp:0"), "no namespace tooltip");
+
+	/* no name: the namespace; a plain message: none */
+	msg = receive_meta(conv, meta_new("eme-namespace", "urn:example:crypto", NULL), "?CRYPTO");
+	CHECK(msg != NULL && purple_strequal(pidgin_message_get_encryption(msg),
+	                                     "urn:example:crypto"), "unnamed scheme");
+	msg = receive_meta(conv, meta_new("stanza-id", "r2-plain", NULL), "plain text");
+	CHECK(msg != NULL && pidgin_message_get_encryption(msg) == NULL, "a plain message has one");
+	purple_conversation_destroy(conv);
+	spin(100);
+
+	test_omemo2_note();
+}
+
+/**************************************************************************
  * Driver
  **************************************************************************/
 
@@ -1086,6 +1282,8 @@ selftest_run(gpointer data)
 	test_invisible();
 	g_print(R2 ": file shares\n");
 	test_file_shares();
+	g_print(R2 ": encryption hint\n");
+	test_encryption_hint();
 
 done:
 	while (purple_get_conversations() != NULL)

@@ -180,6 +180,17 @@ gboolean pidgin_message_get_retracted(PidginMessage *msg);
 void pidgin_message_set_retracted(PidginMessage *msg, gboolean retracted);
 
 /** The row id in the message index (0: not indexed). */
+/*
+ * XEP-0380: the message was encrypted with @ns (named @name, e.g. "OMEMO",
+ * "OpenPGP for XMPP"; NULL: the namespace) and not decrypted here (the
+ * eme-namespace/eme-name meta keys); the row shows "Encrypted with
+ * <name>, which this client doesn't support" under it. NULL @ns clears.
+ */
+void pidgin_message_set_encryption(PidginMessage *msg, const char *ns, const char *name);
+/** The encryption's name ("encryption" property), or NULL. */
+const char *pidgin_message_get_encryption(PidginMessage *msg);
+const char *pidgin_message_get_encryption_namespace(PidginMessage *msg);
+
 gint64 pidgin_message_get_index_id(PidginMessage *msg);
 void pidgin_message_set_index_id(PidginMessage *msg, gint64 id);
 
