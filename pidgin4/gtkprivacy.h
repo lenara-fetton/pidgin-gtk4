@@ -43,4 +43,8 @@ PurplePrivacyUiOps *pidgin_privacy_get_ui_ops(void);
  * policies without applying anything, closes it. */
 void pidgin_privacy_selftest(void);
 
+/** For the round-2 selftest: the open dialog's "account-menu",
+ * "type-menu" or "modes-note" widget, or NULL. */
+GtkWidget *pidgin_privacy_dialog_get_widget_for_tests(const char *name);
+
 #endif /* _PIDGINPRIVACY_H_ */

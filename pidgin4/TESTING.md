@@ -792,7 +792,27 @@ never loads anything from `/pidgin/plugins/loaded`.
 - [ ] Unload every plugin in the dialog with conversations open: no
       criticals, and the markers, time rows' styling and send button go.
 
-## Developer aids
+## M8: XMPP server features round 2 (with an XMPP account signed in)
+
+What the server supports decides what is offered (doc/PIDGIN-UPGRADE.md,
+M8 "Landed (server features round 2)"). The local Prosody of
+`scripts/tests/xmpp-live/` has XEP-0191 and (its test module) XEP-0377,
+but no XEP-0186.
+
+### Blocking and spam reports
+- [ ] Tools → Privacy, pick the XMPP account: only "Allow all users to
+      contact me" and "Block only the users below" can be chosen; the
+      other three are greyed, with the tooltip "Not supported by this
+      server", and a note under the list says so. Choosing one with the
+      keyboard snaps back. An IRC account shows all five as before.
+- [ ] A buddy's menu: Block / Unblock as before (the server's list
+      follows, see another client). With XEP-0377 on the server, "Report
+      Spam and Block..." sits next to Block (not for a blocked buddy);
+      it asks for an optional reason and an "abuse" choice, and the
+      server gets the report (Prosody's log) and blocks the JID (it
+      shows in the Privacy window's block list). Without XEP-0377 the
+      item is missing.
+- [ ] The same item in an IM window's Conversation menu (not in rooms).
 
 For headless test runs only:
 - `PIDGIN4_REQUEST_SELFTEST=1` opens one request of every kind at startup.
@@ -877,6 +897,17 @@ For headless test runs only:
   `/pidgin/plugins/loaded` did not change. It restores the prefs it set
   and quits with status 0 ("PASS (N checks)"). Scratch profile only: it
   writes logs, index rows and `cap.db`.
+
+- `PIDGIN4_R2_SELFTEST=1` (M8 server features round 2, UI) registers
+  the four round-2 IPC commands (privacy-modes,
+  status-invisible-supported, report-spam-supported, report-spam) on the
+  selftest protocol with results it toggles, gives that protocol
+  blocking and an invisible status for the run, and checks: the Privacy
+  window's greyed modes, tooltip and note (and that an unsupported mode
+  isn't applied); the Report Spam items in the buddy menu and the
+  Conversation menu (only when supported, not for blocked contacts) and
+  the dialog's IPC arguments. It removes its account and quits with
+  status 0 ("PASS (N checks)"). Scratch profile only.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
 for the Xvfb setup (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`,

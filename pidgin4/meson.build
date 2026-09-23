@@ -174,6 +174,9 @@ pidgin4_sources = files(
 	# gtkconvselftest.c
 	'pluginsselftest.c',
 	'tests/selftest-prpl.c',
+	# M8 server features round 2 (UI) and its selftest
+	'pidginserverfeatures.c',
+	'pidginr2selftest.c',
 ) + idle_notify_sources
 
 pidgin4_deps = [glib_dep, gio_dep, gio_unix_dep, gobject_dep, gmodule_dep,

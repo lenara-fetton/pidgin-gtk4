@@ -547,6 +547,7 @@ startup_cb(GApplication *app, gpointer data)
 	pidgin_conversations_selftest();
 	/* M7: no-op unless PIDGIN4_PLUGINS_SELFTEST is set (pluginsselftest.c). */
 	pidgin_ported_plugins_selftest();
+	pidgin_r2_selftest();   /* no-op unless PIDGIN4_R2_SELFTEST is set */
 
 	/* M6 developer aids (no-ops unless their variable is set). */
 	pidgin_docklet_selftest();

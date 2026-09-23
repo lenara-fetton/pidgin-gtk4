@@ -38,12 +38,14 @@
 #include "blist.h"
 #include "debug.h"
 #include "prefs.h"
+#include "privacy.h"
 
 #include "gtkblist.h"
 #include "gtkconv.h"
 #include "gtkconvwin.h"
 #include "gtkdialogs.h"
 #include "gtkutils.h"
+#include "pidginserverfeatures.h"
 
 #define CONV_PREFS PIDGIN_PREFS_ROOT "/conversations"
 #define CONV4_PREFS PIDGIN4_PREFS_ROOT "/conversations"
@@ -269,6 +271,34 @@ prev_tab_cb(GSimpleAction *action, GVariant *param, gpointer data)
 	switch_relative(data, -1);
 }
 
+/* Round 2: "Report Spam and Block..." for an IM whose server can take a
+ * XEP-0377 report (pidginserverfeatures.c); not blocked yet. */
+static gboolean
+report_spam_enabled(PidginConversation *gtkconv)
+{
+	PurpleConversation *conv = gtkconv ? gtkconv->active_conv : NULL;
+	PurpleAccount *account;
+
+	if (conv == NULL || purple_conversation_get_type(conv) != PURPLE_CONV_TYPE_IM)
+		return FALSE;
+	account = purple_conversation_get_account(conv);
+	return !pidgin_account_is_blocked(account, purple_conversation_get_name(conv)) &&
+	       pidgin_account_report_spam_supported(account);
+}
+
+static void
+report_spam_cb(GSimpleAction *action, GVariant *param, gpointer data)
+{
+	PidginWindow *win = data;
+	PidginConversation *gtkconv = pidgin_conv_window_get_active_gtkconv(win);
+
+	if (!report_spam_enabled(gtkconv))
+		return;
+	pidgin_report_spam_dialog_show(purple_conversation_get_account(gtkconv->active_conv),
+	                               purple_conversation_get_name(gtkconv->active_conv),
+	                               GTK_WINDOW(win->window));
+}
+
 /* Pidgin 2's move_to_next_unread_tab(): the next tab with unseen text, else
  * the next tab. */
 static void
@@ -376,6 +406,7 @@ static const GActionEntry window_actions[] = {
 	{ .name = "tab", .activate = tab_n_cb, .parameter_type = "i" },
 	{ .name = "move-tab-left", .activate = move_left_cb },
 	{ .name = "move-tab-right", .activate = move_right_cb },
+	{ .name = "report-spam", .activate = report_spam_cb },
 	{ .name = "send-to", .parameter_type = "(sss)", .state = "('', '', '')",
 	  .change_state = send_to_change_cb },
 };
@@ -427,6 +458,7 @@ build_menubar(PidginWindow *win)
 	append_item(section, _("Al_ias..."), "conv.alias", FALSE);
 	append_item(section, _("_Block..."), "conv.block", TRUE);
 	append_item(section, _("_Unblock..."), "conv.unblock", TRUE);
+	append_item(section, _("Report _Spam and Block..."), "conv.report-spam", TRUE);
 	append_item(section, _("_Add..."), "conv.add", TRUE);
 	append_item(section, _("_Remove..."), "conv.remove", TRUE);
 	g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
@@ -495,6 +527,7 @@ pidgin_conv_window_update_menu(PidginWindow *win)
 		set_enabled(win, conv_action_names[i],
 		            gtkconv != NULL && pidgin_conv_action_enabled(gtkconv, conv_action_names[i]));
 
+	set_enabled(win, "report-spam", report_spam_enabled(gtkconv));
 	set_enabled(win, "logging", gtkconv != NULL);
 	set_state(win, "logging", pidgin_conv_action_enabled(gtkconv, "logging"));
 	/* Sounds are M6; the per-conversation mute is kept (gtk-mute-sound). */

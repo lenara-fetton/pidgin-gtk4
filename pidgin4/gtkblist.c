@@ -84,6 +84,7 @@
 #include "pidginminidialog.h"
 #include "pidginomemo.h"
 #include "pidginselftest.h"
+#include "pidginserverfeatures.h"
 
 #define BLIST_PREFS  PIDGIN_PREFS_ROOT "/blist"
 #define BLIST4_PREFS PIDGIN4_PREFS_ROOT "/blist"
@@ -2291,6 +2292,17 @@ menu_toggle_privacy_cb(PurpleBlistNode *node)
 	pidgin_blist_model_update(gtkblist->model, node);
 }
 
+/* Round 2: XEP-0377 (report-spam IPC); the server blocks them too. */
+static void
+menu_report_spam_cb(PurpleBlistNode *node)
+{
+	PurpleBuddy *buddy = (PurpleBuddy *)node;
+
+	pidgin_report_spam_dialog_show(purple_buddy_get_account(buddy),
+	                               purple_buddy_get_name(buddy),
+	                               GTK_WINDOW(gtkblist->window));
+}
+
 static void
 alias_node(PurpleBlistNode *node)
 {
@@ -2619,6 +2631,10 @@ make_buddy_menu(GMenu *menu, GSimpleActionGroup *group, PurpleBuddy *buddy, gboo
 			purple_privacy_check(account, purple_buddy_get_name(buddy))
 				? _("_Block") : _("Un_block"),
 			menu_toggle_privacy_cb, node);
+		if (!pidgin_account_is_blocked(account, purple_buddy_get_name(buddy)) &&
+		    pidgin_account_report_spam_supported(account))
+			menu_add(section, group, _("Report _Spam and Block..."),
+			         menu_report_spam_cb, node);
 		menu_add(section, group, _("_Alias..."), alias_node, target);
 		menu_add(section, group, _("_Remove"), menu_remove_cb, target);
 		g_menu_append_section(menu, NULL, G_MENU_MODEL(section));
