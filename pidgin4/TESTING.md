@@ -463,6 +463,55 @@ is best), another IRC client, the Discord web client.
       open it in Pidgin 2's log viewer.
 - [ ] Restart pidgin4: the MAM catch-up doesn't repeat messages already
       shown, including after a Pidgin 2 session in between.
+
+### Two pidgin4 instances against a local Prosody (no real accounts)
+
+`scripts/tests/xmpp-live/` runs the round trips above between two (or
+three) pidgin4 instances, each on its own Xvfb and D-Bus session, signed
+in to a throwaway user-local Prosody 13 on 127.0.0.1. Only the test users
+`alice@localhost` and `bob@localhost` ever sign in; nothing touches
+`~/.purple` or `~/.purple-gtk4`.
+
+Needs Prosody 13 with its Lua rocks (luasocket, luasec, luaexpat,
+luafilesystem; `lua5.4`), Xvfb, xdotool, ImageMagick's `import` and
+openssl. A user-local Prosody (`./configure --prefix=... && make install`,
+the rocks built into the same prefix) is enough: point `PROSODY_PREFIX`
+at it.
+
+```sh
+export PROSODY_PREFIX=~/prosody-13/prefix       # bin/prosody, share/lua, lib/lua
+export PIDGIN4=~/.local/pidgin4/bin/pidgin4
+export XMPP_LIVE_DIR=/tmp/pidgin4-xmpp-live      # the default
+scripts/tests/xmpp-live/drive.sh                 # scripted scenario, ~2 min
+scripts/tests/xmpp-live/run.sh start alice bob   # or: just start them
+. scripts/tests/xmpp-live/lib.sh; DISPLAY=$(disp alice) ...  # drive by hand
+scripts/tests/xmpp-live/run.sh stop
+```
+
+- `run.sh start` wipes the server data (unless `XMPP_LIVE_KEEP=1`),
+  writes a config (c2s on port 25322 with STARTTLS and a fresh
+  self-signed certificate, HTTP on 25380, carbons, MAM, smacks, CSI, PEP,
+  bookmarks, the MUC `conference.localhost` with MAM and occupant-id,
+  HTTP file share `upload.localhost`), creates the users (password
+  `pencil1234`) and one profile per instance: `accounts.xml` with just
+  that account (`connect_server` 127.0.0.1, the port, `require_tls`),
+  `blist.xml` with the other user and the room `test`, and the server
+  certificate in `certificates/x509/tls_peers/127.0.0.1` so it is
+  trusted without a prompt (libpurple verifies against the connect
+  server, not the domain). `alice2` is alice's second resource, for
+  carbons. The instances run `pidgin4 -m -d`; their logs are
+  `$XMPP_LIVE_DIR/pidgin4-<name>.log`.
+- `drive.sh` drives the UIs with xdotool (there is no window manager:
+  windows sit at 0,0 and are raised explicitly) and checks the stanzas
+  in the `-d` logs (33 checks): styling, receipts, markers, carbons,
+  Up-arrow correction, react/reply/retract from the row menu, MAM
+  catch-up after restarting bob, HTTP upload through Send File... and
+  the session's file chooser, and the same message actions in the room.
+  It leaves screenshots of each step in `$XMPP_LIVE_DIR` and exits 0
+  when every check passes (`XMPP_LIVE_NO_STOP=1` keeps everything
+  running afterwards). The row and menu positions assume the default
+  theme and window sizes; if a step fails, look at its screenshot.
+
 ## M5: the remaining windows
 
 Most of this works without signing in (`-n`); the items marked

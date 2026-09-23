@@ -1387,7 +1387,8 @@ test_im(PurpleConversation **im_out)
 	                "server-id", "srv1", "markable", "1", NULL);
 	emit_meta(ST_BUDDY, meta);
 	CHECK(g_hash_table_lookup(meta, "discard") == NULL, "fresh message discarded");
-	g_hash_table_unref(meta);
+	/* The jabber prpl destroys the table (emptying it) before the write */
+	g_hash_table_destroy(meta);
 	purple_conv_im_write(PURPLE_CONV_IM(conv), ST_BUDDY, "a message with ids",
 	                     PURPLE_MESSAGE_RECV, now - 500);
 	msg = last_message(conv);

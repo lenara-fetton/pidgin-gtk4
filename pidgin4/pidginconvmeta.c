@@ -342,8 +342,16 @@ static void
 pending_store(GHashTable *table, PurpleAccount *account, const char *name, GHashTable *meta)
 {
 	Pending *p = g_new0(Pending, 1);
+	GHashTableIter iter;
+	gpointer k, v;
 
-	p->meta = g_hash_table_ref(meta);
+	/* A copy: the table is only valid during the emission. The jabber
+	 * prpl (and possibly others) frees it with g_hash_table_destroy(),
+	 * which empties it even while we hold a reference. */
+	p->meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	g_hash_table_iter_init(&iter, meta);
+	while (g_hash_table_iter_next(&iter, &k, &v))
+		g_hash_table_insert(p->meta, g_strdup(k), g_strdup(v));
 	g_hash_table_replace(table, conv_pending_key(account, name), p);
 	if (pending_idle == 0)
 		pending_idle = g_idle_add(pending_idle_cb, NULL);

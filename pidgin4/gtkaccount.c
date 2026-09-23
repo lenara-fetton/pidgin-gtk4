@@ -2521,8 +2521,6 @@ pidgin_account_init(void)
 						PURPLE_CALLBACK(account_changed_cb), NULL);
 	purple_signal_connect(accounts, "account-connecting", handle,
 						PURPLE_CALLBACK(account_changed_cb), NULL);
-	purple_signal_connect(accounts, "account-disconnected", handle,
-						PURPLE_CALLBACK(account_changed_cb), NULL);
 	purple_signal_connect(accounts, "account-status-changed", handle,
 						PURPLE_CALLBACK(account_changed_cb), NULL);
 	purple_signal_connect(accounts, "account-error-changed", handle,
