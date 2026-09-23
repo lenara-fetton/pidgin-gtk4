@@ -694,6 +694,372 @@ test_invisible(void)
 }
 
 /**************************************************************************
+ * 3. File-sharing metadata (XEP-0447) → attachments
+ **************************************************************************/
+
+#define FRIEND "friend@example.invalid"
+
+static SoupServer *server = NULL;
+static char *server_base = NULL;
+static GBytes *pic_png = NULL;
+
+static GBytes *
+make_png(int width, int height, guint8 red)
+{
+	guchar *pixels = g_malloc(width * height * 4);
+	GBytes *bytes, *png;
+	GdkTexture *texture;
+	int i;
+
+	for (i = 0; i < width * height * 4; i += 4) {
+		pixels[i] = red;
+		pixels[i + 1] = 0x44;
+		pixels[i + 2] = 0x88;
+		pixels[i + 3] = 0xff;
+	}
+	bytes = g_bytes_new_take(pixels, width * height * 4);
+	texture = gdk_memory_texture_new(width, height, GDK_MEMORY_R8G8B8A8, bytes, width * 4);
+	png = gdk_texture_save_to_png_bytes(texture);
+	g_bytes_unref(bytes);
+	g_object_unref(texture);
+	return png;
+}
+
+static void
+server_cb(SoupServer *srv, SoupServerMessage *msg, const char *path, GHashTable *query,
+          gpointer data)
+{
+	if (g_str_has_prefix(path, "/r2/pic")) {
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
+		                                 g_bytes_get_data(pic_png, NULL),
+		                                 g_bytes_get_size(pic_png));
+	} else {
+		soup_server_message_set_status(msg, 404, NULL);
+	}
+}
+
+static gboolean
+server_start(void)
+{
+	GError *error = NULL;
+	GSList *uris;
+
+	pic_png = make_png(64, 48, 0x22);
+	server = soup_server_new(NULL, NULL);
+	soup_server_add_handler(server, NULL, server_cb, NULL, NULL);
+	if (!soup_server_listen_local(server, 0, SOUP_SERVER_LISTEN_IPV4_ONLY, &error)) {
+		g_printerr(R2 ": server: %s\n", error->message);
+		g_clear_error(&error);
+		g_clear_object(&server);
+		return FALSE;
+	}
+	uris = soup_server_get_uris(server);
+	server_base = g_strdup_printf("http://127.0.0.1:%d", g_uri_get_port(uris->data));
+	g_slist_free_full(uris, (GDestroyNotify)g_uri_unref);
+	pidgin_image_loader_set_allow_http_for_tests(pidgin_image_loader_get_default(), TRUE);
+	pidgin_conv_meta_set_share_protocol_for_tests(PIDGIN_SELFTEST_PRPL_ID);
+	return TRUE;
+}
+
+static void
+server_stop(void)
+{
+	if (server != NULL) {
+		soup_server_disconnect(server);
+		g_clear_object(&server);
+	}
+	g_clear_pointer(&server_base, g_free);
+	g_clear_pointer(&pic_png, g_bytes_unref);
+	pidgin_conv_meta_set_share_protocol_for_tests(NULL);
+	pidgin_image_loader_set_allow_http_for_tests(pidgin_image_loader_get_default(), FALSE);
+}
+
+static char *
+sha256_b64(GBytes *bytes)
+{
+	guint8 digest[32];
+	gsize len = sizeof(digest);
+	GChecksum *sum = g_checksum_new(G_CHECKSUM_SHA256);
+	char *b64, *ret;
+
+	g_checksum_update(sum, g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes));
+	g_checksum_get_digest(sum, digest, &len);
+	g_checksum_free(sum);
+	b64 = g_base64_encode(digest, len);
+	ret = g_strconcat("sha-256:", b64, NULL);
+	g_free(b64);
+	return ret;
+}
+
+static char *
+thumbnail_uri(void)
+{
+	GBytes *png = make_png(16, 12, 0xee);
+	char *b64 = g_base64_encode(g_bytes_get_data(png, NULL), g_bytes_get_size(png));
+	char *ret = g_strconcat("data:image/png;base64,", b64, NULL);
+
+	g_free(b64);
+	g_bytes_unref(png);
+	return ret;
+}
+
+static GHashTable *
+meta_new(const char *first_key, ...)
+{
+	GHashTable *meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	const char *key = first_key;
+	va_list args;
+
+	va_start(args, first_key);
+	while (key != NULL) {
+		const char *value = va_arg(args, const char *);
+
+		if (value != NULL)
+			g_hash_table_insert(meta, g_strdup(key), g_strdup(value));
+		key = va_arg(args, const char *);
+	}
+	va_end(args);
+	return meta;
+}
+
+static PidginMessageView *
+view_of(PurpleConversation *conv)
+{
+	return PIDGIN_MESSAGE_VIEW(pidgin_conv_get_message_view(PIDGIN_CONVERSATION(conv)));
+}
+
+static PidginMessage *
+last_message(PurpleConversation *conv)
+{
+	GListModel *model = pidgin_message_view_get_model(view_of(conv));
+	guint n = g_list_model_get_n_items(model);
+	PidginMessage *m = n ? g_list_model_get_item(model, n - 1) : NULL;
+
+	if (m != NULL)
+		g_object_unref(m);      /* the store keeps it */
+	return m;
+}
+
+/* The meta, then the message, as the prpl does; the new last message. */
+static PidginMessage *
+receive_meta(PurpleConversation *conv, GHashTable *meta, const char *body)
+{
+	purple_signal_emit(purple_conversations_get_handle(), "receiving-message-meta",
+	                   r2_account, FRIEND, meta);
+	g_hash_table_destroy(meta);     /* as the prpl does */
+	serv_got_im(purple_account_get_connection(r2_account), FRIEND, body, PURPLE_MESSAGE_RECV,
+	            time(NULL));
+	return last_message(conv);
+}
+
+static gboolean
+hash_state_is_final(gpointer data)
+{
+	PidginAttachmentHashState s = pidgin_attachment_get_hash_state(data);
+
+	return s != PIDGIN_ATTACHMENT_HASH_NONE && s != PIDGIN_ATTACHMENT_HASH_PENDING;
+}
+
+static void
+test_file_shares(void)
+{
+	PurpleConversation *conv;
+	PidginMessage *msg;
+	PidginAttachment *att;
+	GtkWidget *view, *w;
+	char *url, *hash, *thumb, *size;
+	int width = 0, height = 0;
+	gboolean playback;
+
+	if (!server_start()) {
+		CHECK(FALSE, "no local server");
+		return;
+	}
+	conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, r2_account, FRIEND);
+	spin(200);
+	CHECK(conv != NULL && PIDGIN_CONVERSATION(conv) != NULL, "no conversation");
+	if (conv == NULL)
+		goto out;
+	pidgin_conv_window_switch_gtkconv(PIDGIN_CONVERSATION(conv)->win, PIDGIN_CONVERSATION(conv));
+	view = GTK_WIDGET(view_of(conv));
+
+	/* A thumbnail and reserved space, without any download (a URI the
+	 * loader doesn't allow) */
+	thumb = thumbnail_uri();
+	att = pidgin_attachment_new_for_share(meta_new("sfs-url", "https://example.invalid/x.png",
+		"sfs-name", "x.png", "sfs-media-type", "image/png", "sfs-width", "640",
+		"sfs-height", "480", "sfs-thumbnail", thumb, NULL));
+	CHECK(att != NULL && pidgin_attachment_get_thumbnail(att) != NULL &&
+	      gdk_texture_get_width(pidgin_attachment_get_thumbnail(att)) == 16,
+	      "no thumbnail decoded from the data: URI");
+	if (att != NULL) {
+		GtkWidget *card = g_object_ref_sink(pidgin_attachment_widget_new(att));
+		GtkWidget *pic = find_class(card, "pidgin-share-thumbnail", NULL);
+		int rw = 0, rh = 0;
+
+		CHECK(pic != NULL && gtk_picture_get_paintable(GTK_PICTURE(pic)) ==
+		      GDK_PAINTABLE(pidgin_attachment_get_thumbnail(att)), "the card has no thumbnail");
+		if (pic != NULL)
+			gtk_widget_get_size_request(pic, &rw, &rh);
+		CHECK(rw == 320 && rh == 240, "reserved %dx%d, not 320x240", rw, rh);
+		spin(100);
+		CHECK(pidgin_attachment_get_texture(att) == NULL, "loaded a URI that isn't allowed");
+		g_object_unref(card);
+		g_object_unref(att);
+	}
+	CHECK(pidgin_attachment_new_for_share(meta_new("eme-name", "x", NULL)) == NULL,
+	      "an attachment without sfs keys");
+
+	/* 1: text plus a share: the text, and the card with the thumbnail at
+	 * once; then the image, and the hash verified */
+	url = g_strconcat(server_base, "/r2/pic.png", NULL);
+	hash = sha256_b64(pic_png);
+	size = g_strdup_printf("%" G_GSIZE_FORMAT, g_bytes_get_size(pic_png));
+	msg = receive_meta(conv, meta_new("sfs-url", url, "sfs-name", "holiday photo.png",
+		"sfs-size", size, "sfs-media-type", "image/png", "sfs-width", "64",
+		"sfs-height", "48", "sfs-desc", "The beach at noon", "sfs-hash", hash,
+		"sfs-thumbnail", thumb, "sfs-disposition", "inline", NULL),
+		"Here is the photo");
+	att = msg ? pidgin_message_get_attachment(msg) : NULL;
+	CHECK(msg != NULL && strstr(pidgin_message_get_plain_text(msg), "Here is the photo") != NULL,
+	      "the text is gone: %s", msg ? pidgin_message_get_plain_text(msg) : "-");
+	CHECK(att != NULL && pidgin_attachment_is_share(att), "no share attachment");
+	if (att != NULL) {
+		pidgin_attachment_get_dimensions(att, &width, &height);
+		CHECK(pidgin_attachment_get_kind(att) == PIDGIN_ATTACHMENT_IMAGE, "kind %d",
+		      pidgin_attachment_get_kind(att));
+		CHECK(purple_strequal(pidgin_attachment_get_name(att), "holiday photo.png") &&
+		      pidgin_attachment_get_size(att) == (goffset)g_bytes_get_size(pic_png) &&
+		      width == 64 && height == 48 &&
+		      purple_strequal(pidgin_attachment_get_media_type(att), "image/png") &&
+		      purple_strequal(pidgin_attachment_get_description(att), "The beach at noon"),
+		      "attachment fields");
+		CHECK(pidgin_attachment_get_thumbnail(att) != NULL, "no thumbnail before download");
+		CHECK(pidgin_attachment_get_texture(att) == NULL, "downloaded already");
+		CHECK(pidgin_image_loader_is_allowed(pidgin_image_loader_get_default(), url),
+		      "the share's URI isn't allowed");
+		g_object_ref(att);
+		pidgin_selftest_wait(hash_state_is_final, att, 5000);
+		CHECK(pidgin_attachment_get_texture(att) != NULL, "the image did not load");
+		CHECK(pidgin_attachment_get_hash_state(att) == PIDGIN_ATTACHMENT_HASH_VERIFIED,
+		      "hash state %d", pidgin_attachment_get_hash_state(att));
+		spin(200);
+		w = find_class(view, "pidgin-share-hash", NULL);
+		CHECK(w != NULL && gtk_widget_get_visible(w) &&
+		      strstr(gtk_label_get_text(GTK_LABEL(w)), "verified") != NULL &&
+		      strstr(gtk_widget_get_tooltip_text(w), "sha-256") != NULL,
+		      "no verified mark in the view: %s", w ? gtk_label_get_text(GTK_LABEL(w)) : "-");
+		w = find_class(view, "pidgin-share-desc", NULL);
+		CHECK(w != NULL && purple_strequal(gtk_label_get_text(GTK_LABEL(w)),
+		                                   "The beach at noon"), "no caption");
+		w = find_class(view, "pidgin-share-image", "holiday photo.png");
+		CHECK(w != NULL && gtk_picture_get_paintable(GTK_PICTURE(w)) ==
+		      GDK_PAINTABLE(pidgin_attachment_get_texture(att)), "the view shows no image");
+		g_object_unref(att);
+	}
+	g_free(url);
+	g_free(hash);
+
+	/* 2: a lone URL body with a wrong hash: no inline copy of the URL,
+	 * one card, "hash mismatch" */
+	url = g_strconcat(server_base, "/r2/pic-other.png", NULL);
+	msg = receive_meta(conv, meta_new("sfs-url", url, "sfs-name", "other.png",
+		"sfs-media-type", "image/png",
+		"sfs-hash", "sha-256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", NULL), url);
+	att = msg ? pidgin_message_get_attachment(msg) : NULL;
+	CHECK(msg != NULL && strstr(pidgin_message_get_html(msg), "<img") == NULL,
+	      "the share URL was inlined too: %s", msg ? pidgin_message_get_html(msg) : "-");
+	CHECK(att != NULL && pidgin_attachment_is_share(att), "no share attachment for a URL body");
+	if (att != NULL) {
+		g_object_ref(att);
+		pidgin_selftest_wait(hash_state_is_final, att, 5000);
+		CHECK(pidgin_attachment_get_hash_state(att) == PIDGIN_ATTACHMENT_HASH_MISMATCH,
+		      "hash state %d", pidgin_attachment_get_hash_state(att));
+		spin(200);
+		w = find_class(view, "error", NULL);
+		CHECK(w != NULL && GTK_IS_LABEL(w) &&
+		      strstr(gtk_label_get_text(GTK_LABEL(w)), "hash mismatch") != NULL &&
+		      strstr(gtk_widget_get_tooltip_text(w), "does not match") != NULL,
+		      "no mismatch mark in the view");
+		g_object_unref(att);
+	}
+	g_free(url);
+
+	/* 3: an algorithm we can't compute: not verified */
+	url = g_strconcat(server_base, "/r2/pic-third.png", NULL);
+	msg = receive_meta(conv, meta_new("sfs-url", url, "sfs-media-type", "image/png",
+		"sfs-hash", "sha3-256:AAAA", NULL), url);
+	att = msg ? pidgin_message_get_attachment(msg) : NULL;
+	CHECK(att != NULL && purple_strequal(pidgin_attachment_get_name(att), "pic-third.png"),
+	      "a share without sfs-name: %s", att ? pidgin_attachment_get_name(att) : "-");
+	if (att != NULL) {
+		g_object_ref(att);
+		pidgin_selftest_wait(hash_state_is_final, att, 5000);
+		CHECK(pidgin_attachment_get_hash_state(att) == PIDGIN_ATTACHMENT_HASH_UNCHECKED,
+		      "sha3 state %d", pidgin_attachment_get_hash_state(att));
+		g_object_unref(att);
+	}
+	g_free(url);
+
+	/* 4: a video: the media card with the real name and size (no inline
+	 * player: GTK's GStreamer backend criticals on an http source that
+	 * isn't a video, and the selftest runs with fatal criticals) */
+	playback = purple_prefs_exists(PIDGIN4_PREFS_ROOT "/media/inline_playback") &&
+	           !purple_prefs_get_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback") ? 0 : 1;
+	if (purple_prefs_exists(PIDGIN4_PREFS_ROOT "/media/inline_playback"))
+		purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", FALSE);
+	url = g_strconcat(server_base, "/r2/upload/abc123", NULL);
+	msg = receive_meta(conv, meta_new("sfs-url", url, "sfs-name", "holiday.mp4",
+		"sfs-size", "1234567", "sfs-media-type", "video/mp4", NULL), url);
+	att = msg ? pidgin_message_get_attachment(msg) : NULL;
+	CHECK(att != NULL && pidgin_attachment_get_kind(att) == PIDGIN_ATTACHMENT_VIDEO &&
+	      purple_strequal(pidgin_attachment_get_name(att), "holiday.mp4") &&
+	      pidgin_attachment_get_size(att) == 1234567, "video attachment");
+	spin(200);
+	w = find_label(view, "holiday.mp4");
+	CHECK(w != NULL && gtk_widget_has_css_class(w, "pidgin-media-name"),
+	      "no media card named holiday.mp4");
+	g_free(url);
+	if (purple_prefs_exists(PIDGIN4_PREFS_ROOT "/media/inline_playback"))
+		purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", playback);
+
+	/* 5: another file: a file card with Open */
+	url = g_strconcat(server_base, "/r2/report.pdf", NULL);
+	msg = receive_meta(conv, meta_new("sfs-url", url, "sfs-name", "report.pdf",
+		"sfs-size", "2048", "sfs-media-type", "application/pdf", NULL), url);
+	att = msg ? pidgin_message_get_attachment(msg) : NULL;
+	CHECK(att != NULL && pidgin_attachment_get_kind(att) == PIDGIN_ATTACHMENT_NONE,
+	      "pdf attachment");
+	spin(200);
+	w = find_class(view, "pidgin-file-card", NULL);
+	CHECK(w != NULL && find_label(w, "report.pdf") != NULL &&
+	      find_class(w, "pidgin-share-open", NULL) != NULL, "no file card");
+	g_free(url);
+
+	/* the verification on its own */
+	{
+		GBytes *b = g_bytes_new_static("hello", 5);
+		PidginAttachment *a = pidgin_attachment_new_for_share(meta_new(
+			"sfs-name", "hello.txt",
+			"sfs-hash", "sha-256:LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=", NULL));
+
+		pidgin_attachment_verify_bytes(a, b);
+		pidgin_selftest_wait(hash_state_is_final, a, 3000);
+		CHECK(pidgin_attachment_get_hash_state(a) == PIDGIN_ATTACHMENT_HASH_VERIFIED,
+		      "sha-256 of hello: %d", pidgin_attachment_get_hash_state(a));
+		g_object_unref(a);
+		g_bytes_unref(b);
+	}
+	g_free(size);
+	g_free(thumb);
+	purple_conversation_destroy(conv);
+	spin(100);
+out:
+	server_stop();
+}
+
+/**************************************************************************
  * Driver
  **************************************************************************/
 
@@ -718,6 +1084,8 @@ selftest_run(gpointer data)
 	test_report_spam();
 	g_print(R2 ": invisible\n");
 	test_invisible();
+	g_print(R2 ": file shares\n");
+	test_file_shares();
 
 done:
 	while (purple_get_conversations() != NULL)

@@ -826,6 +826,23 @@ but no XEP-0186.
       invisibility; you will appear available." With the account offline
       nothing is known and no note is shown.
 
+### Shared files (XEP-0447 stateless file sharing)
+- [ ] Send an image from Conversations/Dino (or from the other pidgin4
+      of the xmpp-live setup): the row shows the link and, under it, a
+      card at once: the thumbnail if the sender gave one (else the space
+      the image will take), the name, size and type; then the image
+      replaces the thumbnail and "✓ verified" appears (tooltip: the
+      SHA-256 matches). No second inline copy of the URL appears.
+- [ ] A caption the other client adds shows under the card.
+- [ ] A video or voice message: the media card with the real file name
+      and size (not the upload's random URL name). A PDF: a file card
+      with an icon, name, size and type, and Open.
+- [ ] With Preferences → Conversations → "Show images shared over XMPP
+      inline (any server)" off, the card shows
+      the thumbnail only; no download happens (no "verified").
+- [ ] A text message with a file (Conversations' caption as the body):
+      the text, then the card.
+
 For headless test runs only:
 - `PIDGIN4_REQUEST_SELFTEST=1` opens one request of every kind at startup.
 - `PIDGIN4_ACCOUNT_SELFTEST=1` opens the accounts window, then opens and
@@ -920,7 +937,12 @@ For headless test runs only:
   Conversation menu (only when supported, not for blocked contacts) and
   the dialog's IPC arguments; the invisible notes in the status box, the
   saved-status editor and its per-account editor (and none while
-  supported). It removes its account and quits with
+  supported); file-sharing metadata (sfs-* keys) turned into an
+  attachment with the thumbnail before any download, the fields, the
+  caption, no inline copy of the body URL, then the image from a local
+  SoupServer with its SHA-256 verified, a wrong hash shown as "hash
+  mismatch", an unknown algorithm "not verified", a video's media card
+  and a PDF's file card. It removes its account and quits with
   status 0 ("PASS (N checks)"). Scratch profile only.
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`

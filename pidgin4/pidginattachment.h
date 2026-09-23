@@ -82,6 +82,57 @@ const char *pidgin_attachment_get_name(PidginAttachment *attachment);
 /** The size in bytes, or -1 if unknown. */
 goffset pidgin_attachment_get_size(PidginAttachment *attachment);
 
+/*
+ * File shares described by metadata (XEP-0447 stateless file sharing,
+ * XEP-0385 SIMS; the jabber prpl's sfs-* meta keys): the card shows at
+ * once, from the metadata alone: the name, size, type, a thumbnail
+ * decoded from the sfs-thumbnail data: URI, space for an image of the
+ * given dimensions, and the description as a caption. Images are then
+ * loaded from the URL through the image loader (if it allows the URI) and
+ * the downloaded bytes checked against sfs-hash ("algo:base64";
+ * sha-256, sha-512 and sha-1 can be checked); the card says "verified"
+ * or "hash mismatch". Audio and video get the media card; other files a
+ * file card with Open.
+ */
+typedef enum
+{
+	PIDGIN_ATTACHMENT_HASH_NONE,      /* no hash, or nothing downloaded yet */
+	PIDGIN_ATTACHMENT_HASH_PENDING,   /* checking */
+	PIDGIN_ATTACHMENT_HASH_VERIFIED,
+	PIDGIN_ATTACHMENT_HASH_MISMATCH,
+	PIDGIN_ATTACHMENT_HASH_UNCHECKED  /* an algorithm we can't compute, or
+	                                     the bytes aren't available */
+} PidginAttachmentHashState;
+
+/**
+ * An attachment from a message's sfs-* metadata, or NULL when @meta has
+ * neither sfs-url nor sfs-name.
+ */
+PidginAttachment *pidgin_attachment_new_for_share(GHashTable *meta);
+
+/** TRUE for one made by pidgin_attachment_new_for_share(). */
+gboolean pidgin_attachment_is_share(PidginAttachment *attachment);
+/** The MIME type the sender gave, or NULL. */
+const char *pidgin_attachment_get_media_type(PidginAttachment *attachment);
+/** The image/video dimensions the sender gave (0 when unknown). */
+void pidgin_attachment_get_dimensions(PidginAttachment *attachment, int *width, int *height);
+/** The sender's description, or NULL. */
+const char *pidgin_attachment_get_description(PidginAttachment *attachment);
+/** The thumbnail from the metadata, or NULL. */
+GdkTexture *pidgin_attachment_get_thumbnail(PidginAttachment *attachment);
+/** The full image once loaded ("notify::texture"), or NULL. */
+GdkTexture *pidgin_attachment_get_texture(PidginAttachment *attachment);
+/** "algo:base64", or NULL. */
+const char *pidgin_attachment_get_hash(PidginAttachment *attachment);
+/** "notify::hash-state" when it changes. */
+PidginAttachmentHashState pidgin_attachment_get_hash_state(PidginAttachment *attachment);
+
+/**
+ * Checks @data (the downloaded file) against the hash in a worker thread
+ * and sets the hash state. Called for a loaded image; public for tests.
+ */
+void pidgin_attachment_verify_bytes(PidginAttachment *attachment, GBytes *data);
+
 /** The widget a message row shows for @attachment. */
 GtkWidget *pidgin_attachment_widget_new(PidginAttachment *attachment);
 

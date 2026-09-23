@@ -296,6 +296,16 @@ pidgin_message_apply_meta(PidginMessage *msg, GHashTable *meta)
 	if ((v = g_hash_table_lookup(meta, "reply-to")) != NULL)
 		pidgin_message_set_reply(msg, v, g_hash_table_lookup(meta, "reply-to-sender"),
 		                         msg->reply_preview);
+	/* A described file share (XEP-0447/0385): its card, at once, in place
+	 * of what the body URL would have given. The text stays. */
+	{
+		PidginAttachment *share = pidgin_attachment_new_for_share(meta);
+
+		if (share != NULL) {
+			pidgin_message_set_attachment(msg, share);
+			g_object_unref(share);
+		}
+	}
 	g_object_thaw_notify(G_OBJECT(msg));
 }
 
