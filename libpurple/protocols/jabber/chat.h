@@ -53,7 +53,56 @@ typedef struct _JabberChat {
 	GHashTable *members;
 	gboolean left;
 	time_t joined;
+
+	/* M8: room features (disco#info at join), MAM, XEP-0410 self-ping */
+	gboolean disco_done;
+	gboolean mam_supported;
+	gboolean occupant_id_supported;
+	gboolean self_joined;        /* own presence seen for this (re)join */
+	gboolean mam_catchup_started;
+	gboolean mam_catchup_done;
+	gboolean selfping_rejoining;
+	time_t selfping_sent;        /* outstanding ping, 0 if none */
+	time_t selfping_last_activity;
 } JabberChat;
+
+/** XEP-0410 self-ping timing, in seconds. */
+#define JABBER_SELFPING_IDLE     300  /* ping after this much silence */
+#define JABBER_SELFPING_TIMEOUT   90  /* no answer: rejoin */
+#define JABBER_SELFPING_TICK      30
+#define JABBER_SELFPING_NETWORK   10  /* delay after a network change */
+
+typedef enum {
+	JABBER_SELFPING_NOTHING,
+	JABBER_SELFPING_SEND,
+	JABBER_SELFPING_TIMED_OUT
+} JabberSelfPingAction;
+
+typedef enum {
+	JABBER_SELFPING_JOINED,
+	JABBER_SELFPING_NOT_JOINED,
+	JABBER_SELFPING_UNKNOWN
+} JabberSelfPingResult;
+
+/** Pure: what to do for a room at @a now. */
+JabberSelfPingAction jabber_chat_selfping_decide(time_t now,
+		time_t last_activity, time_t sent, gboolean force);
+
+/** Pure: XEP-0410 interpretation of the answer to a self-ping. */
+JabberSelfPingResult jabber_chat_selfping_classify(JabberIqType type,
+		xmlnode *packet);
+
+/** disco#info to the room: MAM and occupant-id support. */
+void jabber_chat_disco_features(JabberChat *chat);
+
+/** Called when our own presence in the room arrives (join or rejoin). */
+void jabber_chat_self_joined(JabberChat *chat);
+
+/** Pings every joined room now (after a network change). */
+void jabber_chat_selfping_all(JabberStream *js);
+void jabber_chat_selfping_stop(JabberStream *js);
+void jabber_chat_selfping_init(PurplePlugin *plugin);
+void jabber_chat_selfping_uninit(PurplePlugin *plugin);
 
 GList *jabber_chat_info(PurpleConnection *gc);
 GHashTable *jabber_chat_info_defaults(PurpleConnection *gc, const char *chat_name);

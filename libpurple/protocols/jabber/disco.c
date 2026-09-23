@@ -29,6 +29,7 @@
 
 #include "adhoccommands.h"
 #include "buddy.h"
+#include "carbons.h"
 #include "disco.h"
 #include "google/google.h"
 #include "google/gmail.h"
@@ -36,6 +37,7 @@
 #include "iq.h"
 #include "jabber.h"
 #include "jingle/jingle.h"
+#include "mam.h"
 #include "pep.h"
 #include "presence.h"
 #include "roster.h"
@@ -358,6 +360,43 @@ void jabber_disco_items_parse(JabberStream *js, const char *from,
 	}
 }
 
+/* disco#info on our own bare JID: the account's archive (XEP-0313).
+ * Then catch up. */
+static void
+jabber_disco_account_info_cb(JabberStream *js, const char *from,
+                             JabberIqType type, const char *id,
+                             xmlnode *packet, gpointer data)
+{
+	xmlnode *query, *feature;
+
+	query = (type == JABBER_IQ_RESULT) ?
+		xmlnode_get_child_with_namespace(packet, "query", NS_DISCO_INFO) : NULL;
+	for (feature = query ? xmlnode_get_child(query, "feature") : NULL;
+	     feature; feature = xmlnode_get_next_twin(feature)) {
+		const char *var = xmlnode_get_attrib(feature, "var");
+
+		if (purple_strequal(var, NS_MAM))
+			js->mam_supported = TRUE;
+	}
+
+	purple_debug_info("jabber", "Account archive (MAM): %s\n",
+	                  js->mam_supported ? "yes" : "no");
+
+	jabber_mam_catchup(js);
+}
+
+static void
+jabber_disco_account_info(JabberStream *js)
+{
+	JabberIq *iq = jabber_iq_new_query(js, JABBER_IQ_GET, NS_DISCO_INFO);
+	char *bare = jabber_id_get_bare_jid(js->user);
+
+	xmlnode_set_attrib(iq->node, "to", bare);
+	jabber_iq_set_callback(iq, jabber_disco_account_info_cb, NULL);
+	jabber_iq_send(iq);
+	g_free(bare);
+}
+
 static void
 jabber_disco_finish_server_info_result_cb(JabberStream *js)
 {
@@ -385,6 +424,9 @@ jabber_disco_finish_server_info_result_cb(JabberStream *js)
 	if (js->server_caps & JABBER_CAP_BLOCKING) {
 		jabber_request_block_list(js);
 	}
+
+	/* M8: archive catch-up (after the roster request) */
+	jabber_disco_account_info(js);
 
 	/* If there are manually specified bytestream proxies, query them */
 	ft_proxies = purple_account_get_string(js->gc->account, "ft_proxies", NULL);
@@ -574,6 +616,8 @@ jabber_disco_server_info_result_cb(JabberStream *js, const char *from,
 			js->server_caps |= JABBER_CAP_ADHOC;
 		} else if (purple_strequal(NS_SIMPLE_BLOCKING, var)) {
 			js->server_caps |= JABBER_CAP_BLOCKING;
+		} else if (purple_strequal(NS_CARBONS, var)) {
+			jabber_carbons_enable(js);
 		}
 	}
 

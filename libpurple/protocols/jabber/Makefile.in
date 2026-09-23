@@ -152,6 +152,7 @@ am__libjabber_la_SOURCES_DIST = adhoccommands.c adhoccommands.h auth.c \
 	jingle/rawudp.c jingle/rawudp.h jingle/rtp.c jingle/rtp.h \
 	jingle/session.c jingle/session.h jingle/transport.c \
 	jingle/transport.h jutil.c jutil.h kvstore.c kvstore.h \
+	carbons.c carbons.h mam.c mam.h \
 	message.c message.h namespaces.h oob.c oob.h parser.c parser.h \
 	pep.c pep.h ping.c ping.h presence.c presence.h roster.c \
 	roster.h si.c si.h stream_management.c stream_management.h \
@@ -173,6 +174,7 @@ am__objects_2 = libjabber_la-adhoccommands.lo libjabber_la-auth.lo \
 	libjabber_la-rawudp.lo libjabber_la-rtp.lo \
 	libjabber_la-session.lo libjabber_la-transport.lo \
 	libjabber_la-jutil.lo libjabber_la-kvstore.lo \
+	libjabber_la-carbons.lo libjabber_la-mam.lo \
 	libjabber_la-message.lo libjabber_la-oob.lo \
 	libjabber_la-parser.lo libjabber_la-pep.lo \
 	libjabber_la-ping.lo libjabber_la-presence.lo \
@@ -243,6 +245,8 @@ am__depfiles_remade = ./$(DEPDIR)/libjabber_la-adhoccommands.Plo \
 	./$(DEPDIR)/libjabber_la-jingleinfo.Plo \
 	./$(DEPDIR)/libjabber_la-jutil.Plo \
 	./$(DEPDIR)/libjabber_la-kvstore.Plo \
+	./$(DEPDIR)/libjabber_la-carbons.Plo \
+	./$(DEPDIR)/libjabber_la-mam.Plo \
 	./$(DEPDIR)/libjabber_la-libxmpp.Plo \
 	./$(DEPDIR)/libjabber_la-message.Plo \
 	./$(DEPDIR)/libjabber_la-oob.Plo \
@@ -595,6 +599,7 @@ JABBERSOURCES = adhoccommands.c adhoccommands.h auth.c auth.h \
 	jingle/rawudp.c jingle/rawudp.h jingle/rtp.c jingle/rtp.h \
 	jingle/session.c jingle/session.h jingle/transport.c \
 	jingle/transport.h jutil.c jutil.h kvstore.c kvstore.h \
+	carbons.c carbons.h mam.c mam.h \
 	message.c message.h namespaces.h oob.c oob.h parser.c parser.h \
 	pep.c pep.h ping.c ping.h presence.c presence.h roster.c \
 	roster.h si.c si.h stream_management.c stream_management.h \
@@ -741,6 +746,8 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-jingleinfo.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-jutil.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-kvstore.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-carbons.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-mam.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-libxmpp.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-message.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libjabber_la-oob.Plo@am__quote@ # am--include-marker
@@ -999,6 +1006,20 @@ libjabber_la-kvstore.lo: kvstore.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='kvstore.c' object='libjabber_la-kvstore.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-kvstore.lo `test -f 'kvstore.c' || echo '$(srcdir)/'`kvstore.c
+
+libjabber_la-carbons.lo: carbons.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-carbons.lo -MD -MP -MF $(DEPDIR)/libjabber_la-carbons.Tpo -c -o libjabber_la-carbons.lo `test -f 'carbons.c' || echo '$(srcdir)/'`carbons.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-carbons.Tpo $(DEPDIR)/libjabber_la-carbons.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='carbons.c' object='libjabber_la-carbons.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-carbons.lo `test -f 'carbons.c' || echo '$(srcdir)/'`carbons.c
+
+libjabber_la-mam.lo: mam.c
+@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-mam.lo -MD -MP -MF $(DEPDIR)/libjabber_la-mam.Tpo -c -o libjabber_la-mam.lo `test -f 'mam.c' || echo '$(srcdir)/'`mam.c
+@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libjabber_la-mam.Tpo $(DEPDIR)/libjabber_la-mam.Plo
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='mam.c' object='libjabber_la-mam.lo' libtool=yes @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -c -o libjabber_la-mam.lo `test -f 'mam.c' || echo '$(srcdir)/'`mam.c
 
 libjabber_la-message.lo: message.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) $(CPPFLAGS) $(libjabber_la_CFLAGS) $(CFLAGS) -MT libjabber_la-message.lo -MD -MP -MF $(DEPDIR)/libjabber_la-message.Tpo -c -o libjabber_la-message.lo `test -f 'message.c' || echo '$(srcdir)/'`message.c
@@ -1272,6 +1293,8 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-jingleinfo.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-jutil.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-kvstore.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-carbons.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-mam.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-libxmpp.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-message.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-oob.Plo
@@ -1364,6 +1387,8 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libjabber_la-jingleinfo.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-jutil.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-kvstore.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-carbons.Plo
+	-rm -f ./$(DEPDIR)/libjabber_la-mam.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-libxmpp.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-message.Plo
 	-rm -f ./$(DEPDIR)/libjabber_la-oob.Plo

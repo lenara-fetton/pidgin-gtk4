@@ -22,12 +22,15 @@
  */
 #include "internal.h"
 
+#include "core.h"
 #include "debug.h"
 #include "notify.h"
 #include "server.h"
+#include "signals.h"
 #include "util.h"
 #include "adhoccommands.h"
 #include "buddy.h"
+#include "carbons.h"
 #include "chat.h"
 #include "data.h"
 #include "google/google.h"
@@ -36,8 +39,349 @@
 #include "pep.h"
 #include "smiley.h"
 #include "iq.h"
+#include "mam.h"
 
 #include <string.h>
+
+/**************************************************************************
+ * UI capability: "message-meta" (see doc/PIDGIN-UPGRADE.md, M8)
+ **************************************************************************/
+
+static int ui_message_meta = -1; /* -1 unknown, 0 no, 1 yes */
+
+gboolean
+jabber_ui_supports_message_meta(void)
+{
+	if (ui_message_meta < 0) {
+		GHashTable *ui_info = purple_core_get_ui_info();
+		const char *value = ui_info ?
+			g_hash_table_lookup(ui_info, "message-meta") : NULL;
+
+		ui_message_meta = purple_strequal(value, "1") ? 1 : 0;
+		purple_debug_info("jabber", "UI %s message metadata signals\n",
+		                  ui_message_meta ? "handles" : "does not handle");
+	}
+
+	return ui_message_meta == 1;
+}
+
+void
+jabber_ui_message_meta_reset(void)
+{
+	ui_message_meta = -1;
+}
+
+/**************************************************************************
+ * Pure helpers: XEP-0359 ids, XEP-0428 fallback ranges
+ **************************************************************************/
+
+/* Namespaces whose fallback body text is stripped when the UI renders the
+ * feature natively (it sees reply-to/reply-to-sender in the metadata, and
+ * reactions arrive as message-reaction). */
+const char * const jabber_native_fallback_namespaces[] = {
+	NS_REPLY,
+	NS_REACTIONS,
+	NULL
+};
+
+static gboolean
+jid_equal_bare(const char *a, const char *b)
+{
+	/* The "by" of a stanza-id is a bare JID; compare case-insensitively,
+	 * which is what node/domain preparation amounts to for ASCII JIDs. */
+	return a != NULL && b != NULL && g_ascii_strcasecmp(a, b) == 0;
+}
+
+char *
+jabber_message_get_stanza_id(xmlnode *message, const char *by)
+{
+	xmlnode *child;
+
+	if (message == NULL || by == NULL)
+		return NULL;
+
+	for (child = xmlnode_get_child_with_namespace(message, "stanza-id", NS_SID);
+	     child; child = xmlnode_get_next_twin(child)) {
+		const char *id = xmlnode_get_attrib(child, "id");
+
+		if (id && *id && jid_equal_bare(xmlnode_get_attrib(child, "by"), by))
+			return g_strdup(id);
+	}
+
+	return NULL;
+}
+
+char *
+jabber_message_get_origin_id(xmlnode *message)
+{
+	xmlnode *child;
+	const char *id;
+
+	if (message == NULL)
+		return NULL;
+
+	child = xmlnode_get_child_with_namespace(message, "origin-id", NS_SID);
+	id = child ? xmlnode_get_attrib(child, "id") : NULL;
+
+	return (id && *id) ? g_strdup(id) : NULL;
+}
+
+static gboolean
+parse_offset(const char *str, int *out)
+{
+	char *end = NULL;
+	gint64 value;
+
+	if (str == NULL || *str == '\0')
+		return FALSE;
+
+	value = g_ascii_strtoll(str, &end, 10);
+	if (end == NULL || *end != '\0' || value < 0 || value > G_MAXINT)
+		return FALSE;
+
+	*out = (int)value;
+	return TRUE;
+}
+
+GList *
+jabber_fallback_parse(xmlnode *message)
+{
+	GList *list = NULL;
+	xmlnode *fallback;
+
+	if (message == NULL)
+		return NULL;
+
+	for (fallback = xmlnode_get_child_with_namespace(message, "fallback", NS_FALLBACK);
+	     fallback; fallback = xmlnode_get_next_twin(fallback)) {
+		const char *ns = xmlnode_get_attrib(fallback, "for");
+		xmlnode *body;
+		gboolean any_body = FALSE;
+
+		for (body = xmlnode_get_child(fallback, "body"); body;
+		     body = xmlnode_get_next_twin(body)) {
+			JabberFallback *fb;
+			int start, end;
+
+			any_body = TRUE;
+			if (!parse_offset(xmlnode_get_attrib(body, "start"), &start) ||
+			    !parse_offset(xmlnode_get_attrib(body, "end"), &end) ||
+			    end < start) {
+				purple_debug_warning("jabber", "Ignoring invalid "
+				                     "fallback range\n");
+				continue;
+			}
+
+			fb = g_new0(JabberFallback, 1);
+			fb->ns = g_strdup(ns);
+			fb->start = start;
+			fb->end = end;
+			list = g_list_append(list, fb);
+		}
+
+		/* A <fallback/> without <body/> (or only <subject/>) covers the
+		 * whole body. */
+		if (!any_body && xmlnode_get_child(fallback, "subject") == NULL) {
+			JabberFallback *fb = g_new0(JabberFallback, 1);
+			fb->ns = g_strdup(ns);
+			fb->start = -1;
+			fb->end = -1;
+			list = g_list_append(list, fb);
+		}
+	}
+
+	return list;
+}
+
+void
+jabber_fallback_free(GList *fallbacks)
+{
+	while (fallbacks) {
+		JabberFallback *fb = fallbacks->data;
+		g_free(fb->ns);
+		g_free(fb);
+		fallbacks = g_list_delete_link(fallbacks, fallbacks);
+	}
+}
+
+char *
+jabber_fallback_ranges_to_string(GList *fallbacks)
+{
+	GString *str;
+
+	if (fallbacks == NULL)
+		return NULL;
+
+	str = g_string_new(NULL);
+	for (; fallbacks; fallbacks = fallbacks->next) {
+		JabberFallback *fb = fallbacks->data;
+
+		if (str->len)
+			g_string_append_c(str, ';');
+		if (fb->start < 0)
+			g_string_append_printf(str, "%s:", fb->ns ? fb->ns : "");
+		else
+			g_string_append_printf(str, "%s:%d-%d", fb->ns ? fb->ns : "",
+			                       fb->start, fb->end);
+	}
+
+	return g_string_free(str, FALSE);
+}
+
+static gboolean
+ns_in_list(const char *ns, const char * const *namespaces)
+{
+	for (; namespaces && *namespaces; namespaces++)
+		if (purple_strequal(ns, *namespaces))
+			return TRUE;
+	return FALSE;
+}
+
+char *
+jabber_fallback_strip(const char *body, GList *fallbacks,
+                      const char * const *namespaces)
+{
+	glong len, i;
+	gboolean *drop;
+	gboolean dropped_head = FALSE, dropped_tail = FALSE;
+	GString *out;
+	const char *p;
+
+	if (body == NULL)
+		return NULL;
+
+	if (!g_utf8_validate(body, -1, NULL))
+		return g_strdup(body);
+
+	len = g_utf8_strlen(body, -1);
+	drop = g_new0(gboolean, len + 1);
+
+	for (; fallbacks; fallbacks = fallbacks->next) {
+		JabberFallback *fb = fallbacks->data;
+		glong start, end;
+
+		if (!ns_in_list(fb->ns, namespaces))
+			continue;
+
+		if (fb->start < 0) {
+			start = 0;
+			end = len;
+		} else {
+			start = MIN(fb->start, len);
+			end = MIN(fb->end, len);
+		}
+
+		for (i = start; i < end; i++)
+			drop[i] = TRUE;
+		if (start == 0 && end > 0)
+			dropped_head = TRUE;
+		if (end == len && end > start)
+			dropped_tail = TRUE;
+	}
+
+	out = g_string_sized_new(strlen(body));
+	for (i = 0, p = body; i < len; i++, p = g_utf8_next_char(p)) {
+		if (!drop[i])
+			g_string_append_len(out, p, g_utf8_next_char(p) - p);
+	}
+	g_free(drop);
+
+	if (dropped_head) {
+		gsize n = 0;
+		while (n < out->len && g_ascii_isspace(out->str[n]))
+			n++;
+		g_string_erase(out, 0, n);
+	}
+	if (dropped_tail) {
+		while (out->len && g_ascii_isspace(out->str[out->len - 1]))
+			g_string_truncate(out, out->len - 1);
+	}
+
+	return g_string_free(out, FALSE);
+}
+
+/**************************************************************************
+ * receiving-message-meta
+ **************************************************************************/
+
+static void
+meta_set(GHashTable *meta, const char *key, const char *value)
+{
+	if (value != NULL)
+		g_hash_table_insert(meta, g_strdup(key), g_strdup(value));
+}
+
+/*
+ * Emits receiving-message-meta for @jm, if the UI wants it.  Returns TRUE
+ * if a handler asked for the message to be discarded.
+ */
+static gboolean
+jabber_message_emit_meta(JabberMessage *jm, const char *conv_name,
+                         const char *conv_type, const char *sender)
+{
+	GHashTable *meta;
+	PurpleAccount *account;
+	char *tmp;
+	gboolean discard;
+
+	if (!jabber_ui_supports_message_meta())
+		return FALSE;
+
+	account = purple_connection_get_account(jm->js->gc);
+	meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+
+	meta_set(meta, "conv-type", conv_type);
+	meta_set(meta, "sender", sender);
+	if (jm->outgoing)
+		meta_set(meta, "outgoing", "1");
+	tmp = g_strdup_printf("%" G_GINT64_FORMAT, (gint64)jm->sent);
+	meta_set(meta, "timestamp", tmp);
+	g_free(tmp);
+
+	meta_set(meta, "stanza-id", jm->id);
+	meta_set(meta, "origin-id", jm->origin_id);
+	meta_set(meta, "server-id", jm->server_id);
+	meta_set(meta, "server-id-by", jm->server_id_by);
+	meta_set(meta, "occupant-id", jm->occupant_id);
+	meta_set(meta, "correction-of", jm->replace_id);
+	meta_set(meta, "reply-to", jm->reply_to_id);
+	meta_set(meta, "reply-to-sender", jm->reply_to_jid);
+
+	tmp = jabber_fallback_ranges_to_string(jm->fallbacks);
+	meta_set(meta, "fallback-ranges", tmp);
+	g_free(tmp);
+	if (jm->fallback_stripped)
+		meta_set(meta, "fallback-stripped", "1");
+
+	switch (jm->origin) {
+		case JABBER_MESSAGE_ORIGIN_CARBON_RECEIVED:
+			meta_set(meta, "carbon", "received");
+			break;
+		case JABBER_MESSAGE_ORIGIN_CARBON_SENT:
+			meta_set(meta, "carbon", "sent");
+			break;
+		case JABBER_MESSAGE_ORIGIN_MAM:
+			meta_set(meta, "mam", "1");
+			if (jm->ctx)
+				meta_set(meta, "mam-query", jm->ctx->mam_kind);
+			break;
+		case JABBER_MESSAGE_ORIGIN_LIVE:
+			break;
+	}
+
+	purple_signal_emit(purple_conversations_get_handle(),
+	                   "receiving-message-meta", account, conv_name, meta);
+
+	discard = purple_strequal(g_hash_table_lookup(meta, "discard"), "1");
+	g_hash_table_destroy(meta);
+
+	if (discard)
+		purple_debug_info("jabber", "UI discarded message %s in %s\n",
+		                  jm->server_id ? jm->server_id :
+		                  (jm->id ? jm->id : "(no id)"), conv_name);
+
+	return discard;
+}
 
 static GString *jm_body_with_oob(JabberMessage *jm) {
 	GList *etc;
@@ -95,19 +439,88 @@ void jabber_message_free(JabberMessage *jm)
 	g_list_free(jm->etc);
 	g_list_free(jm->eventitems);
 
+	g_free(jm->body_raw);
+	g_free(jm->origin_id);
+	g_free(jm->server_id);
+	g_free(jm->server_id_by);
+	g_free(jm->occupant_id);
+	g_free(jm->replace_id);
+	g_free(jm->reply_to_id);
+	g_free(jm->reply_to_jid);
+	jabber_fallback_free(jm->fallbacks);
+
 	g_free(jm);
+}
+
+/*
+ * A message this account sent from another device: a XEP-0280 sent carbon,
+ * or an outgoing message from the archive.  Written into the conversation
+ * with the counterpart as a sent message; never goes through serv_got_im(),
+ * which would treat it as received (and could send an auto-response).
+ */
+static void handle_outgoing_chat(JabberMessage *jm)
+{
+	PurpleAccount *account = purple_connection_get_account(jm->js->gc);
+	PurpleConversation *conv;
+	PurpleMessageFlags flags;
+	GString *body;
+	char *own;
+
+	if (jm->to == NULL)
+		return;
+
+	body = jm_body_with_oob(jm);
+	if (body->len == 0) {
+		/* TODO(XEP-0333/0184/0444/0424): our own markers, receipts,
+		 * reactions and retractions sent from another device end up here
+		 * (no body).  The message-semantics code handles them. */
+		g_string_free(body, TRUE);
+		return;
+	}
+
+	own = jabber_id_get_full_jid(jm->js->user);
+	if (jabber_message_emit_meta(jm, jm->to, "im", own)) {
+		g_free(own);
+		g_string_free(body, TRUE);
+		return;
+	}
+	g_free(own);
+
+	conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM,
+	                                             jm->to, account);
+	if (conv == NULL) {
+		char *bare = jabber_get_bare_jid(jm->to);
+		conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, account,
+		                               bare ? bare : jm->to);
+		g_free(bare);
+	}
+
+	flags = PURPLE_MESSAGE_SEND | PURPLE_MESSAGE_REMOTE_SEND;
+	if (jm->origin == JABBER_MESSAGE_ORIGIN_MAM)
+		flags |= PURPLE_MESSAGE_DELAYED;
+
+	purple_conv_im_write(PURPLE_CONV_IM(conv), NULL, body->str, flags,
+	                     jm->sent);
+	g_string_free(body, TRUE);
 }
 
 static void handle_chat(JabberMessage *jm)
 {
-	JabberID *jid = jabber_id_new(jm->from);
+	JabberID *jid;
 
 	PurpleConnection *gc;
 	PurpleAccount *account;
 	JabberBuddy *jb;
 	JabberBuddyResource *jbr;
 	GString *body;
+	gboolean archived = (jm->origin == JABBER_MESSAGE_ORIGIN_MAM);
 
+	if (jm->outgoing) {
+		handle_outgoing_chat(jm);
+		return;
+	}
+
+	jid = jabber_id_new(jm->from);
 	if(!jid)
 		return;
 
@@ -117,9 +530,11 @@ static void handle_chat(JabberMessage *jm)
 	jb = jabber_buddy_find(jm->js, jm->from, TRUE);
 	jbr = jabber_buddy_find_resource(jb, jid->resource);
 
-	if (jbr && jm->chat_state != JM_STATE_NONE)
+	if (jbr && jm->chat_state != JM_STATE_NONE && !archived)
 		jbr->chat_states = JABBER_CHAT_STATES_SUPPORTED;
 
+	/* Archived messages say nothing about the current typing state. */
+	if (!archived)
 	switch(jm->chat_state) {
 		case JM_STATE_COMPOSING:
 			serv_got_typing(gc, jm->from, 0, PURPLE_TYPING);
@@ -170,7 +585,7 @@ static void handle_chat(JabberMessage *jm)
 	body = jm_body_with_oob(jm);
 
 	if(body && body->len) {
-		if (jid->resource) {
+		if (jid->resource && !archived) {
 			/*
 			 * We received a message from a specific resource, so
 			 * we probably want a reply to go to this specific
@@ -192,7 +607,7 @@ static void handle_chat(JabberMessage *jm)
 			}
 		}
 
-		if(jbr) {
+		if(jbr && !archived) {
 			/* Treat SUPPORTED as a terminal with no escape :) */
 			if (jbr->chat_states != JABBER_CHAT_STATES_SUPPORTED) {
 				if (jm->chat_state != JM_STATE_NONE)
@@ -206,7 +621,9 @@ static void handle_chat(JabberMessage *jm)
 			jbr->thread_id = g_strdup(jm->thread_id);
 		}
 
-		serv_got_im(gc, jm->from, body->str, 0, jm->sent);
+		if (!jabber_message_emit_meta(jm, jm->from, "im", jm->from))
+			serv_got_im(gc, jm->from, body->str,
+			            archived ? PURPLE_MESSAGE_DELAYED : 0, jm->sent);
 	}
 
 	jabber_id_free(jid);
@@ -246,7 +663,10 @@ static void handle_groupchat(JabberMessage *jm)
 	if(!chat)
 		return;
 
-	if(jm->subject) {
+	if (jm->origin == JABBER_MESSAGE_ORIGIN_LIVE)
+		chat->selfping_last_activity = time(NULL);
+
+	if(jm->subject && jm->origin != JABBER_MESSAGE_ORIGIN_MAM) {
 		purple_conv_chat_set_topic(PURPLE_CONV_CHAT(chat->conv), jid->resource,
 				jm->subject);
 		if(!jm->xhtml && !jm->body) {
@@ -265,10 +685,17 @@ static void handle_groupchat(JabberMessage *jm)
 	}
 
 	if(jm->xhtml || jm->body) {
-		if(jid->resource)
-			serv_got_chat_in(jm->js->gc, chat->id, jid->resource,
-							jm->delayed ? PURPLE_MESSAGE_DELAYED : 0,
-							jm->xhtml ? jm->xhtml : jm->body, jm->sent);
+		if(jid->resource) {
+			char *room = g_strdup_printf("%s@%s", jid->node, jid->domain);
+			gboolean discard = jabber_message_emit_meta(jm,
+					chat->conv ? purple_conversation_get_name(chat->conv) : room,
+					"chat", jid->resource);
+			g_free(room);
+			if (!discard)
+				serv_got_chat_in(jm->js->gc, chat->id, jid->resource,
+								jm->delayed ? PURPLE_MESSAGE_DELAYED : 0,
+								jm->xhtml ? jm->xhtml : jm->body, jm->sent);
+		}
 		else if(chat->muc)
 			purple_conv_chat_write(PURPLE_CONV_CHAT(chat->conv), "",
 							jm->xhtml ? jm->xhtml : jm->body,
@@ -515,11 +942,204 @@ jabber_message_request_data_cb(JabberData *data, gchar *alt,
 	g_free(alt);
 }
 
+/*
+ * Children of <message/> handled by the M8 code.  Returns TRUE if @child
+ * was consumed.  This is where the message-semantics XEPs slot in; the
+ * ones marked TODO are parsed by the follow-up work and must also be
+ * emitted as the matching conversation signals (only when
+ * jabber_ui_supports_message_meta()), keeping today's text output
+ * otherwise.
+ */
+static gboolean
+jabber_message_parse_modern_child(JabberMessage *jm, xmlnode *child,
+                                  const char *xmlns)
+{
+	const char *name = child->name;
+
+	if (purple_strequal(xmlns, NS_SID)) {
+		/* XEP-0359 <stanza-id/>, <origin-id/>: read after the loop, since
+		 * which "by" to trust depends on the message type. */
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_FALLBACK)) {
+		/* XEP-0428: parsed after the loop (jabber_fallback_parse). */
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_OCCUPANT_ID)) {
+		/* XEP-0421: trusted only for rooms that advertise it (checked
+		 * after the loop). */
+		if (purple_strequal(name, "occupant-id") && !jm->occupant_id) {
+			const char *id = xmlnode_get_attrib(child, "id");
+			jm->occupant_id = (id && *id) ? g_strdup(id) : NULL;
+		}
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_REPLY)) {
+		/* XEP-0461: reply-to / reply-to-sender in the metadata. */
+		if (purple_strequal(name, "reply") && !jm->reply_to_id) {
+			jm->reply_to_id = g_strdup(xmlnode_get_attrib(child, "id"));
+			jm->reply_to_jid = g_strdup(xmlnode_get_attrib(child, "to"));
+		}
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_MESSAGE_CORRECT)) {
+		/* XEP-0308: correction-of in the metadata.
+		 * TODO(XEP-0308): emit message-corrected (matching the sender, or
+		 * the occupant-id in MUCs) instead of a new line, with a text
+		 * fallback for the log (contract rule 7). */
+		if (purple_strequal(name, "replace") && !jm->replace_id)
+			jm->replace_id = g_strdup(xmlnode_get_attrib(child, "id"));
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_REACTIONS)) {
+		/* TODO(XEP-0444): <reactions id=''><reaction>..</reaction>: diff
+		 * against the sender's previous set and emit message-reaction
+		 * add/remove.  The fallback body is already stripped when the UI
+		 * handles message-meta (see jabber_native_fallback_namespaces). */
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_RECEIPTS)) {
+		/* TODO(XEP-0184): answer <request/> (not for carbons or MAM
+		 * results), emit message-receipt "delivered" for <received/>. */
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_CHAT_MARKERS)) {
+		/* TODO(XEP-0333): emit message-receipt "displayed" for
+		 * <displayed/>; <markable/> goes into the metadata. */
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_RETRACT)) {
+		/* TODO(XEP-0424/0425): emit message-retracted. */
+		return TRUE;
+	} else if (purple_strequal(xmlns, NS_HINTS) ||
+	           purple_strequal(xmlns, NS_CARBONS)) {
+		/* XEP-0334 hints and a carbons <private/> on a live message:
+		 * nothing to do on receipt. */
+		return TRUE;
+	}
+
+	/* TODO(XEP-0393): message styling is rendered by the UI; nothing to
+	 * parse here beyond an <unstyled/> hint, if the UI wants it. */
+	return FALSE;
+}
+
+/* Fills the M8 fields after the child loop.  Returns FALSE if the message
+ * must be dropped (a duplicate, or not acceptable in its context). */
+static gboolean
+jabber_message_post_process(JabberMessage *jm, xmlnode *packet)
+{
+	JabberStream *js = jm->js;
+	PurpleAccount *account = purple_connection_get_account(js->gc);
+	const JabberMessageContext *ctx = jm->ctx;
+	char *own_bare = jabber_id_get_bare_jid(js->user);
+	char *from_bare = jm->from ? jabber_get_bare_jid(jm->from) : NULL;
+	gboolean keep = TRUE;
+
+	if (ctx && ctx->has_stamp) {
+		/* The <delay/> on <forwarded/> is authoritative for archives. */
+		jm->delayed = TRUE;
+		jm->sent = ctx->stamp;
+	}
+
+	/* XEP-0359: only the stanza-id added by our own archive (1:1) or by
+	 * the room (MUC) can be trusted. */
+	jm->origin_id = jabber_message_get_origin_id(packet);
+	if (ctx && ctx->origin == JABBER_MESSAGE_ORIGIN_MAM && ctx->mam_id) {
+		jm->server_id = g_strdup(ctx->mam_id);
+		jm->server_id_by = g_strdup(ctx->mam_archive);
+	} else {
+		const char *by = (jm->type == JABBER_MESSAGE_GROUPCHAT) ?
+			from_bare : own_bare;
+		jm->server_id = jabber_message_get_stanza_id(packet, by);
+		if (jm->server_id)
+			jm->server_id_by = g_strdup(by);
+	}
+
+	/* Who sent it: us, from another device? */
+	if (jm->origin == JABBER_MESSAGE_ORIGIN_CARBON_SENT)
+		jm->outgoing = TRUE;
+	else if (jm->origin == JABBER_MESSAGE_ORIGIN_MAM &&
+	         jm->type != JABBER_MESSAGE_GROUPCHAT &&
+	         from_bare && g_ascii_strcasecmp(from_bare, own_bare) == 0)
+		jm->outgoing = TRUE;
+
+	/* XEP-0421: only rooms that advertise occupant-id overwrite it. */
+	if (jm->occupant_id) {
+		JabberID *jid = jabber_id_new(jm->from);
+		JabberChat *chat = jid ? jabber_chat_find(js, jid->node, jid->domain) : NULL;
+
+		if (!chat || !chat->occupant_id_supported) {
+			g_free(jm->occupant_id);
+			jm->occupant_id = NULL;
+		}
+		jabber_id_free(jid);
+	}
+
+	/* Session guard against showing a message twice (live and again from
+	 * the archive, or room history after a rejoin).  The UI's index
+	 * handles duplicates across restarts. */
+	if (jm->server_id) {
+		char *key = g_strdup_printf("s:%s:%s", jm->server_id_by, jm->server_id);
+		if (jabber_mam_seen(account, key, TRUE)) {
+			purple_debug_info("jabber", "Dropping duplicate message %s\n", key);
+			keep = FALSE;
+		}
+		g_free(key);
+	}
+	if (keep && jm->outgoing && jm->origin_id) {
+		/* Something this client itself sent earlier in this session. */
+		char *key = g_strdup_printf("o:%s", jm->origin_id);
+		if (jabber_mam_seen(account, key, FALSE)) {
+			purple_debug_info("jabber", "Dropping own archived message %s\n", key);
+			keep = FALSE;
+		}
+		g_free(key);
+	}
+
+	if (keep && jm->server_id && jm->origin != JABBER_MESSAGE_ORIGIN_MAM)
+		jabber_mam_note_live_id(js, jm->server_id_by, jm->server_id);
+
+	/* XEP-0428: record the ranges; strip the ones for features the UI
+	 * renders natively. */
+	jm->fallbacks = jabber_fallback_parse(packet);
+	if (keep && jm->fallbacks && jm->body_raw &&
+	    jabber_ui_supports_message_meta()) {
+		const char *strip[3];
+		int n = 0, i;
+
+		for (i = 0; jabber_native_fallback_namespaces[i] && n < 2; i++) {
+			const char *ns = jabber_native_fallback_namespaces[i];
+
+			if (purple_strequal(ns, NS_REPLY) && jm->reply_to_id == NULL)
+				continue;
+			if (purple_strequal(ns, NS_REACTIONS) &&
+			    !xmlnode_get_child_with_namespace(packet, "reactions", NS_REACTIONS))
+				continue;
+			strip[n++] = ns;
+		}
+		strip[n] = NULL;
+
+		if (n > 0) {
+			char *stripped = jabber_fallback_strip(jm->body_raw,
+			                                       jm->fallbacks, strip);
+
+			if (!purple_strequal(stripped, jm->body_raw)) {
+				g_free(jm->body);
+				jm->body = NULL;
+				if (*stripped) {
+					char *escaped = purple_markup_escape_text(stripped, -1);
+					jm->body = purple_strdup_withhtml(escaped);
+					g_free(escaped);
+				}
+				/* The XHTML-IM version still contains the fallback. */
+				g_free(jm->xhtml);
+				jm->xhtml = NULL;
+				jm->fallback_stripped = TRUE;
+			}
+			g_free(stripped);
+		}
+	}
+
+	g_free(own_bare);
+	g_free(from_bare);
+	return keep;
+}
+
 void jabber_message_parse(JabberStream *js, xmlnode *packet)
 {
-	JabberMessage *jm;
 	const char *id, *from, *to, *type;
-	xmlnode *child;
 	gboolean signal_return;
 
 	from = xmlnode_get_attrib(packet, "from");
@@ -532,11 +1152,37 @@ void jabber_message_parse(JabberStream *js, xmlnode *packet)
 	if (signal_return)
 		return;
 
+	/* XEP-0280: carbon copies are unwrapped and parsed as the inner
+	 * message (or dropped if they are not acceptable). */
+	if (jabber_carbons_handle(js, packet))
+		return;
+
+	/* XEP-0313: archive query results. */
+	if (jabber_mam_handle_result(js, packet))
+		return;
+
+	jabber_message_parse_with_context(js, packet, NULL);
+}
+
+void jabber_message_parse_with_context(JabberStream *js, xmlnode *packet,
+                                       const JabberMessageContext *ctx)
+{
+	JabberMessage *jm;
+	const char *id, *from, *to, *type;
+	xmlnode *child;
+
+	from = xmlnode_get_attrib(packet, "from");
+	id   = xmlnode_get_attrib(packet, "id");
+	to   = xmlnode_get_attrib(packet, "to");
+	type = xmlnode_get_attrib(packet, "type");
+
 	jm = g_new0(JabberMessage, 1);
 	jm->js = js;
 	jm->sent = time(NULL);
 	jm->delayed = FALSE;
 	jm->chat_state = JM_STATE_NONE;
+	jm->ctx = ctx;
+	jm->origin = ctx ? ctx->origin : JABBER_MESSAGE_ORIGIN_LIVE;
 
 	if(type) {
 		if(purple_strequal(type, "normal"))
@@ -562,6 +1208,9 @@ void jabber_message_parse(JabberStream *js, xmlnode *packet)
 	for(child = packet->child; child; child = child->next) {
 		const char *xmlns = xmlnode_get_namespace(child);
 		if(child->type != XMLNODE_TYPE_TAG)
+			continue;
+
+		if (xmlns && jabber_message_parse_modern_child(jm, child, xmlns))
 			continue;
 
 		if(purple_strequal(child->name, "error")) {
@@ -608,7 +1257,7 @@ void jabber_message_parse(JabberStream *js, xmlnode *packet)
 				char *escaped = purple_markup_escape_text(msg, -1);
 				jm->body = purple_strdup_withhtml(escaped);
 				g_free(escaped);
-				g_free(msg);
+				jm->body_raw = msg;
 			}
 		} else if(purple_strequal(child->name, "html") && purple_strequal(xmlns, NS_XHTML_IM)) {
 			if(!jm->xhtml && xmlnode_get_child(child, "body")) {
@@ -789,6 +1438,28 @@ void jabber_message_parse(JabberStream *js, xmlnode *packet)
 				jabber_adhoc_got_list(js, jm->from, child);
 			}
 		}
+	}
+
+	if (!jabber_message_post_process(jm, packet)) {
+		jabber_message_free(jm);
+		return;
+	}
+
+	if (jm->origin == JABBER_MESSAGE_ORIGIN_MAM ||
+	    jm->origin == JABBER_MESSAGE_ORIGIN_CARBON_SENT) {
+		/* Only conversation messages are replayed from archives or copied
+		 * from our other devices; no invites, notifications or buzzes. */
+		switch (jm->type) {
+			case JABBER_MESSAGE_NORMAL:
+			case JABBER_MESSAGE_CHAT:
+			case JABBER_MESSAGE_GROUPCHAT:
+			case JABBER_MESSAGE_OTHER:
+				break;
+			default:
+				jabber_message_free(jm);
+				return;
+		}
+		jm->hasBuzz = FALSE;
 	}
 
 	if(jm->hasBuzz)
@@ -1097,6 +1768,17 @@ void jabber_message_send(JabberMessage *jm)
 		}
 	}
 
+	/* XEP-0359 */
+	if (jm->origin_id) {
+		child = xmlnode_new_child(message, "origin-id");
+		xmlnode_set_namespace(child, NS_SID);
+		xmlnode_set_attrib(child, "id", jm->origin_id);
+	}
+
+	/* TODO(XEP-0308/0461/0184/0333): <replace/>, <reply/> + fallback,
+	 * <request/> and <markable/> are added here by the send-correction,
+	 * send-reply and receipt code. */
+
 	jabber_send(jm->js, message);
 
 	xmlnode_free(message);
@@ -1137,6 +1819,49 @@ jabber_xhtml_plain_equal(const char *xhtml_escaped,
 	ret = (xhtml[i] == plain[j]) && (xhtml[i] == '\0');
 	g_free(xhtml);
 	return ret;
+}
+
+/*
+ * Gives an outgoing message with a body a XEP-0359 origin-id, also used
+ * as its id (as other modern clients do), and remembers it so the same
+ * message coming back from the archive in this session is not shown
+ * twice.
+ */
+static void
+jabber_message_assign_ids(JabberMessage *jm)
+{
+	PurpleAccount *account = purple_connection_get_account(jm->js->gc);
+	char *key;
+
+	g_free(jm->id);
+	jm->id = g_uuid_string_random();
+	jm->origin_id = g_strdup(jm->id);
+
+	key = g_strdup_printf("o:%s", jm->origin_id);
+	jabber_mam_seen(account, key, TRUE);
+	g_free(key);
+}
+
+/* sending-message-meta, if the UI wants it. */
+static void
+jabber_message_emit_sending_meta(JabberMessage *jm, const char *conv_name,
+                                 const char *conv_type)
+{
+	GHashTable *meta;
+
+	if (!jabber_ui_supports_message_meta())
+		return;
+
+	meta = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	meta_set(meta, "conv-type", conv_type);
+	meta_set(meta, "stanza-id", jm->id);
+	meta_set(meta, "origin-id", jm->origin_id);
+
+	purple_signal_emit(purple_conversations_get_handle(),
+	                   "sending-message-meta",
+	                   purple_connection_get_account(jm->js->gc),
+	                   conv_name, meta);
+	g_hash_table_destroy(meta);
 }
 
 int jabber_message_send_im(PurpleConnection *gc, const char *who, const char *msg,
@@ -1208,7 +1933,9 @@ int jabber_message_send_im(PurpleConnection *gc, const char *who, const char *ms
 
 	g_free(xhtml);
 
+	jabber_message_assign_ids(jm);
 	jabber_message_send(jm);
+	jabber_message_emit_sending_meta(jm, who, "im");
 	jabber_message_free(jm);
 	return 1;
 }
@@ -1251,7 +1978,11 @@ int jabber_message_send_chat(PurpleConnection *gc, int id, const char *msg, Purp
 
 	g_free(xhtml);
 
+	jabber_message_assign_ids(jm);
 	jabber_message_send(jm);
+	jabber_message_emit_sending_meta(jm,
+			chat->conv ? purple_conversation_get_name(chat->conv) : jm->to,
+			"chat");
 	jabber_message_free(jm);
 
 	return 1;

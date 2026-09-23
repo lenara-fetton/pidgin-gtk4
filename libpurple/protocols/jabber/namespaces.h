@@ -84,6 +84,50 @@
 #define NS_DELAYED_DELIVERY "urn:xmpp:delay"
 #define NS_DELAYED_DELIVERY_LEGACY "jabber:x:delay"
 
+/*
+ * M8 message and MUC core (carbons.c, mam.c, bookmarks.c, message.c, chat.c)
+ */
+/* XEP-0004 Data Forms, XEP-0045 MUC, XEP-0060 PubSub */
+#define NS_XDATA "jabber:x:data"
+#define NS_MUC "http://jabber.org/protocol/muc"
+#define NS_MUC_USER "http://jabber.org/protocol/muc#user"
+#define NS_PUBSUB "http://jabber.org/protocol/pubsub"
+#define NS_PUBSUB_EVENT "http://jabber.org/protocol/pubsub#event"
+#define NS_PUBSUB_PUBLISH_OPTIONS "http://jabber.org/protocol/pubsub#publish-options"
+/* XEP-0048 Bookmarks (legacy, stored in PEP) */
+#define NS_BOOKMARKS_LEGACY "storage:bookmarks"
+/* XEP-0059 Result Set Management */
+#define NS_RSM "http://jabber.org/protocol/rsm"
+/* XEP-0184 Message Delivery Receipts */
+#define NS_RECEIPTS "urn:xmpp:receipts"
+/* XEP-0280 Message Carbons */
+#define NS_CARBONS "urn:xmpp:carbons:2"
+/* XEP-0297 Stanza Forwarding */
+#define NS_FORWARD "urn:xmpp:forward:0"
+/* XEP-0308 Last Message Correction */
+#define NS_MESSAGE_CORRECT "urn:xmpp:message-correct:0"
+/* XEP-0313 Message Archive Management */
+#define NS_MAM "urn:xmpp:mam:2"
+/* XEP-0333 Chat Markers */
+#define NS_CHAT_MARKERS "urn:xmpp:chat-markers:0"
+/* XEP-0334 Message Processing Hints */
+#define NS_HINTS "urn:xmpp:hints"
+/* XEP-0359 Unique and Stable Stanza IDs */
+#define NS_SID "urn:xmpp:sid:0"
+/* XEP-0402 PEP Native Bookmarks */
+#define NS_BOOKMARKS2 "urn:xmpp:bookmarks:1"
+#define NS_BOOKMARKS2_COMPAT "urn:xmpp:bookmarks:1#compat"
+/* XEP-0421 Anonymous unique occupant identifiers for MUCs */
+#define NS_OCCUPANT_ID "urn:xmpp:occupant-id:0"
+/* XEP-0424 Message Retraction */
+#define NS_RETRACT "urn:xmpp:message-retract:1"
+/* XEP-0428 Fallback Indication */
+#define NS_FALLBACK "urn:xmpp:fallback:0"
+/* XEP-0444 Message Reactions */
+#define NS_REACTIONS "urn:xmpp:reactions:0"
+/* XEP-0461 Message Replies */
+#define NS_REPLY "urn:xmpp:reply:0"
+
 /* XEP-0206 XMPP over BOSH */
 #define NS_XMPP_BOSH "urn:xmpp:xbosh"
 

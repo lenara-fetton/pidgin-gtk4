@@ -22,6 +22,7 @@
  */
 #include "internal.h"
 #include "debug.h"
+#include "network.h"
 #include "prpl.h" /* for proto_chat_entry */
 #include "notify.h"
 #include "request.h"
@@ -30,6 +31,7 @@
 
 #include "chat.h"
 #include "iq.h"
+#include "mam.h"
 #include "message.h"
 #include "presence.h"
 #include "xdata.h"
@@ -293,6 +295,9 @@ JabberChat *jabber_join_chat(JabberStream *js, const char *room,
 	if (chat == NULL)
 		return NULL;
 
+	/* Learn the room's features (MAM, occupant-id) before joining. */
+	jabber_chat_disco_features(chat);
+
 	gc = js->gc;
 	account = purple_connection_get_account(gc);
 	status = purple_account_get_active_status(account);
@@ -329,10 +334,22 @@ JabberChat *jabber_join_chat(JabberStream *js, const char *room,
 		xmlnode_insert_data(p, password, -1);
 	}
 
-	if ((history_maxchars && *history_maxchars)
-	    || (history_maxstanzas && *history_maxstanzas)
-	    || (history_seconds && *history_seconds)
-	    || (history_since_string && *history_since_string)) {
+	if (!(history_maxchars && *history_maxchars)
+	    && !(history_maxstanzas && *history_maxstanzas)
+	    && !(history_seconds && *history_seconds)
+	    && !(history_since_string && *history_since_string)) {
+		/* We caught up on this room from its archive before (so it has
+		 * one): continue from there instead of replaying room history. */
+		char *room_jid = g_strdup_printf("%s@%s", room, server);
+		char *last = jabber_mam_get_last_id(account, room_jid);
+
+		if (last) {
+			xmlnode *history = xmlnode_new_child(x, "history");
+			xmlnode_set_attrib(history, "maxstanzas", "0");
+		}
+		g_free(last);
+		g_free(room_jid);
+	} else {
 
 		xmlnode *history = xmlnode_new_child(x, "history");
 
@@ -1312,4 +1329,376 @@ guint
 jabber_chat_get_num_participants(const JabberChat *chat)
 {
 	return g_hash_table_size(chat->members);
+}
+
+/**************************************************************************
+ * M8: room features, MAM after joining, XEP-0410 MUC self-ping
+ **************************************************************************/
+
+static JabberChat *
+jabber_chat_find_by_jid(JabberStream *js, const char *jid_str)
+{
+	JabberID *jid;
+	JabberChat *chat = NULL;
+
+	if (jid_str == NULL)
+		return NULL;
+
+	jid = jabber_id_new(jid_str);
+	if (jid) {
+		chat = jabber_chat_find(js, jid->node, jid->domain);
+		jabber_id_free(jid);
+	}
+	return chat;
+}
+
+static void
+jabber_chat_disco_features_cb(JabberStream *js, const char *from,
+                              JabberIqType type, const char *id,
+                              xmlnode *packet, gpointer data)
+{
+	JabberChat *chat = jabber_chat_find_by_jid(js, from);
+	xmlnode *query, *feature;
+
+	if (chat == NULL)
+		return;
+
+	chat->disco_done = TRUE;
+
+	query = (type == JABBER_IQ_RESULT) ?
+		xmlnode_get_child_with_namespace(packet, "query", NS_DISCO_INFO) : NULL;
+	for (feature = query ? xmlnode_get_child(query, "feature") : NULL;
+	     feature; feature = xmlnode_get_next_twin(feature)) {
+		const char *var = xmlnode_get_attrib(feature, "var");
+
+		if (purple_strequal(var, NS_MAM))
+			chat->mam_supported = TRUE;
+		else if (purple_strequal(var, NS_OCCUPANT_ID))
+			chat->occupant_id_supported = TRUE;
+	}
+
+	purple_debug_info("jabber", "Room %s@%s: MAM %s, occupant-id %s\n",
+	                  chat->room, chat->server,
+	                  chat->mam_supported ? "yes" : "no",
+	                  chat->occupant_id_supported ? "yes" : "no");
+
+	if (chat->self_joined)
+		jabber_mam_muc_catchup(chat);
+}
+
+void
+jabber_chat_disco_features(JabberChat *chat)
+{
+	JabberIq *iq;
+	char *room_jid = g_strdup_printf("%s@%s", chat->room, chat->server);
+
+	iq = jabber_iq_new_query(chat->js, JABBER_IQ_GET, NS_DISCO_INFO);
+	xmlnode_set_attrib(iq->node, "to", room_jid);
+	jabber_iq_set_callback(iq, jabber_chat_disco_features_cb, NULL);
+	jabber_iq_send(iq);
+
+	g_free(room_jid);
+}
+
+static gboolean jabber_chat_selfping_tick(gpointer data);
+static void jabber_chat_selfping_watch_network(void);
+
+void
+jabber_chat_self_joined(JabberChat *chat)
+{
+	JabberStream *js = chat->js;
+
+	if (chat->self_joined)
+		return;
+
+	if (chat->selfping_rejoining)
+		purple_debug_info("jabber", "Rejoined %s@%s\n", chat->room, chat->server);
+
+	chat->self_joined = TRUE;
+	chat->selfping_rejoining = FALSE;
+	chat->selfping_sent = 0;
+	chat->selfping_last_activity = time(NULL);
+
+	if (chat->disco_done)
+		jabber_mam_muc_catchup(chat);
+
+	if (js->selfping_timer == 0)
+		js->selfping_timer = purple_timeout_add_seconds(JABBER_SELFPING_TICK,
+				jabber_chat_selfping_tick, js);
+	jabber_chat_selfping_watch_network();
+}
+
+JabberSelfPingAction
+jabber_chat_selfping_decide(time_t now, time_t last_activity, time_t sent,
+                            gboolean force)
+{
+	if (sent != 0)
+		return (now - sent >= JABBER_SELFPING_TIMEOUT) ?
+			JABBER_SELFPING_TIMED_OUT : JABBER_SELFPING_NOTHING;
+
+	if (force || now - last_activity >= JABBER_SELFPING_IDLE)
+		return JABBER_SELFPING_SEND;
+
+	return JABBER_SELFPING_NOTHING;
+}
+
+JabberSelfPingResult
+jabber_chat_selfping_classify(JabberIqType type, xmlnode *packet)
+{
+	xmlnode *error;
+
+	if (type == JABBER_IQ_RESULT)
+		return JABBER_SELFPING_JOINED;
+
+	error = packet ? xmlnode_get_child(packet, "error") : NULL;
+	if (error == NULL)
+		return JABBER_SELFPING_NOT_JOINED;
+
+	/* XEP-0410 section 3: still joined, but the ping reached a client
+	 * without XEP-0199, or our nick was just changed elsewhere. */
+	if (xmlnode_get_child_with_namespace(error, "service-unavailable", NS_XMPP_STANZAS) ||
+	    xmlnode_get_child_with_namespace(error, "feature-not-implemented", NS_XMPP_STANZAS) ||
+	    xmlnode_get_child_with_namespace(error, "item-not-found", NS_XMPP_STANZAS))
+		return JABBER_SELFPING_JOINED;
+
+	/* The room's server is unreachable: no conclusion, try again later. */
+	if (xmlnode_get_child_with_namespace(error, "remote-server-not-found", NS_XMPP_STANZAS) ||
+	    xmlnode_get_child_with_namespace(error, "remote-server-timeout", NS_XMPP_STANZAS))
+		return JABBER_SELFPING_UNKNOWN;
+
+	/* not-acceptable and anything else: we are not an occupant. */
+	return JABBER_SELFPING_NOT_JOINED;
+}
+
+/* Sends a join presence again, without the room history we already have. */
+static void
+jabber_chat_selfping_rejoin(JabberChat *chat)
+{
+	JabberStream *js = chat->js;
+	PurpleAccount *account = purple_connection_get_account(js->gc);
+	PurpleStatus *status = purple_account_get_active_status(account);
+	JabberBuddyState state;
+	xmlnode *presence, *x, *history;
+	const char *password;
+	char *msg, *jid;
+	int priority;
+
+	purple_debug_info("jabber", "Self-ping: not in %s@%s any more, "
+	                  "rejoining\n", chat->room, chat->server);
+
+	purple_status_to_jabber(status, &state, &msg, &priority);
+	presence = jabber_presence_create_js(js, state, msg, priority);
+	g_free(msg);
+
+	jid = g_strdup_printf("%s@%s/%s", chat->room, chat->server, chat->handle);
+	xmlnode_set_attrib(presence, "to", jid);
+	g_free(jid);
+
+	x = xmlnode_new_child(presence, "x");
+	xmlnode_set_namespace(x, NS_MUC);
+
+	password = g_hash_table_lookup(chat->components, "password");
+	if (password && *password) {
+		xmlnode *p = xmlnode_new_child(x, "password");
+		xmlnode_insert_data(p, password, -1);
+	}
+
+	history = xmlnode_new_child(x, "history");
+	if (chat->mam_supported) {
+		/* The MAM catch-up after the rejoin fills the gap. */
+		xmlnode_set_attrib(history, "maxstanzas", "0");
+	} else {
+		time_t since = chat->selfping_last_activity;
+		xmlnode_set_attrib(history, "since",
+		                   purple_utf8_strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(&since)));
+	}
+
+	chat->self_joined = FALSE;
+	chat->mam_catchup_started = FALSE;
+	chat->mam_catchup_done = FALSE;
+	chat->selfping_rejoining = TRUE;
+	chat->selfping_sent = 0;
+	chat->selfping_last_activity = time(NULL);
+
+	jabber_send(js, presence);
+	xmlnode_free(presence);
+}
+
+static void
+jabber_chat_selfping_cb(JabberStream *js, const char *from,
+                        JabberIqType type, const char *id,
+                        xmlnode *packet, gpointer data)
+{
+	JabberChat *chat = jabber_chat_find_by_jid(js, from);
+
+	/* Late answers to a ping that already timed out are ignored. */
+	if (chat == NULL || chat->selfping_sent == 0)
+		return;
+
+	chat->selfping_sent = 0;
+
+	switch (jabber_chat_selfping_classify(type, packet)) {
+		case JABBER_SELFPING_JOINED:
+			chat->selfping_last_activity = time(NULL);
+			break;
+		case JABBER_SELFPING_UNKNOWN:
+			/* Try again in a minute. */
+			chat->selfping_last_activity = time(NULL) -
+				JABBER_SELFPING_IDLE + 60;
+			break;
+		case JABBER_SELFPING_NOT_JOINED:
+			jabber_chat_selfping_rejoin(chat);
+			break;
+	}
+}
+
+static void
+jabber_chat_selfping_send(JabberChat *chat)
+{
+	JabberIq *iq = jabber_iq_new(chat->js, JABBER_IQ_GET);
+	xmlnode *ping;
+	char *jid = g_strdup_printf("%s@%s/%s", chat->room, chat->server,
+	                            chat->handle);
+
+	xmlnode_set_attrib(iq->node, "to", jid);
+	g_free(jid);
+	ping = xmlnode_new_child(iq->node, "ping");
+	xmlnode_set_namespace(ping, NS_PING);
+	jabber_iq_set_callback(iq, jabber_chat_selfping_cb, NULL);
+	jabber_iq_send(iq);
+
+	chat->selfping_sent = time(NULL);
+}
+
+static void
+jabber_chat_selfping_run(JabberStream *js, gboolean force)
+{
+	GList *chats, *l;
+	time_t now = time(NULL);
+
+	if (js->state != JABBER_STREAM_CONNECTED || js->chats == NULL)
+		return;
+
+	chats = g_hash_table_get_values(js->chats);
+	for (l = chats; l; l = l->next) {
+		JabberChat *chat = l->data;
+
+		if (chat->left || chat->conv == NULL)
+			continue;
+
+		if (!chat->self_joined) {
+			/* A rejoin that got no answer: try again. */
+			if (chat->selfping_rejoining &&
+			    now - chat->selfping_last_activity >= JABBER_SELFPING_IDLE)
+				jabber_chat_selfping_rejoin(chat);
+			continue;
+		}
+
+		switch (jabber_chat_selfping_decide(now, chat->selfping_last_activity,
+		                                    chat->selfping_sent, force)) {
+			case JABBER_SELFPING_SEND:
+				jabber_chat_selfping_send(chat);
+				break;
+			case JABBER_SELFPING_TIMED_OUT:
+				purple_debug_info("jabber", "Self-ping to %s@%s timed out\n",
+				                  chat->room, chat->server);
+				jabber_chat_selfping_rejoin(chat);
+				break;
+			case JABBER_SELFPING_NOTHING:
+				break;
+		}
+	}
+	g_list_free(chats);
+}
+
+static gboolean
+jabber_chat_selfping_tick(gpointer data)
+{
+	jabber_chat_selfping_run(data, FALSE);
+	return TRUE;
+}
+
+static gboolean
+jabber_chat_selfping_soon_cb(gpointer data)
+{
+	JabberStream *js = data;
+
+	js->selfping_soon_timer = 0;
+	jabber_chat_selfping_run(js, TRUE);
+	return FALSE;
+}
+
+void
+jabber_chat_selfping_all(JabberStream *js)
+{
+	if (js->selfping_soon_timer == 0)
+		js->selfping_soon_timer = purple_timeout_add_seconds(
+				JABBER_SELFPING_NETWORK, jabber_chat_selfping_soon_cb, js);
+}
+
+void
+jabber_chat_selfping_stop(JabberStream *js)
+{
+	if (js->selfping_timer) {
+		purple_timeout_remove(js->selfping_timer);
+		js->selfping_timer = 0;
+	}
+	if (js->selfping_soon_timer) {
+		purple_timeout_remove(js->selfping_soon_timer);
+		js->selfping_soon_timer = 0;
+	}
+}
+
+static void
+jabber_chat_network_changed_cb(void *data)
+{
+	GList *l;
+
+	for (l = purple_connections_get_all(); l; l = l->next) {
+		PurpleConnection *gc = l->data;
+		JabberStream *js;
+
+		if (!purple_strequal(purple_account_get_protocol_id(
+				purple_connection_get_account(gc)), "prpl-jabber"))
+			continue;
+		if (purple_connection_get_state(gc) != PURPLE_CONNECTED)
+			continue;
+		js = purple_connection_get_protocol_data(gc);
+		if (js && js->chats && g_hash_table_size(js->chats) > 0)
+			jabber_chat_selfping_all(js);
+	}
+}
+
+static PurplePlugin *selfping_plugin = NULL;
+static gboolean selfping_network_connected = FALSE;
+
+/* The network signals are registered after the prpls are probed at
+ * startup, so connect on first use rather than at plugin load. */
+static void
+jabber_chat_selfping_watch_network(void)
+{
+	if (selfping_network_connected || selfping_plugin == NULL)
+		return;
+
+	purple_signal_connect(purple_network_get_handle(),
+	                      "network-configuration-changed", selfping_plugin,
+	                      PURPLE_CALLBACK(jabber_chat_network_changed_cb), NULL);
+	selfping_network_connected = TRUE;
+}
+
+void
+jabber_chat_selfping_init(PurplePlugin *plugin)
+{
+	selfping_plugin = plugin;
+}
+
+void
+jabber_chat_selfping_uninit(PurplePlugin *plugin)
+{
+	if (selfping_network_connected && plugin == selfping_plugin)
+		purple_signal_disconnect(purple_network_get_handle(),
+		                         "network-configuration-changed", plugin,
+		                         PURPLE_CALLBACK(jabber_chat_network_changed_cb));
+	selfping_network_connected = FALSE;
+	selfping_plugin = NULL;
 }
