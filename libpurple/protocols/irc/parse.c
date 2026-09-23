@@ -664,14 +664,151 @@ char *irc_format(struct irc_conn *irc, const char *format, ...)
 	return (g_string_free(string, FALSE));
 }
 
+/* Undoes the IRCv3 message-tags value escaping: "\:" is ";", "\s" is a
+ * space, "\\" is a backslash, "\r" and "\n" are CR and LF, a backslash
+ * before any other character is dropped, and so is a trailing backslash. */
+char *irc_unescape_tag_value(const char *value)
+{
+	GString *out = g_string_sized_new(strlen(value));
+	const char *cur;
+
+	for (cur = value; *cur; cur++) {
+		if (*cur != '\\') {
+			g_string_append_c(out, *cur);
+			continue;
+		}
+		switch (cur[1]) {
+		case ':':  g_string_append_c(out, ';'); break;
+		case 's':  g_string_append_c(out, ' '); break;
+		case '\\': g_string_append_c(out, '\\'); break;
+		case 'r':  g_string_append_c(out, '\r'); break;
+		case 'n':  g_string_append_c(out, '\n'); break;
+		case '\0': /* trailing backslash: dropped */ continue;
+		default:   g_string_append_c(out, cur[1]); break;
+		}
+		cur++;
+	}
+
+	return g_string_free(out, FALSE);
+}
+
+/* Parses the tag part of a message (after the '@', up to the first space)
+ * into a key -> unescaped value table. Tags without a value, or with an
+ * empty one, map to "". If a key occurs more than once the last one wins.
+ * Keys and values are salvaged to valid UTF-8. */
+GHashTable *irc_parse_tags(const char *tags)
+{
+	GHashTable *table;
+	gchar **parts;
+	int i;
+
+	table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	if (tags == NULL)
+		return table;
+
+	parts = g_strsplit(tags, ";", -1);
+	for (i = 0; parts[i]; i++) {
+		char *eq, *key, *value, *tmp;
+
+		eq = strchr(parts[i], '=');
+		if (*parts[i] == '\0' || eq == parts[i])
+			continue;	/* empty, or no key */
+
+		tmp = eq ? g_strndup(parts[i], eq - parts[i]) : g_strdup(parts[i]);
+		key = purple_utf8_salvage(tmp);
+		g_free(tmp);
+		if (eq) {
+			tmp = irc_unescape_tag_value(eq + 1);
+			value = purple_utf8_salvage(tmp);
+			g_free(tmp);
+		} else {
+			value = g_strdup("");
+		}
+		g_hash_table_replace(table, key, value);
+	}
+	g_strfreev(parts);
+
+	return table;
+}
+
+/* Returns the value of tag @key on the message being dispatched, "" for a
+ * tag without a value, or NULL if the message doesn't carry it. */
+const char *irc_msg_tag(struct irc_conn *irc, const char *key)
+{
+	if (irc == NULL || irc->tags == NULL)
+		return NULL;
+	return g_hash_table_lookup(irc->tags, key);
+}
+
+/* Parses an IRCv3 server-time value ("2011-10-19T16:40:51.620Z"). Returns
+ * 0 if it can't be parsed. A value without a zone is taken as UTC. */
+time_t irc_parse_server_time(const char *value)
+{
+	GDateTime *dt;
+	GTimeZone *utc;
+	time_t t;
+
+	if (value == NULL || *value == '\0')
+		return 0;
+
+	utc = g_time_zone_new_utc();
+	dt = g_date_time_new_from_iso8601(value, utc);
+	g_time_zone_unref(utc);
+	if (dt == NULL)
+		return 0;
+
+	t = (time_t)g_date_time_to_unix(dt);
+	g_date_time_unref(dt);
+	return t;
+}
+
+/* The timestamp for the message being dispatched: its server-time tag if
+ * it has a valid one, else now. */
+time_t irc_msg_timestamp(struct irc_conn *irc)
+{
+	time_t t = irc_parse_server_time(irc_msg_tag(irc, "time"));
+
+	return t > 0 ? t : time(NULL);
+}
+
+/* Maps one channel membership prefix character to a chat buddy flag. */
+PurpleConvChatBuddyFlags irc_prefix_char_flag(char c)
+{
+	switch (c) {
+	case '~': return PURPLE_CBFLAGS_FOUNDER;
+	case '&': return PURPLE_CBFLAGS_OP;	/* admin/protected */
+	case '@': return PURPLE_CBFLAGS_OP;
+	case '%': return PURPLE_CBFLAGS_HALFOP;
+	case '+': return PURPLE_CBFLAGS_VOICE;
+	default:  return PURPLE_CBFLAGS_NONE;
+	}
+}
+
+/* Strips all membership prefixes from a NAMES entry (several of them with
+ * multi-prefix, e.g. "@+nick") and returns the union of their flags; the
+ * UI shows the highest. "@", "%" and "+" are always prefixes, the others
+ * only if the server's PREFIX (@mode_chars) lists them. */
+PurpleConvChatBuddyFlags irc_nick_prefix_flags(const char *mode_chars, const char *nick, const char **rest)
+{
+	PurpleConvChatBuddyFlags flags = PURPLE_CBFLAGS_NONE;
+
+	while (*nick && (strchr("@%+", *nick) != NULL ||
+	                 (mode_chars && strchr(mode_chars, *nick) != NULL))) {
+		flags |= irc_prefix_char_flag(*nick);
+		nick++;
+	}
+
+	if (rest)
+		*rest = nick;
+	return flags;
+}
+
+static void irc_parse_msg_untagged(struct irc_conn *irc, char *input);
+
 void irc_parse_msg(struct irc_conn *irc, char *input)
 {
-	struct _irc_msg *msgent;
-	char *cur, *end, *tmp, *from, *msgname, *fmt, **args, *msg;
-	guint i;
 	PurpleConnection *gc = purple_account_get_connection(irc->account);
-	gboolean fmt_valid;
-	int args_cnt;
+	GHashTable *tags = NULL;
 
 	irc->recv_time = time(NULL);
 
@@ -689,6 +826,40 @@ void irc_parse_msg(struct irc_conn *irc, char *input)
 		g_free(clean);
 	}
 
+	/* IRCv3 message tags: "@key=value;key2 :prefix COMMAND ..." */
+	if (input[0] == '@') {
+		char *sp = strchr(input, ' ');
+
+		if (sp == NULL) {
+			irc_parse_error_cb(irc, input);
+			return;
+		}
+		*sp = '\0';
+		tags = irc_parse_tags(input + 1);
+		input = sp + 1;
+		while (*input == ' ')
+			input++;
+	}
+
+	/* Handlers read the tags through irc_msg_tag(). A handler that
+	 * fails the connection does so through purple_connection_error_reason(),
+	 * which defers freeing irc, so it is still valid afterwards. */
+	irc->tags = tags;
+	irc_parse_msg_untagged(irc, input);
+	irc->tags = NULL;
+	if (tags)
+		g_hash_table_destroy(tags);
+}
+
+static void irc_parse_msg_untagged(struct irc_conn *irc, char *input)
+{
+	struct _irc_msg *msgent;
+	char *cur, *end, *tmp, *from, *msgname, *fmt, **args, *msg;
+	guint i;
+	PurpleConnection *gc = purple_account_get_connection(irc->account);
+	gboolean fmt_valid;
+	int args_cnt;
+
 	if (!strncmp(input, "PING ", 5)) {
 		msg = irc_format(irc, "vv", "PONG", input + 5);
 		irc_send(irc, msg);
@@ -705,20 +876,24 @@ void irc_parse_msg(struct irc_conn *irc, char *input)
 				PURPLE_CONNECTION_ERROR_NETWORK_ERROR,
 				_("Disconnected."));
 		return;
-#ifdef HAVE_CYRUS_SASL
-	} else if (!strncmp(input, "AUTHENTICATE ", 13)) {
-		irc_msg_auth(irc, input + 13);
-		return;
-#endif
 	}
 
-	if (input[0] != ':' || (cur = strchr(input, ' ')) == NULL) {
+	if (input[0] == ':') {
+		if ((cur = strchr(input, ' ')) == NULL) {
+			irc_parse_error_cb(irc, input);
+			return;
+		}
+		from = g_strndup(&input[1], cur - &input[1]);
+		cur++;
+	} else if (g_ascii_isalnum(input[0])) {
+		/* No prefix (e.g. "AUTHENTICATE +"): the message comes from
+		 * the server we're connected to. */
+		from = g_strdup(irc->server ? irc->server : "");
+		cur = input;
+	} else {
 		irc_parse_error_cb(irc, input);
 		return;
 	}
-
-	from = g_strndup(&input[1], cur - &input[1]);
-	cur++;
 	end = strchr(cur, ' ');
 	if (!end)
 		end = cur + strlen(cur);
