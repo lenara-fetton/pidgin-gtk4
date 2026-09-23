@@ -85,6 +85,19 @@ static const char *const level_names[] = {
 static DebugWindow *debug_win = NULL;
 static guint debug_enabled_timer = 0;
 
+/* The thread that owns the debug window. GLib messages logged from other
+ * threads (the backfill worker, GIO's pools) are handed to it through an
+ * idle source: GTK, the window's buffer and purple_debug() (which formats
+ * its timestamp in a static buffer) are not thread-safe. */
+static GThread *debug_main_thread = NULL;
+
+typedef struct
+{
+	PurpleDebugLevel level;
+	char *category;
+	char *text;
+} DeferredDebug;
+
 static void refilter_all(DebugWindow *win);
 
 static void
@@ -513,6 +526,40 @@ debug_enabled_cb(const char *name, PurplePrefType type,
 }
 
 static void
+deferred_debug_free(gpointer data)
+{
+	DeferredDebug *d = data;
+
+	g_free(d->category);
+	g_free(d->text);
+	g_free(d);
+}
+
+static void
+deferred_debug_add(PurpleDebugLevel level, const char *category,
+                   const char *text, GSourceFunc func)
+{
+	DeferredDebug *d = g_new(DeferredDebug, 1);
+
+	d->level = level;
+	d->category = g_strdup(category);
+	d->text = g_strdup(text);
+	/* Not g_main_context_invoke(): that runs the function right here
+	 * whenever this thread manages to acquire the idle default context. */
+	g_idle_add_full(G_PRIORITY_DEFAULT, func, d, deferred_debug_free);
+}
+
+/* A GLib message logged on another thread, now on the main thread. */
+static gboolean
+deferred_log_cb(gpointer data)
+{
+	DeferredDebug *d = data;
+
+	purple_debug(d->level, d->category, "%s\n", d->text);
+	return G_SOURCE_REMOVE;
+}
+
+static void
 pidgin_glib_log_handler(const gchar *domain, GLogLevelFlags flags,
 					  const gchar *msg, gpointer user_data)
 {
@@ -548,14 +595,22 @@ pidgin_glib_log_handler(const gchar *domain, GLogLevelFlags flags,
 
 	if (new_msg != NULL)
 	{
-		purple_debug(level, (new_domain != NULL ? new_domain : "g_log"),
-				   "%s\n", new_msg);
+		const char *category = (new_domain != NULL ? new_domain : "g_log");
+
+		if (debug_main_thread == NULL || g_thread_self() == debug_main_thread)
+			purple_debug(level, category, "%s\n", new_msg);
+		else if ((flags & G_LOG_FLAG_FATAL) == 0)
+			deferred_debug_add(level, category, new_msg, deferred_log_cb);
 
 		g_free(new_msg);
 	}
 
-	/* Criticals and warnings must stay visible without -d too. */
-	if (level >= PURPLE_DEBUG_WARNING && !purple_debug_is_enabled())
+	/* Criticals and warnings must stay visible without -d too, and so
+	 * must a fatal message from another thread, which can't wait for the
+	 * main loop. */
+	if ((level >= PURPLE_DEBUG_WARNING && !purple_debug_is_enabled()) ||
+	    ((flags & G_LOG_FLAG_FATAL) && debug_main_thread != NULL &&
+	     g_thread_self() != debug_main_thread))
 		g_log_default_handler(domain, flags, msg, user_data);
 
 	g_free(new_domain);
@@ -564,6 +619,8 @@ pidgin_glib_log_handler(const gchar *domain, GLogLevelFlags flags,
 void
 pidgin_debug_init(void)
 {
+	debug_main_thread = g_thread_self();
+
 	/* Debug window preferences, all pidgin4-only. */
 	purple_prefs_add_none(PREFS);
 
@@ -639,6 +696,18 @@ pidgin_debug_window_hide(void)
 		gtk_window_destroy(GTK_WINDOW(debug_win->window));
 }
 
+static void pidgin_debug_print(PurpleDebugLevel level, const char *category,
+                               const char *arg_s);
+
+static gboolean
+deferred_print_cb(gpointer data)
+{
+	DeferredDebug *d = data;
+
+	pidgin_debug_print(d->level, d->category, d->text);
+	return G_SOURCE_REMOVE;
+}
+
 static void
 pidgin_debug_print(PurpleDebugLevel level, const char *category,
 					 const char *arg_s)
@@ -649,6 +718,12 @@ pidgin_debug_print(PurpleDebugLevel level, const char *category,
 	gsize len;
 	time_t mtime;
 	gboolean bottom;
+
+	/* purple_debug() called directly on another thread. */
+	if (debug_main_thread != NULL && g_thread_self() != debug_main_thread) {
+		deferred_debug_add(level, category, arg_s, deferred_print_cb);
+		return;
+	}
 
 	if (debug_win == NULL)
 		return;

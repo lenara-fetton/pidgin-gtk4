@@ -784,8 +784,15 @@ report_progress(BackfillRun *run, gboolean force)
 	pd->bytes_total = run->bytes_total;
 
 	if (run->async) {
-		g_main_context_invoke_full(run->bf->context, G_PRIORITY_DEFAULT_IDLE,
-				progress_idle, pd, progress_data_free);
+		/* Not g_main_context_invoke_full(): with the caller's context the
+		 * default one, it calls progress_idle() on this worker thread
+		 * whenever the context is free between main loop iterations. */
+		GSource *source = g_idle_source_new();
+
+		g_source_set_priority(source, G_PRIORITY_DEFAULT_IDLE);
+		g_source_set_callback(source, progress_idle, pd, progress_data_free);
+		g_source_attach(source, run->bf->context);
+		g_source_unref(source);
 	} else {
 		progress_idle(pd);
 		progress_data_free(pd);
