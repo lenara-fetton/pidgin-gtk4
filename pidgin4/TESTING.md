@@ -1,4 +1,4 @@
-# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status)
+# pidgin4: manual checklists (M2 sign-in, M3 buddy list and status, M5 windows)
 
 The automated checks (unit tests, the headless selftests and
 `scripts/check-profile-compat.sh`) never sign an account in. The checks
@@ -230,6 +230,147 @@ for you. Sign in as above (quit Pidgin 2 first, or use `-l NAME`).
       sent with a file transfer (the transfer window is M5; watch the
       debug window).
 
+## M5: the remaining windows
+
+Most of this works without signing in (`-n`); the items marked
+**(signed in)** need an account online. Afterwards, run
+`scripts/check-profile-compat.sh --pidgin4 <binary>` again.
+
+### Preferences (Tools → Preferences)
+- [ ] Every page opens: Interface, Conversations, Smiley Themes, Themes,
+      Sounds, Network, Browser, Logging, Status / Idle, Message Index.
+- [ ] Changes apply at once, with no OK button: e.g. untick "Show
+      timestamps", and it is saved in `prefs.xml` after a few seconds.
+      Toggle Buddies → Show → Offline Buddies while Preferences is open:
+      nothing else changes.
+- [ ] Shared settings: change "Log all chats", quit, run Pidgin 2 on the
+      same copy (`pidgin -m -c ~/.purple-gtk4`): its Preferences show the
+      same value. The pidgin4-only ones (sound method, browser, send
+      button, conversation placement) live under `/pidgin4` and are not
+      in Pidgin 2's dialog.
+- [ ] Conversations → Font: untick "Use the system font", pick a font:
+      the sample entry below uses it at once. Default Formatting: bold,
+      a face, a size and colours show in the preview line.
+- [ ] Smiley Themes: picking another theme changes the smileys shown
+      below the list (and in conversations).
+- [ ] Themes: "Open" creates `~/.purple-gtk4/pidgin4/gtk4.css` with
+      examples and opens it in your editor. Uncomment the
+      `.pidgin-blist-away` rule, change the colour and save: away
+      buddies in the buddy list change colour without a restart. Put a
+      typo in a property name, press Reload: the error is shown under
+      the buttons.
+- [ ] Sounds: Browse picks a sound file per event, Reset goes back to
+      "(default)". Preview plays nothing until the sound backend (M6)
+      exists.
+- [ ] Network: the detected IP is shown next to "Use automatically
+      detected IP address". Proxy type "Use System Proxy Settings" greys
+      out host and port.
+- [ ] Browser: "Manual" with `firefox --new-window %s`: a link in a
+      notification (e.g. a user info window) opens with that command;
+      "Desktop Default" opens it through the portal/xdg-open.
+- [ ] Status / Idle: "Change to this status when idle" picks a saved
+      status; with idle time "Based on keyboard or mouse use" the idle
+      status is reached after the minutes given (needs M6 idle under
+      Sway/GNOME; until then libpurple's own timer applies).
+- [ ] Message Index **(signed in, or after an "Index Now")**: the progress
+      bar moves while logs are indexed; Pause/Resume work; the database
+      size and message count grow. Don't press Rebuild on a big profile
+      unless you have time.
+
+### Pounces (Tools → Buddy Pounces, or a buddy's "Add Buddy Pounce")
+- [ ] The manager lists the pounces from `pounces.xml`. Modify one,
+      change nothing, Save: `pounces.xml` is unchanged (diff it),
+      including an `execute-command` action's command.
+- [ ] Add a pounce on a buddy for "Signs on" with a popup and a command
+      (`notify-send pounce`), recurring. **(signed in)** When the buddy
+      signs on, the popup shows and the command runs.
+- [ ] Delete asks first and removes it from `pounces.xml`.
+
+### Saved statuses (status box → Saved statuses… / New status…)
+- [ ] The window lists the saved statuses with type and message; Use
+      activates one (the status box follows).
+- [ ] New status: title, type, message with formatting; "Use different
+      status for some accounts" with a per-account status. Save shows it
+      in the list and in the status box popover; Pidgin 2 shows it too.
+- [ ] Duplicate and Delete (with confirmation) work.
+
+### Log viewer (buddy → View Log, Buddies → View User Log…, Tools → System Log)
+- [ ] A buddy with logs: the months are listed newest first, the newest
+      conversation is shown with times, names and formatting.
+- [ ] The title shows the total log size.
+- [ ] Search for a word from an old conversation: only logs containing it
+      remain, and the word is highlighted. It works for logs the message
+      index has not covered yet (linear scan) as well.
+- [ ] A contact with several buddies (e.g. XMPP + IRC) shows the logs of
+      all of them.
+- [ ] Tools → System Log shows the system logs of all accounts.
+- [ ] Nothing in `logs/` changes by viewing (`find logs -newer <stamp>`
+      prints nothing). Delete Log asks first and deletes only that file.
+
+### Privacy (Tools → Privacy) **(signed in)**
+- [ ] Pick an XMPP account: the policy is shown; Allow/Block lists show
+      the server's lists. Add a name to the block list: the server gets it
+      (check with another client), Remove takes it off.
+
+### Room list (Tools → Room List, or Join a Chat → Room List) **(signed in)**
+- [ ] On an XMPP account, Get List shows the conference service's rooms
+      (with the room name, users, description columns); on IRC the
+      channel list with a progress indicator and Stop.
+- [ ] Join joins the selected room; Add Chat adds it to the buddy list;
+      Bookmark (XMPP) adds a server bookmark, which another client (or a
+      reconnect with autojoin) sees.
+
+### Certificates (Tools → Certificates)
+- [ ] The list shows the hosts from `certificates/x509/tls_peers`.
+      View shows the subject, validity and SHA-1 and SHA-256
+      fingerprints; compare one with
+      `openssl x509 -in <file> -noout -fingerprint -sha256`.
+- [ ] Export writes a PEM file; Import of that file under another name
+      adds it; Delete (with confirmation) removes it again.
+
+### File transfers **(signed in)**
+- [ ] Send a file to an XMPP buddy with HTTP upload (M8): the File
+      Transfers window opens, the progress bar, speed and remaining time
+      move, and the row ends as "Finished".
+- [ ] Receive a file: accept it in the request, the row shows progress,
+      then "Open File" and "Open Folder" work.
+- [ ] Stop cancels a running transfer; Clear Finished removes finished
+      rows; with "Keep the dialog open" off, the window closes when all
+      transfers are done.
+
+### Custom smileys (Tools → Custom Smileys)
+- [ ] Add: pick an image, give a shortcut; it is listed, and Pidgin 2
+      shows it too (`smileys.xml`, `custom_smiley/`). Edit changes the
+      shortcut; Delete removes it after asking.
+
+### Plugins (Tools → Plugins)
+- [ ] The list shows the libpurple plugins (Psychic Mode, Autoaccept,
+      Join/Part Hiding, ...) and pidgin4 UI plugins, not prpls.
+- [ ] Enable Psychic Mode: it is added to `/pidgin4/plugins/loaded` in
+      `prefs.xml`, and `/pidgin/plugins/loaded` is unchanged. Configure
+      Plugin shows its options; changes are kept. Disable it again.
+- [ ] Put `/usr/lib64/pidgin/history.so` into `/pidgin4/plugins/loaded`
+      of a scratch copy's `prefs.xml`: pidgin4 starts, logs that it
+      refuses the GTK 2 plugin, and does not crash.
+
+### About (Help → About)
+- [ ] The versions (pidgin4, git revision, libpurple, GTK, GLib) are
+      right; Build info lists the plugin directories; Copy puts it on the
+      clipboard; Credits lists the developers.
+
+### OMEMO (Tools → OMEMO Fingerprints)
+- [ ] Without the OMEMO plugin loaded the window says so and offers the
+      Plugins dialog.
+- [ ] **(signed in, OMEMO plugin loaded)** Your own fingerprint matches
+      what Conversations/Dino show for this device; contacts' devices are
+      listed with their trust; setting one to "Verified" is kept after a
+      restart (`pidgin4/omemo.db`).
+
+### Name completion
+- [ ] In Buddies → New Instant Message / Get User Info / View User Log,
+      typing the start of a buddy name or alias shows suggestions under
+      the entry; Up/Down/Enter picks one and selects its account.
+
 ## Developer aids
 
 For headless test runs only:
@@ -246,6 +387,20 @@ For headless test runs only:
   status box and checks the current saved status, then quits. It only
   runs when **no account is enabled** (otherwise it logs "skipped"), so
   use it on a scratch profile whose accounts are all disabled.
+
+- `PIDGIN4_WINDOWS_SELFTEST=1` (M5) opens every M5 window in turn and
+  quits with status 0, or 1 if a step failed: it walks every
+  preferences page (and checks that opening it changes no pref), opens
+  the pounce and status editors (cancelled), the log viewer with a
+  search on the profile's logs (read-only), privacy, room list,
+  certificates (views every tls_peers certificate), file transfers,
+  custom smileys, plugins (toggles Psychic Mode on and off and checks
+  that only `/pidgin4/plugins/loaded` changes), About and OMEMO. A
+  comma-separated list (`prefs,log`) runs only those modules.
+  `PIDGIN4_SELFTEST_SHOTS=DIR` saves screenshots of the windows.
+  `scripts/run-pidgin4-selftest.sh BIN PROFILE [TIMEOUT]` runs a binary
+  this way on a private Xvfb (or, with `PIDGIN4_SELFTEST_WAYLAND=1`, on
+  the current Wayland session).
 
 None of them signs anything in. See `scripts/check-profile-compat.sh`
 for the Xvfb setup (`GDK_BACKEND=x11`, `G_DEBUG=fatal-criticals`,
