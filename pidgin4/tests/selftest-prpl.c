@@ -81,7 +81,9 @@ emit_sending_meta(PurpleConnection *gc, const char *who, const char *type)
 	g_hash_table_insert(meta, g_strdup("origin-id"), id);
 	purple_signal_emit(purple_conversations_get_handle(), "sending-message-meta",
 	                   purple_connection_get_account(gc), who, meta);
-	g_hash_table_unref(meta);
+	/* As the jabber prpl does: destroy empties the table even if a
+	 * handler kept a reference, so the UI must copy it. */
+	g_hash_table_destroy(meta);
 }
 
 static int

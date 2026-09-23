@@ -24,8 +24,9 @@
  * (doc/PIDGIN-UPGRADE.md, M8 "Landed" notes; doc/conversation-signals.dox)
  * and the conversation UI.
  *
- *  - receiving-message-meta / sending-message-meta: the table is kept for
- *    the conversation until its next write_conv (gtkconv.c takes it with
+ *  - receiving-message-meta / sending-message-meta: a copy of the table
+ *    (it is only valid during the emission) is kept for the conversation
+ *    until its next write_conv (gtkconv.c takes it with
  *    pidgin_conv_meta_take()); stale tables are dropped on the next idle.
  *    Duplicates are discarded ("discard" = "1") against the message index:
  *    a server-id hit always, a stanza-id/origin-id hit for archive (MAM)
