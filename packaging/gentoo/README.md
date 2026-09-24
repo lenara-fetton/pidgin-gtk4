@@ -1,16 +1,17 @@
 # Gentoo packages
 
-Live (9999) ebuilds for a local overlay. They replace `::gentoo`'s
-`net-im/pidgin` with this tree:
+Live (9999) ebuilds for a local overlay. `net-im/pidgin-9999` replaces
+`::gentoo`'s `net-im/pidgin` with this tree (`main`), in one package:
 
-| Package | Builds | Installs |
-|---|---|---|
-| `net-im/pidgin-9999` | libpurple from this repo (`main`) | `/usr/lib64/libpurple.so.0`, the `irc`/`jabber` prpls, OMEMO and the other libpurple plugins in `/usr/lib64/purple-2`, D-Bus (`purple-remote`) |
-| `net-im/pidgin4-9999` | the GTK 4 UI (`pidgin4/`) | `/usr/bin/pidgin4`, UI plugins in `/usr/lib64/pidgin4`, the desktop file, icons and smiley themes |
+- **libpurple:** `/usr/lib64/libpurple.so.0`, the `irc` and `jabber` prpls,
+  OMEMO and the other libpurple plugins in `/usr/lib64/purple-2`, and D-Bus
+  (`purple-remote`).
+- **pidgin4, with USE=gui (the default):** `/usr/bin/pidgin4`, the UI plugins
+  in `/usr/lib64/pidgin4`, the desktop file, icons and smiley themes.
 
-`net-im/pidgin` has the same slot as the stock package (`0/2`). Its `gui`
-USE flag (on by default) pulls in `net-im/pidgin4`. The GTK 2 Pidgin, finch
-and the SIMPLE protocol are not built.
+It has the same slot as the stock package (`0/2`). Like the stock ebuild's
+GTK 2 UI, the GTK 4 UI is switched by `gui`. The GTK 2 Pidgin, finch and the
+SIMPLE protocol are not built.
 
 libpurple stays ABI-compatible with the stock 2.14.14 (every symbol the
 stock library exports is still exported), so third-party plugins built
@@ -29,9 +30,10 @@ repositories:
 
    ```sh
    sudo cp -r packaging/gentoo/net-im /usr/local/portage/
+   sudo rm -rf /usr/local/portage/net-im/pidgin4   # from the earlier two-package layout
    sudo cp -r ~/purple-discord/gentoo/x11-plugins \
               ~/pidgin-opensteamworks/gentoo/x11-plugins /usr/local/portage/
-   for e in /usr/local/portage/net-im/pidgin{,4}/*-9999.ebuild \
+   for e in /usr/local/portage/net-im/pidgin/*-9999.ebuild \
             /usr/local/portage/x11-plugins/{purple-discord,pidgin-opensteamworks}/*-9999.ebuild; do
        sudo ebuild "$e" manifest
    done
@@ -41,7 +43,6 @@ repositories:
 
    ```
    =net-im/pidgin-9999 **
-   =net-im/pidgin4-9999 **
    =x11-plugins/purple-discord-9999 **
    =x11-plugins/pidgin-opensteamworks-9999 **
    ```
@@ -74,7 +75,6 @@ repositories:
 
 ```sh
 emerge -av --oneshot '=net-im/pidgin-2.14.14*::gentoo'
-emerge --depclean net-im/pidgin4
 ```
 
 The plugins need no rebuild: they use only the libpurple 2.14 API.

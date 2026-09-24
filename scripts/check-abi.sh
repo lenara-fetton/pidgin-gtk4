@@ -2,10 +2,14 @@
 # check-abi.sh: ABI gates for the private libpurple build.
 #
 # 1. Symbol superset gate (CLAUDE.md, hard rule): every dynamic symbol that
-#    the system /usr/lib64/libpurple.so.0.14.14 defines must also be defined
-#    by <prefix>/lib/libpurple.so.0. Missing symbols are printed and the
-#    script exits non-zero. If libabigail's abidiff is installed, it is run
-#    as well and any removed or changed function/variable fails the gate.
+#    the stock libpurple 2.14.14 defines must also be defined by
+#    <prefix>/lib/libpurple.so.0. The reference is scripts/libpurple-2.14.14.syms
+#    (the stock library's exports, built from the pidgin-2.14.14 tarball with
+#    Gentoo's former USE flags: D-Bus on, voice/video off), since the system
+#    copy is replaced by packaging/gentoo. Missing symbols are printed and the
+#    script exits non-zero. With --ref LIB and libabigail's abidiff
+#    installed, abidiff runs as well and any removed or changed
+#    function/variable fails the gate.
 #
 # 2. Plugin loading gate: every undefined purple_* / serv_* symbol referenced
 #    by the user's third-party prpls (~/.purple/plugins/libdiscord.so and
@@ -20,13 +24,14 @@ usage() {
 Usage: $(basename "$0") [OPTIONS] [PLUGIN.so ...]
 
 Compare the exported symbols of the private libpurple build against the
-system copy, and check that the given prpl plugins (default: libdiscord.so
+stock 2.14.14 ones, and check that the given prpl plugins (default: libdiscord.so
 and libsteam.so from ~/.purple/plugins) resolve against the new build.
 
 Options:
   --new LIB        new library (default: \$PIDGIN4_PREFIX/lib/libpurple.so.0,
                    PIDGIN4_PREFIX defaults to \$HOME/.local/pidgin4)
-  --ref LIB        reference library (default: /usr/lib64/libpurple.so.0.14.14)
+  --ref REF        reference: a library, or a list of symbols, one per line
+                   (default: scripts/libpurple-2.14.14.syms)
   --no-abidiff     skip abidiff even if it is installed
   --no-plugins     skip the plugin loading gate
   -h, --help       show this help
@@ -37,7 +42,7 @@ EOF
 
 prefix=${PIDGIN4_PREFIX:-$HOME/.local/pidgin4}
 new_lib=$prefix/lib/libpurple.so.0
-ref_lib=/usr/lib64/libpurple.so.0.14.14
+ref_lib=$(dirname "$0")/libpurple-2.14.14.syms
 use_abidiff=1
 check_plugins=1
 plugins=()
@@ -64,9 +69,13 @@ done
 
 status=0
 
-# Defined dynamic symbols of a shared object, one per line, sorted.
+# Defined dynamic symbols of a shared object (or a .syms list), one per
+# line, sorted.
 defined_syms() {
-	nm -D --defined-only "$1" | awk '{print $3}' | sort -u
+	case "$1" in
+		*.syms) sort -u "$1" ;;
+		*) nm -D --defined-only "$1" | awk '{print $3}' | sort -u ;;
+	esac
 }
 
 # --- Gate 1: exported symbol superset --------------------------------------
@@ -78,7 +87,8 @@ if [ -n "$missing" ]; then
 	status=1
 fi
 
-if [ "$use_abidiff" = 1 ] && command -v abidiff >/dev/null 2>&1; then
+if [ "$use_abidiff" = 1 ] && [ "${ref_lib%.syms}" = "$ref_lib" ] &&
+   command -v abidiff >/dev/null 2>&1; then
 	echo "== ABI: abidiff $ref_lib $new_lib"
 	# abidiff's exit status is a bit field: 4 = ABI change, 8 = incompatible
 	# change. Added symbols alone only set bit 4 with nothing removed, so

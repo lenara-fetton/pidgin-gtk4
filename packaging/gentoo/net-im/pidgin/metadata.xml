@@ -6,15 +6,15 @@
 		<name>Lenara Fetton</name>
 	</maintainer>
 	<longdescription>
-		libpurple 2.14 from the pidgin-gtk4 tree: an ABI-compatible superset
-		of the stock 2.14.14 library with modern XMPP (carbons, MAM, HTTP
-		upload, receipts and markers, corrections, reactions, replies, OMEMO)
-		and IRCv3 support. The GTK 2 Pidgin is not built; the user interface
-		is net-im/pidgin4. Profiles in ~/.purple stay readable by the stock
-		Pidgin 2.14.14.
+		Pidgin 2.14 from the pidgin-gtk4 tree: libpurple, an ABI-compatible
+		superset of the stock 2.14.14 library with modern XMPP (carbons, MAM,
+		HTTP upload, receipts and markers, corrections, reactions, replies,
+		OMEMO) and IRCv3 support, and pidgin4, a GTK 4 user interface for
+		Wayland, in place of the GTK 2 Pidgin. Profiles in ~/.purple stay
+		readable by the stock Pidgin 2.14.14.
 	</longdescription>
 	<use>
-		<flag name="gui">Pull in the GTK 4 user interface, <pkg>net-im/pidgin4</pkg></flag>
+		<flag name="gui">Build pidgin4, the GTK 4 user interface (without it, only libpurple and its plugins)</flag>
 		<flag name="omemo">Build the OMEMO end-to-end encryption plugin for XMPP (<pkg>net-libs/libomemo-c</pkg>)</flag>
 	</use>
 	<upstream>
