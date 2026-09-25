@@ -387,59 +387,67 @@ static void
 test_parse_lines(void)
 {
 	GDateTime *start = pidgin_backfill_parse_file_name("2025-07-08.212153-0700PDT.html");
-	GDateTime *last = NULL;
+	PidginLogClock *clock;
 	PidginIndexedMessage *msg = pidgin_indexed_message_new();
 
 	g_assert_nonnull(start);
 	g_assert_cmpint(g_date_time_to_unix(start), ==, local_time(2025, 7, 8, 21, 21, 53));
 	g_assert_null(pidgin_backfill_parse_file_name("notes.html"));
+	clock = pidgin_log_clock_new(start, 0);
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, 0);
 
 	/* 24-hour time. */
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"color: #A82F2F\">"
 			"<span style=\"font-size: smaller\">(22:19:46)</span> <b>a:</b></span> x<br>",
-			start, &last, msg));
+			clock, msg));
 	g_assert_cmpint(msg->time, ==, local_time(2025, 7, 8, 22, 19, 46));
 
 	/* US date + 12-hour time, before the cursor: doesn't move it back. */
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"color: #16569E\">"
 			"<span style=\"font-size: smaller\">(07/07/2025 10:19:46 PM)</span> <b>b:</b></span> y<br>",
-			start, &last, msg));
+			clock, msg));
 	g_assert_cmpint(msg->time, ==, local_time(2025, 7, 7, 22, 19, 46));
 	g_assert_cmpuint(msg->flags, ==, PURPLE_MESSAGE_SEND);
-	g_assert_cmpint(g_date_time_to_unix(last), ==, local_time(2025, 7, 8, 22, 19, 46));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, local_time(2025, 7, 8, 22, 19, 46));
 
 	/* Day rollover. */
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"color: #A82F2F\">"
 			"<span style=\"font-size: smaller\">(12:01:00 AM)</span> <b>a:</b></span> z<br>",
-			start, &last, msg));
+			clock, msg));
 	g_assert_cmpint(msg->time, ==, local_time(2025, 7, 9, 0, 1, 0));
 
 	/* European date, ISO date. */
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"color: #A82F2F\">"
 			"<span style=\"font-size: smaller\">(10.07.2025 08:00:00)</span> <b>a:</b></span> z<br>",
-			start, &last, msg));
+			clock, msg));
 	g_assert_cmpint(msg->time, ==, local_time(2025, 7, 10, 8, 0, 0));
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"color: #A82F2F\">"
 			"<span style=\"font-size: smaller\">(2025-07-11 09:00)</span> <b>a:</b></span> z<br>",
-			start, &last, msg));
+			clock, msg));
 	g_assert_cmpint(msg->time, ==, local_time(2025, 7, 11, 9, 0, 0));
 
 	/* Gaim's <font> markup. */
 	g_assert_true(pidgin_backfill_parse_html_line("<font color=\"#A82F2F\"><font size=\"2\">"
 			"(09:05:00)</font> <b>old:</b></font> <span style='font-weight: bold;'>hey</span><br/>",
-			start, &last, msg));
+			clock, msg));
 	g_assert_cmpstr(msg->sender, ==, "old");
 	g_assert_cmpstr(msg->body, ==, "hey");
 	g_assert_cmpint(msg->time, ==, local_time(2025, 7, 11, 9, 5, 0));
 
 	/* The "unhandled type" and raw forms. */
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"font-size: smaller\">"
-			"(09:06:00)</font><b> who:</b> what<br>", start, &last, msg));
+			"(09:06:00)</font><b> who:</b> what<br>", clock, msg));
 	g_assert_cmpstr(msg->sender, ==, "who");
 	g_assert_cmpstr(msg->body, ==, "what");
 	g_assert_cmpuint(msg->flags, ==, 0);
+	/* A system line whose text ends with a colon has no sender. */
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"font-size: smaller\">"
-			"(09:07:00)</span> raw <i>text</i><br>", start, &last, msg));
+			"(09:06:30)</span><b> bob reacted with :kekw:</b><br>", clock, msg));
+	g_assert_null(msg->sender);
+	g_assert_cmpstr(msg->body, ==, "bob reacted with :kekw:");
+	g_assert_cmpuint(msg->flags, ==, PURPLE_MESSAGE_SYSTEM);
+	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"font-size: smaller\">"
+			"(09:07:00)</span> raw <i>text</i><br>", clock, msg));
 	g_assert_null(msg->sender);
 	g_assert_cmpstr(msg->body, ==, "raw text");
 	g_assert_cmpuint(msg->flags, ==, PURPLE_MESSAGE_RAW);
@@ -448,30 +456,373 @@ test_parse_lines(void)
 	 * without making markup of escaped '<'. */
 	g_assert_true(pidgin_backfill_parse_html_line("<span style=\"color: #A82F2F\">"
 			"<span style=\"font-size: smaller\">(09:08:00)</span> <b>O&#39;Brien:</b></span>"
-			" &#60;b&#62; is &#x2603; &amp;&#38; &#0; &#xZZ;<br>", start, &last, msg));
+			" &#60;b&#62; is &#x2603; &amp;&#38; &#0; &#xZZ;<br>", clock, msg));
 	g_assert_cmpstr(msg->sender, ==, "O'Brien");
 	g_assert_cmpstr(msg->body, ==, "<b> is \xe2\x98\x83 && &#0; &#xZZ;");
 
 	/* Not message lines. */
-	g_assert_false(pidgin_backfill_parse_html_line("<html><head>", start, &last, msg));
-	g_assert_false(pidgin_backfill_parse_html_line("", start, &last, msg));
+	g_assert_false(pidgin_backfill_parse_html_line("<html><head>", clock, msg));
+	g_assert_false(pidgin_backfill_parse_html_line("", clock, msg));
 	g_assert_false(pidgin_backfill_parse_html_line("<span style=\"font-size: smaller\">"
-			"(25:99:00)</span> x<br>", start, &last, msg));
+			"(25:99:00)</span> x<br>", clock, msg));
 	g_assert_false(pidgin_backfill_parse_html_line("<span style=\"font-size: smaller\">"
-			"(10:00:00", start, &last, msg));
-	g_assert_false(pidgin_backfill_parse_txt_line("Conversation with x", start, &last, msg));
+			"(10:00:00", clock, msg));
+	g_assert_false(pidgin_backfill_parse_txt_line("Conversation with x", clock, msg));
 
-	g_assert_true(pidgin_backfill_parse_txt_line("(09:08:00) *bob* whisper", start, &last, msg));
+	g_assert_true(pidgin_backfill_parse_txt_line("(09:08:00) *bob* whisper", clock, msg));
 	g_assert_cmpstr(msg->sender, ==, "bob");
 	g_assert_cmpuint(msg->flags, ==, PURPLE_MESSAGE_WHISPER);
 	g_assert_true(pidgin_backfill_parse_txt_line("(09:09:00) The topic for #x is: stuff",
-			start, &last, msg));
+			clock, msg));
 	g_assert_null(msg->sender);
 	g_assert_cmpuint(msg->flags, ==, PURPLE_MESSAGE_SYSTEM);
 
 	pidgin_indexed_message_free(msg);
-	g_date_time_unref(last);
+	pidgin_log_clock_free(clock);
 	g_date_time_unref(start);
+}
+
+#define MSG(t, who, text) "<span style=\"color: #A82F2F\"><span style=\"font-size: smaller\">(" \
+	t ")</span> <b>" who ":</b></span> " text "<br>"
+#define SYS(t, text) "<span style=\"font-size: smaller\">(" t ")</span><b> " text "</b><br>"
+
+/* Parses @line with @clock and returns its time. */
+static gint64
+at(PidginLogClock *clock, const char *line)
+{
+	PidginIndexedMessage *msg = pidgin_indexed_message_new();
+	gint64 t;
+
+	g_assert_true(pidgin_backfill_parse_html_line(line, clock, msg));
+	t = msg->time;
+	pidgin_indexed_message_free(msg);
+	return t;
+}
+
+static PidginLogClock *
+clock_for(const char *name, gint64 file_end)
+{
+	GDateTime *start = pidgin_backfill_parse_file_name(name);
+	PidginLogClock *clock = pidgin_log_clock_new(start, file_end);
+
+	g_date_time_unref(start);
+	return clock;
+}
+
+/* Lines without a sender stamped by Pidgin 2's clock between messages
+ * stamped with the sender's (libdiscord's history replays, then skewed by
+ * the UTC offset): each looked like a new day, ~2,900 times in one log. */
+static void
+test_clock_stale_system_lines(void)
+{
+	PidginLogClock *clock = clock_for("2021-10-14.070843-0700PDT.html", 0);
+	PidginIndexedMessage *msg = pidgin_indexed_message_new();
+
+	g_assert_cmpint(at(clock, MSG("09:58:40 AM", "a", "x")), ==, local_time(2021, 10, 14, 9, 58, 40));
+	g_assert_cmpint(at(clock, MSG("10:39:47 AM", "a", "x")), ==, local_time(2021, 10, 14, 10, 39, 47));
+	g_assert_cmpint(at(clock, SYS("07:08:44 AM", "Someone reacted with :kekw:")), ==,
+			local_time(2021, 10, 14, 7, 8, 44));
+	g_assert_cmpint(at(clock, MSG("10:45:36 AM", "b", "x")), ==, local_time(2021, 10, 14, 10, 45, 36));
+	g_assert_cmpint(at(clock, SYS("07:08:44 AM", "\xe2\x94\x8c\xe2\x94\x80\xe2\x94\x80@b: quote")),
+			==, local_time(2021, 10, 14, 7, 8, 44));
+	g_assert_cmpint(at(clock, MSG("10:46:32 AM", "b", "x")), ==, local_time(2021, 10, 14, 10, 46, 32));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, local_time(2021, 10, 14, 10, 46, 32));
+
+	/* A real midnight still rolls over, and a stale line just before it
+	 * stays on the day before. */
+	g_assert_cmpint(at(clock, MSG("11:59:50 PM", "a", "x")), ==, local_time(2021, 10, 14, 23, 59, 50));
+	g_assert_cmpint(at(clock, MSG("12:00:22 AM", "a", "x")), ==, local_time(2021, 10, 15, 0, 0, 22));
+	g_assert_cmpint(at(clock, SYS("11:58:00 PM", "Someone reacted with :x:")), ==,
+			local_time(2021, 10, 14, 23, 58, 0));
+	g_assert_cmpint(at(clock, MSG("12:01:00 AM", "a", "x")), ==, local_time(2021, 10, 15, 0, 1, 0));
+	/* A stale line after a rollover lands just after the cursor too. */
+	g_assert_cmpint(at(clock, SYS("12:05:00 AM", "Someone reacted with :y:")), ==,
+			local_time(2021, 10, 15, 0, 5, 0));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, local_time(2021, 10, 15, 0, 1, 0));
+
+	/* The text format's system lines follow the same rule. */
+	g_assert_true(pidgin_backfill_parse_txt_line("(06:00:00 PM) Someone reacted with :z:",
+			clock, msg));
+	g_assert_null(msg->sender);
+	g_assert_cmpint(msg->time, ==, local_time(2021, 10, 14, 18, 0, 0));
+	g_assert_true(pidgin_backfill_parse_txt_line("(12:02:00 AM) a: x", clock, msg));
+	g_assert_cmpint(msg->time, ==, local_time(2021, 10, 15, 0, 2, 0));
+
+	pidgin_indexed_message_free(msg);
+	pidgin_log_clock_free(clock);
+}
+
+/* The file's mtime bounds rollovers; a quiet night still rolls over. */
+static void
+test_clock_file_end(void)
+{
+	PidginLogClock *clock;
+
+	/* 21:00 -> 10:00: the next morning, within a day of the mtime. */
+	clock = clock_for("2024-01-02.200000-0800PST.html", local_time(2024, 1, 3, 12, 0, 0));
+	g_assert_cmpint(at(clock, MSG("21:00:00", "a", "x")), ==, local_time(2024, 1, 2, 21, 0, 0));
+	g_assert_cmpint(at(clock, MSG("10:00:00", "a", "x")), ==, local_time(2024, 1, 3, 10, 0, 0));
+	pidgin_log_clock_free(clock);
+
+	/* Written until 23:00: nothing is dated past 23:00 the day after. */
+	clock = clock_for("2024-01-02.200000-0800PST.html", local_time(2024, 1, 2, 23, 0, 0));
+	g_assert_cmpint(at(clock, MSG("22:00:00", "a", "x")), ==, local_time(2024, 1, 2, 22, 0, 0));
+	g_assert_cmpint(at(clock, MSG("00:30:00", "a", "x")), ==, local_time(2024, 1, 3, 0, 30, 0));
+	/* Past the end on the cursor's day: an earlier day's line. */
+	g_assert_cmpint(at(clock, MSG("23:30:00", "a", "x")), ==, local_time(2024, 1, 2, 23, 30, 0));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, local_time(2024, 1, 3, 0, 30, 0));
+	g_assert_cmpint(at(clock, MSG("22:00:00", "a", "x")), ==, local_time(2024, 1, 3, 22, 0, 0));
+	/* A history replay: a rollover would pass the end, so it's older. */
+	g_assert_cmpint(at(clock, MSG("20:00:00", "b", "x")), ==, local_time(2024, 1, 3, 20, 0, 0));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, local_time(2024, 1, 3, 22, 0, 0));
+	pidgin_log_clock_free(clock);
+}
+
+/* A logged zero time_t is dated at the cursor, and doesn't move it. */
+static void
+test_clock_epoch(void)
+{
+	PidginLogClock *clock = clock_for("2021-10-14.070843-0700PDT.html", 0);
+
+	g_assert_cmpint(at(clock, SYS("12/31/1969 04:00:00 PM", "x")), ==,
+			local_time(2021, 10, 14, 7, 8, 43));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, 0);
+	g_assert_cmpint(at(clock, MSG("10:00:00 PM", "a", "x")), ==, local_time(2021, 10, 14, 22, 0, 0));
+	g_assert_cmpint(at(clock, MSG("12/31/1969 04:00:00 PM", "a", "x")), ==,
+			local_time(2021, 10, 14, 22, 0, 0));
+	g_assert_cmpint(at(clock, MSG("01/01/1970 12:00:00 AM", "a", "x")), ==,
+			local_time(2021, 10, 14, 22, 0, 0));
+	g_assert_cmpint(at(clock, MSG("10:05:00 PM", "a", "x")), ==, local_time(2021, 10, 14, 22, 5, 0));
+	pidgin_log_clock_free(clock);
+}
+
+/* Until the first message line, system lines lead: a log of joins and
+ * parts only still rolls over. */
+static void
+test_clock_system_only(void)
+{
+	PidginLogClock *clock = clock_for("2024-01-02.200000-0800PST.html", 0);
+
+	g_assert_cmpint(at(clock, SYS("22:00:00", "a joined")), ==, local_time(2024, 1, 2, 22, 0, 0));
+	g_assert_cmpint(at(clock, SYS("00:30:00", "b joined")), ==, local_time(2024, 1, 3, 0, 30, 0));
+	g_assert_cmpint(at(clock, SYS("23:00:00", "a left")), ==, local_time(2024, 1, 3, 23, 0, 0));
+	g_assert_cmpint(at(clock, SYS("01:00:00", "b left")), ==, local_time(2024, 1, 4, 1, 0, 0));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, local_time(2024, 1, 4, 1, 0, 0));
+
+	/* Resuming: from a message line's time, the system lines follow. */
+	pidgin_log_clock_resume(clock, local_time(2024, 1, 2, 23, 50, 0), TRUE);
+	g_assert_cmpint(at(clock, SYS("00:05:00", "x")), ==, local_time(2024, 1, 3, 0, 5, 0));
+	g_assert_cmpint(at(clock, SYS("22:00:00", "x")), ==, local_time(2024, 1, 2, 22, 0, 0));
+	g_assert_cmpint(pidgin_log_clock_get_last(clock), ==, local_time(2024, 1, 2, 23, 50, 0));
+	pidgin_log_clock_free(clock);
+}
+
+#define DISCORD "discord/me"
+#define DISCORD_DIR DISCORD "/123.chat"
+#define DISCORD_FILE DISCORD_DIR "/2021-10-14.070843-0700PDT.html"
+#define DISCORD_HEAD "<html><head><title>Conversation with 123</title></head><body><h1>x</h1><p>\n"
+
+static char *
+write_log(Fixture *f, const char *rel, const char *contents, gint64 mtime)
+{
+	char *path = g_build_filename(f->logs, rel, NULL);
+	char *dir = g_path_get_dirname(path);
+	struct utimbuf times;
+
+	g_assert_cmpint(g_mkdir_with_parents(dir, 0700), ==, 0);
+	g_assert_true(g_file_set_contents(path, contents, -1, NULL));
+	if (mtime > 0) {
+		times.actime = times.modtime = mtime;
+		g_assert_cmpint(g_utime(path, &times), ==, 0);
+	}
+	g_free(dir);
+	return path;
+}
+
+/* The shape of the log that went to 2029: every row stays between the
+ * file's start and its mtime (plus the skew). */
+static void
+test_stale_system_lines(Fixture *f, gconstpointer data)
+{
+	GString *log = g_string_new(DISCORD_HEAD);
+	GPtrArray *rows;
+	char *path;
+	guint i, day;
+
+	/* Three days of messages from 08:00 to 23:00, each followed by a line
+	 * stamped when the file was opened. */
+	for (day = 0; day < 3; day++) {
+		for (i = 8; i < 24; i++) {
+			g_string_append_printf(log, MSG("%02u:%02u:00 %s", "a", "x %u.%u") "\n",
+					i % 12 == 0 ? 12 : i % 12, i, i < 12 ? "AM" : "PM", day, i);
+			g_string_append(log, SYS("07:08:44 AM", "Someone reacted with :kekw:") "\n");
+		}
+		g_string_append(log, MSG("11:59:00 PM", "a", "late") "\n");
+	}
+	g_string_append(log, SYS("12/31/1969 04:00:00 PM", "zero") "\n");
+	path = write_log(f, DISCORD_FILE, log->str, local_time(2021, 10, 16, 23, 59, 30));
+	run_sync(f);
+
+	rows = conv_rows(f, DISCORD, "123");
+	g_assert_cmpuint(rows->len, ==, 3 * 33 + 1);
+	for (i = 0; i < rows->len; i++) {
+		PidginIndexedMessage *msg = rows->pdata[i];
+		guint d, h;
+
+		/* every message on its day, every stale line within the file */
+		if (sscanf(msg->body, "x %u.%u", &d, &h) == 2) {
+			g_assert_cmpint(msg->time, ==, local_time(2021, 10, 14 + d, h, h, 0));
+		} else if (g_str_equal(msg->body, "late")) {
+			g_assert_cmpint(msg->time % 86400, ==, local_time(2021, 10, 14, 23, 59, 0) % 86400);
+		} else if (g_str_equal(msg->body, "zero")) {
+			g_assert_cmpint(msg->time, ==, local_time(2021, 10, 16, 23, 59, 0));
+		} else {
+			g_assert_null(msg->sender);
+			g_assert_cmpint(msg->time, >=, local_time(2021, 10, 14, 7, 8, 44));
+			g_assert_cmpint(msg->time, <=, local_time(2021, 10, 16, 7, 8, 44));
+		}
+	}
+	g_assert_cmpint(((PidginIndexedMessage *)rows->pdata[rows->len - 1])->time, ==,
+			local_time(2021, 10, 16, 23, 59, 0));
+	g_ptr_array_unref(rows);
+	g_string_free(log, TRUE);
+	g_free(path);
+}
+
+/* Resuming inside a file restarts the cursor from its message rows, not a
+ * system line dated after them. */
+static void
+test_resume_after_system_line(Fixture *f, gconstpointer data)
+{
+	char *path = write_log(f, DISCORD_FILE, DISCORD_HEAD
+			MSG("11:50:00 PM", "a", "one") "\n"
+			SYS("12:05:00 AM", "Someone reacted with :x:") "\n", 0);
+	GPtrArray *rows;
+	FILE *fp;
+
+	run_sync(f);
+	fp = g_fopen(path, "ab");
+	g_assert_nonnull(fp);
+	fputs(MSG("11:55:00 PM", "a", "two") "\n", fp);
+	fclose(fp);
+	bump_mtime(path);
+	run_sync(f);
+
+	rows = conv_rows(f, DISCORD, "123");
+	g_assert_cmpuint(rows->len, ==, 3);
+	g_assert_cmpstr(((PidginIndexedMessage *)rows->pdata[1])->body, ==, "two");
+	g_assert_cmpint(((PidginIndexedMessage *)rows->pdata[1])->time, ==,
+			local_time(2021, 10, 14, 23, 55, 0));
+	g_assert_cmpint(((PidginIndexedMessage *)rows->pdata[2])->time, ==,
+			local_time(2021, 10, 15, 0, 5, 0));
+	g_ptr_array_unref(rows);
+	g_free(path);
+}
+
+static void
+exec_sql(Fixture *f, const char *sql)
+{
+	sqlite3 *db;
+	char *err = NULL;
+
+	g_assert_cmpint(sqlite3_open(pidgin_message_index_get_path(f->idx), &db), ==, SQLITE_OK);
+	sqlite3_busy_timeout(db, 5000);
+	if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK)
+		g_error("%s: %s", sql, err);
+	sqlite3_close(db);
+}
+
+/* What earlier builds left: rows years after their file, and at 1970. */
+static void
+misdate_rows(Fixture *f)
+{
+	exec_sql(f, "UPDATE messages SET time = time + 3 * 365 * 86400"
+			" WHERE conv = 'friend@example.com' AND sender = 'friend'");
+	exec_sql(f, "UPDATE messages SET time = 0 WHERE conv = 'room@conference.example.com'"
+			" AND sender = 'bob'");
+}
+
+static gint64
+count_where(Fixture *f, const char *where)
+{
+	char *sql = g_strdup_printf("SELECT count(*) FROM messages WHERE %s", where);
+	sqlite3 *db;
+	sqlite3_stmt *stmt;
+	gint64 n = -1;
+
+	g_assert_cmpint(sqlite3_open_v2(pidgin_message_index_get_path(f->idx), &db,
+			SQLITE_OPEN_READONLY, NULL), ==, SQLITE_OK);
+	g_assert_cmpint(sqlite3_prepare_v2(db, sql, -1, &stmt, NULL), ==, SQLITE_OK);
+	if (sqlite3_step(stmt) == SQLITE_ROW)
+		n = sqlite3_column_int64(stmt, 0);
+	sqlite3_finalize(stmt);
+	sqlite3_close(db);
+	g_free(sql);
+	return n;
+}
+
+#define MISDATED "time <= 86400 OR time > strftime('%s', 'now') + 86400"
+
+static void
+test_date_repair(Fixture *f, gconstpointer data)
+{
+	char *done;
+	gint64 reacted;
+	GPtrArray *rows;
+	GHashTable *reactions;
+	PidginIndexedMessage *msg;
+
+	/* The first run repairs (nothing) and records it. */
+	run_sync(f);
+	done = pidgin_message_index_kv_get(f->idx, "", PIDGIN_BACKFILL_DATE_REPAIR_KEY);
+	g_assert_cmpstr(done, ==, "1");
+	g_free(done);
+
+	/* Live data (an id, a reaction) keeps its row. */
+	exec_sql(f, "UPDATE messages SET stanza_id = 'live-1' WHERE conv = 'friend@example.com'"
+			" AND sender = 'me' AND time = (SELECT min(time) FROM messages"
+			" WHERE conv = 'friend@example.com' AND sender = 'me')");
+	g_assert_cmpint(count_where(f, "stanza_id = 'live-1'"), ==, 1);
+	rows = conv_rows(f, JABBER, "room@conference.example.com");
+	msg = rows->pdata[0];
+	g_assert_cmpstr(msg->sender, ==, "alice");
+	reacted = msg->id;
+	g_assert_true(pidgin_message_index_add_reaction(f->idx, reacted, "\xf0\x9f\x91\x8d", "bob"));
+	g_ptr_array_unref(rows);
+	misdate_rows(f);
+	g_assert_cmpint(count_where(f, MISDATED), ==, 6);
+
+	/* Recorded as done: the next run leaves them. */
+	run_sync(f);
+	g_assert_cmpint(count_where(f, MISDATED), ==, 6);
+
+	/* Not done: the run repairs and indexes the two files again. */
+	pidgin_message_index_kv_set(f->idx, "", PIDGIN_BACKFILL_DATE_REPAIR_KEY, NULL);
+	run_sync(f);
+	g_assert_cmpint(count_where(f, MISDATED), ==, 0);
+	g_assert_cmpint(pidgin_message_index_count(f->idx), ==, FIXTURE_ROWS);
+	g_assert_cmpint(count_where(f, "stanza_id = 'live-1'"), ==, 1);
+	g_assert_cmpint(count_where(f, "time = " G_STRINGIFY(0)), ==, 0);
+	msg = pidgin_message_index_find_by_id(f->idx, JABBER, "friend@example.com", "live-1");
+	g_assert_nonnull(msg);
+	g_assert_cmpstr(msg->log_file, ==, FRIEND_FILE);
+	pidgin_indexed_message_free(msg);
+	msg = pidgin_message_index_get(f->idx, reacted);
+	g_assert_nonnull(msg);
+	g_assert_cmpstr(msg->body, ==, "hi all");
+	pidgin_indexed_message_free(msg);
+	reactions = pidgin_message_index_get_reactions(f->idx, reacted);
+	g_assert_nonnull(reactions);
+	g_assert_cmpuint(g_hash_table_size(reactions), ==, 1);
+	g_hash_table_unref(reactions);
+	/* and every row is where test_full() expects it */
+	test_full(f, NULL);
+
+	/* A file whose recorded mtime is older than its rows, but whose mtime
+	 * now covers them (live rows linked since), is left alone. */
+	exec_sql(f, "UPDATE indexed_files SET mtime = 1000000000");
+	g_assert_cmpint(pidgin_message_index_repair_misdated(f->idx, f->logs, NULL), ==, 0);
+	g_assert_cmpint(pidgin_message_index_count(f->idx), ==, FIXTURE_ROWS);
 }
 
 /* The async path: paused before it starts, then resumed or cancelled. */
@@ -625,7 +976,14 @@ main(int argc, char *argv[])
 	g_test_add(name, Fixture, data, fixture_setup, func, fixture_teardown)
 
 	g_test_add_func("/backfill/parse-lines", test_parse_lines);
+	g_test_add_func("/backfill/clock/stale-system-lines", test_clock_stale_system_lines);
+	g_test_add_func("/backfill/clock/file-end", test_clock_file_end);
+	g_test_add_func("/backfill/clock/epoch", test_clock_epoch);
+	g_test_add_func("/backfill/clock/system-only", test_clock_system_only);
 	ADD("/backfill/full", test_full, NULL);
+	ADD("/backfill/stale-system-lines", test_stale_system_lines, NULL);
+	ADD("/backfill/resume-after-system-line", test_resume_after_system_line, NULL);
+	ADD("/backfill/date-repair", test_date_repair, NULL);
 	ADD("/backfill/incremental", test_incremental, NULL);
 	ADD("/backfill/live-rows-linked", test_live_rows_linked, NULL);
 	ADD("/backfill/async-resume", test_async, GINT_TO_POINTER(FALSE));

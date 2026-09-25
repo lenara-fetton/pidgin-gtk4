@@ -21,6 +21,7 @@
  */
 #include "pidgin-internal.h"
 
+#include <glib/gstdio.h>
 #include <sqlite3.h>
 
 #include "account.h"
@@ -1520,7 +1521,7 @@ pidgin_message_index_has_unlogged(PidginMessageIndex *idx)
 
 gint64
 pidgin_message_index_last_time_for_file(PidginMessageIndex *idx,
-		const char *log_file)
+		const char *log_file, gboolean *senders)
 {
 	IndexConn *conn;
 	sqlite3_stmt *stmt;
@@ -1530,18 +1531,26 @@ pidgin_message_index_last_time_for_file(PidginMessageIndex *idx,
 	gboolean is_chat;
 	const char *name;
 
+	if (senders != NULL)
+		*senders = FALSE;
 	name = split_log_path(log_file, &account, &conv, &is_chat);
 	conn = reader_lock(idx, &w);
 	stmt = index_stmt(conn,
-			"SELECT max(time) FROM messages WHERE account = ?1 AND conv = ?2"
+			"SELECT max(CASE WHEN sender IS NOT NULL THEN time END), max(time)"
+			" FROM messages WHERE account = ?1 AND conv = ?2"
 			" AND is_chat = ?4 AND log_file = ?3");
 	if (stmt != NULL) {
 		bind_text(stmt, 1, account);
 		bind_text(stmt, 2, conv);
 		bind_text(stmt, 3, name);
 		sqlite3_bind_int(stmt, 4, is_chat);
-		if (sqlite3_step(stmt) == SQLITE_ROW)
-			time = sqlite3_column_int64(stmt, 0);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			gboolean with_sender = sqlite3_column_type(stmt, 0) != SQLITE_NULL;
+
+			time = sqlite3_column_int64(stmt, with_sender ? 0 : 1);
+			if (senders != NULL)
+				*senders = with_sender;
+		}
 		stmt_done(stmt);
 	}
 	reader_unlock(idx, w);
@@ -1613,6 +1622,188 @@ pidgin_message_index_find_unlogged(PidginMessageIndex *idx,
 	g_free(norm);
 
 	return id;
+}
+
+/******************************************************************************
+ * Date repair
+ *****************************************************************************/
+
+/* The backfill's clock never dates a line more than a day after its file's
+ * mtime, nor at the epoch (pidginbackfill.c). */
+#define REPAIR_SLACK (24 * 60 * 60)
+#define REPAIR_CHUNK 500     /* rows per transaction: live writes wait no longer */
+
+/* The files with a row after their recorded mtime (+ a day) or at the
+ * epoch.  One pass over the table, grouped by file. */
+static const char repair_files_sql[] =
+	"SELECT g.account, g.conv, g.is_chat, g.log_file, g.path, g.maxt, g.mint"
+	" FROM (SELECT account, conv, is_chat, log_file,"
+	"  CASE WHEN instr(log_file, '/') > 0 THEN log_file"
+	"  ELSE account || '/' || conv || CASE WHEN is_chat THEN '.chat' ELSE '' END"
+	"  || '/' || log_file END AS path,"
+	"  max(time) AS maxt, min(time) AS mint"
+	"  FROM messages WHERE log_file IS NOT NULL"
+	"  GROUP BY account, conv, is_chat, log_file) g"
+	" JOIN indexed_files f ON f.path = g.path"
+	" WHERE g.mint <= ?1 OR g.maxt > f.mtime + ?1";
+
+/* Rows with nothing but the log line (reactions and receipts are checked
+ * when deleting). */
+static const char repair_rows_sql[] =
+	"SELECT id, account, conv, is_chat, log_file FROM messages"
+	" WHERE log_file IS NOT NULL AND stanza_id IS NULL AND origin_id IS NULL"
+	" AND server_id IS NULL AND occupant_id IS NULL AND correction_of IS NULL"
+	" AND reply_to IS NULL";
+
+static char *
+repair_key(const char *account, const char *conv, int is_chat, const char *log_file)
+{
+	return g_strdup_printf("%s\n%s\n%d\n%s", account, conv, is_chat, log_file);
+}
+
+int
+pidgin_message_index_repair_misdated(PidginMessageIndex *idx, const char *logs_dir,
+		GCancellable *cancellable)
+{
+	IndexConn scan = { 0 };
+	IndexConn *conn;
+	GError *error = NULL;
+	GHashTable *files, *names;
+	GPtrArray *paths;
+	GArray *ids;
+	sqlite3_stmt *stmt;
+	guint i;
+	int rc;
+
+	g_return_val_if_fail(PIDGIN_IS_MESSAGE_INDEX(idx), -1);
+	g_return_val_if_fail(logs_dir != NULL, -1);
+
+	/* Its own connection: the scans take seconds on a big index, and the
+	 * shared reader would keep the UI waiting that long. */
+	if (!index_conn_open(&scan, idx->path, TRUE, &error)) {
+		g_warning("message index: date repair: %s", error->message);
+		g_clear_error(&error);
+		return -1;
+	}
+
+	files = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	names = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	paths = g_ptr_array_new_with_free_func(g_free);
+	ids = g_array_new(FALSE, FALSE, sizeof(gint64));
+
+	stmt = index_stmt(&scan, repair_files_sql);
+	if (stmt == NULL)
+		goto failed;
+	sqlite3_bind_int64(stmt, 1, REPAIR_SLACK);
+	while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *path = (const char *)sqlite3_column_text(stmt, 4);
+		gint64 maxt = sqlite3_column_int64(stmt, 5);
+		gint64 mint = sqlite3_column_int64(stmt, 6);
+		char *abs = g_build_filename(logs_dir, path, NULL);
+		GStatBuf st;
+
+		/* By the file's mtime now (the recorded one can be older than a
+		 * live row linked since); a file that is gone can't be read again. */
+		if (g_stat(abs, &st) == 0 && S_ISREG(st.st_mode) &&
+		    (mint <= REPAIR_SLACK || maxt > (gint64)st.st_mtime + REPAIR_SLACK)) {
+			g_hash_table_add(files, repair_key(
+					(const char *)sqlite3_column_text(stmt, 0),
+					(const char *)sqlite3_column_text(stmt, 1),
+					sqlite3_column_int(stmt, 2),
+					(const char *)sqlite3_column_text(stmt, 3)));
+			g_hash_table_add(names, g_strdup((const char *)sqlite3_column_text(stmt, 3)));
+			g_ptr_array_add(paths, g_strdup(path));
+		}
+		g_free(abs);
+	}
+	stmt_done(stmt);
+	if (rc != SQLITE_DONE)
+		goto failed;
+
+	if (paths->len > 0) {
+		stmt = index_stmt(&scan, repair_rows_sql);
+		if (stmt == NULL)
+			goto failed;
+		while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+			const char *log_file = (const char *)sqlite3_column_text(stmt, 4);
+			char *key;
+
+			if (!g_hash_table_contains(names, log_file))
+				continue;
+			key = repair_key((const char *)sqlite3_column_text(stmt, 1),
+					(const char *)sqlite3_column_text(stmt, 2),
+					sqlite3_column_int(stmt, 3), log_file);
+			if (g_hash_table_contains(files, key)) {
+				gint64 id = sqlite3_column_int64(stmt, 0);
+
+				g_array_append_val(ids, id);
+			}
+			g_free(key);
+		}
+		stmt_done(stmt);
+		if (rc != SQLITE_DONE)
+			goto failed;
+	}
+	index_conn_close(&scan);
+
+	/* The files first: if this stops half way, the next backfill reads
+	 * them again (and the next repair finds what is left). */
+	conn = writer_lock(idx);
+	index_exec(conn, "SAVEPOINT pidgin_repair", NULL);
+	for (i = 0; i < paths->len; i++) {
+		stmt = index_stmt(conn, "DELETE FROM indexed_files WHERE path = ?1");
+		if (stmt != NULL) {
+			bind_text(stmt, 1, paths->pdata[i]);
+			stmt_step_done(conn, stmt);
+		}
+	}
+	index_exec(conn, "RELEASE pidgin_repair", NULL);
+	writer_unlock(idx);
+
+	for (i = 0; i < ids->len; i++) {
+		if (i % REPAIR_CHUNK == 0) {
+			if (i > 0) {
+				index_exec(conn, "RELEASE pidgin_repair", NULL);
+				writer_unlock(idx);
+			}
+			if (g_cancellable_is_cancelled(cancellable))
+				goto cancelled;
+			conn = writer_lock(idx);
+			index_exec(conn, "SAVEPOINT pidgin_repair", NULL);
+		}
+		stmt = index_stmt(conn,
+				"DELETE FROM messages WHERE id = ?1 AND stanza_id IS NULL"
+				" AND origin_id IS NULL AND server_id IS NULL AND occupant_id IS NULL"
+				" AND correction_of IS NULL AND reply_to IS NULL"
+				" AND NOT EXISTS (SELECT 1 FROM reactions WHERE msg = ?1)"
+				" AND NOT EXISTS (SELECT 1 FROM receipts WHERE msg = ?1)");
+		if (stmt != NULL) {
+			sqlite3_bind_int64(stmt, 1, g_array_index(ids, gint64, i));
+			stmt_step_done(conn, stmt);
+		}
+	}
+	if (ids->len > 0) {
+		index_exec(conn, "RELEASE pidgin_repair", NULL);
+		writer_unlock(idx);
+	}
+
+	g_debug("message index: date repair: %u files, %u rows to index again",
+			paths->len, ids->len);
+	rc = paths->len;
+	goto done;
+
+failed:
+	g_warning("message index: date repair: %s", sqlite3_errmsg(scan.db));
+	stmt_done(stmt);
+	index_conn_close(&scan);
+cancelled:
+	rc = -1;
+done:
+	g_hash_table_destroy(files);
+	g_hash_table_destroy(names);
+	g_ptr_array_unref(paths);
+	g_array_unref(ids);
+	return rc;
 }
 
 /******************************************************************************
