@@ -306,9 +306,28 @@ gint64 pidgin_message_index_find_unlogged(PidginMessageIndex *idx,
 /** TRUE if any row has no log position yet. */
 gboolean pidgin_message_index_has_unlogged(PidginMessageIndex *idx);
 
-/** The newest time of the rows of @a log_file, or 0. */
+/**
+ * The newest time of the rows of @a log_file that have a sender, or of any
+ * of its rows when none has one (then *@a senders is FALSE); 0 if it has
+ * no rows.
+ */
 gint64 pidgin_message_index_last_time_for_file(PidginMessageIndex *idx,
-		const char *log_file);
+		const char *log_file, gboolean *senders);
+
+/**
+ * Undoes the dates earlier backfills got wrong: log files (under
+ * @a logs_dir) with a row dated more than a day after the file's mtime, or
+ * at the Unix epoch, lose their rows that hold nothing but the log line (no
+ * stanza, origin, server or occupant id, no correction or reply, no
+ * reactions or receipts) and their indexed_files entry, so the backfill
+ * indexes them again.  Rows with live data stay, linked to their lines.
+ * Files that are gone are left alone.  Scans on its own read connection,
+ * and deletes in short transactions.
+ *
+ * @return the number of files, or -1 if cancelled or failed.
+ */
+int pidgin_message_index_repair_misdated(PidginMessageIndex *idx, const char *logs_dir,
+		GCancellable *cancellable);
 
 G_END_DECLS
 

@@ -36,9 +36,17 @@
 #define MAX_BODY (1024 * 1024)
 #define READ_CHUNK (256 * 1024)
 #define PROGRESS_USEC (250 * 1000)
-/* An undated time more than this before the previous line means the
+/* An undated message line more than this before the cursor means the
  * day rolled over. */
 #define ROLLOVER_SLACK (60 * 60)
+/* No undated message line is dated more than this after its file's mtime.
+ * A day, not less: senders' stamps can be skewed by a time zone (libdiscord
+ * logged UTC as local time for a while).  Lines without a sender carry
+ * Pidgin's own clock, so they get ROLLOVER_SLACK only. */
+#define FILE_END_SLACK (24 * 60 * 60)
+/* A dated stamp this close to the Unix epoch is a zero time_t that was
+ * logged, not a date. */
+#define EPOCH_ARTIFACT (24 * 60 * 60)
 
 enum {
 	PROP_0,
@@ -180,54 +188,158 @@ parse_stamp(const char *p, const char *end, int *year, int *month, int *day,
 	return *hour < 24 && *min < 60 && *sec < 61;
 }
 
-/* Turns a parsed stamp into a time, using @file_start and the running
- * cursor *@last for undated stamps, and advances the cursor. */
-static gboolean
-resolve_stamp(const char *p, const char *end, GDateTime *file_start,
-		GDateTime **last, gint64 *out)
+/******************************************************************************
+ * The clock (see pidginbackfill.h)
+ *****************************************************************************/
+
+struct _PidginLogClock {
+	GDateTime *file_start;
+	gint64 file_end;        /* mtime, or 0 */
+	GDateTime *last;        /* the cursor, or NULL */
+	gboolean messages;      /* a message line was seen: others follow it */
+};
+
+typedef struct {
+	int year, month, day;   /* year 0: undated */
+	int hour, min, sec;
+} Stamp;
+
+PidginLogClock *
+pidgin_log_clock_new(GDateTime *file_start, gint64 file_end)
 {
-	int year, month, day, hour, min, sec;
-	GTimeZone *tz;
+	PidginLogClock *clock;
+
+	g_return_val_if_fail(file_start != NULL, NULL);
+
+	clock = g_new0(PidginLogClock, 1);
+	clock->file_start = g_date_time_ref(file_start);
+	clock->file_end = MAX(file_end, 0);
+	return clock;
+}
+
+void
+pidgin_log_clock_free(PidginLogClock *clock)
+{
+	if (clock == NULL)
+		return;
+	g_date_time_unref(clock->file_start);
+	g_clear_pointer(&clock->last, g_date_time_unref);
+	g_free(clock);
+}
+
+void
+pidgin_log_clock_resume(PidginLogClock *clock, gint64 last, gboolean messages)
+{
+	GDateTime *utc;
+
+	g_return_if_fail(clock != NULL);
+
+	g_clear_pointer(&clock->last, g_date_time_unref);
+	clock->messages = messages;
+	if (last <= 0)
+		return;
+	utc = g_date_time_new_from_unix_utc(last);
+	clock->last = g_date_time_to_timezone(utc,
+			g_date_time_get_timezone(clock->file_start));
+	g_date_time_unref(utc);
+}
+
+gint64
+pidgin_log_clock_get_last(PidginLogClock *clock)
+{
+	g_return_val_if_fail(clock != NULL, 0);
+
+	return clock->last ? g_date_time_to_unix(clock->last) : 0;
+}
+
+/* @dt moved by @days, if that isn't after @limit (else @dt). */
+static GDateTime *
+shift_days(GDateTime *dt, int days, gint64 limit)
+{
+	GDateTime *moved = g_date_time_add_days(dt, days);
+
+	if (moved != NULL && g_date_time_to_unix(moved) <= limit) {
+		g_date_time_unref(dt);
+		return moved;
+	}
+	g_clear_pointer(&moved, g_date_time_unref);
+	return dt;
+}
+
+/* @dt (on @base's day) moved to the day that puts it nearest @base. */
+static GDateTime *
+nearest_day(GDateTime *dt, GDateTime *base, gint64 limit)
+{
+	gint64 b = g_date_time_to_unix(base);
+	int days;
+
+	for (days = -1; days <= 1; days += 2) {
+		GDateTime *other = g_date_time_add_days(dt, days);
+
+		if (other != NULL && g_date_time_to_unix(other) <= limit &&
+		    ABS(g_date_time_to_unix(other) - b) < ABS(g_date_time_to_unix(dt) - b)) {
+			g_date_time_unref(dt);
+			dt = other;
+		} else {
+			g_clear_pointer(&other, g_date_time_unref);
+		}
+	}
+	return dt;
+}
+
+/* Dates @st for a line with (@sender) or without a sender, and advances
+ * the cursor. */
+static gboolean
+clock_resolve(PidginLogClock *clock, const Stamp *st, gboolean sender, gint64 *out)
+{
+	GTimeZone *tz = g_date_time_get_timezone(clock->file_start);
+	GDateTime *base = clock->last ? clock->last : clock->file_start;
+	/* whether this line moves the cursor and may roll the day over */
+	gboolean leads = sender || !clock->messages;
+	gint64 limit = clock->file_end == 0 ? G_MAXINT64 :
+		clock->file_end + (sender ? FILE_END_SLACK : ROLLOVER_SLACK);
 	GDateTime *dt;
 
-	if (!parse_stamp(p, end, &year, &month, &day, &hour, &min, &sec))
-		return FALSE;
-
-	tz = g_date_time_get_timezone(file_start);
-
-	if (year != 0) {
+	if (st->year != 0) {
 		/* A date in the stamp wins. */
-		dt = g_date_time_new(tz, year, month, day, hour, min, MIN(sec, 59));
+		dt = g_date_time_new(tz, st->year, st->month, st->day, st->hour, st->min,
+				MIN(st->sec, 59));
 		if (dt == NULL)
 			return FALSE;
+		if (g_date_time_to_unix(dt) <= EPOCH_ARTIFACT) {
+			/* a logged zero time_t: at the cursor, which stays */
+			g_date_time_unref(dt);
+			*out = g_date_time_to_unix(base);
+			if (sender)
+				clock->messages = TRUE;
+			return TRUE;
+		}
 	} else {
-		GDateTime *base = (last && *last) ? *last : file_start;
 		int y, m, d;
 
 		g_date_time_get_ymd(base, &y, &m, &d);
-		dt = g_date_time_new(tz, y, m, d, hour, min, MIN(sec, 59));
+		dt = g_date_time_new(tz, y, m, d, st->hour, st->min, MIN(st->sec, 59));
 		if (dt == NULL)
 			return FALSE;
-		if (g_date_time_to_unix(dt) <
-				g_date_time_to_unix(base) - ROLLOVER_SLACK) {
-			GDateTime *next = g_date_time_add_days(dt, 1);
-
-			g_date_time_unref(dt);
-			dt = next;
-		}
+		if (!leads)
+			dt = nearest_day(dt, base, limit);
+		else if (g_date_time_to_unix(dt) < g_date_time_to_unix(base) - ROLLOVER_SLACK)
+			dt = shift_days(dt, 1, limit);
+		/* After the file ends: an earlier day's line. */
+		if (g_date_time_to_unix(dt) > limit)
+			dt = shift_days(dt, -1, G_MAXINT64);
 	}
 
 	*out = g_date_time_to_unix(dt);
 
 	/* The cursor only moves forward: a dated line that is older (an
 	 * offline message) doesn't pull the following undated lines back. */
-	if (last != NULL) {
-		if (*last == NULL || g_date_time_compare(dt, *last) > 0) {
-			if (*last != NULL)
-				g_date_time_unref(*last);
-			*last = g_date_time_ref(dt);
-		}
+	if (leads && (clock->last == NULL || g_date_time_compare(dt, clock->last) > 0)) {
+		g_clear_pointer(&clock->last, g_date_time_unref);
+		clock->last = g_date_time_ref(dt);
 	}
+	if (sender)
+		clock->messages = TRUE;
 	g_date_time_unref(dt);
 
 	return TRUE;
@@ -435,16 +547,17 @@ color_flags(const char *color)
  *   <font color="#C"><font size="2">(T)</font> <b>F:</b></font> M<br/>   Gaim
  */
 gboolean
-pidgin_backfill_parse_html_line(const char *line, GDateTime *file_start,
-		GDateTime **last_time_inout, PidginIndexedMessage *out)
+pidgin_backfill_parse_html_line(const char *line, PidginLogClock *clock,
+		PidginIndexedMessage *out)
 {
 	const char *p = line;
 	const char *color = NULL;
 	const char *stamp, *stamp_end, *end;
-	gint64 time;
+	gboolean span, system_form;
+	Stamp st;
 
 	g_return_val_if_fail(line != NULL, FALSE);
-	g_return_val_if_fail(file_start != NULL, FALSE);
+	g_return_val_if_fail(clock != NULL, FALSE);
 	g_return_val_if_fail(out != NULL, FALSE);
 
 	while (g_ascii_isspace(*p))
@@ -459,8 +572,8 @@ pidgin_backfill_parse_html_line(const char *line, GDateTime *file_start,
 		p++;
 	}
 
-	if (!skip_prefix(&p, "<span style=\"font-size: smaller\">(") &&
-	    !skip_prefix(&p, "<font size=\"2\">("))
+	span = skip_prefix(&p, "<span style=\"font-size: smaller\">(");
+	if (!span && !skip_prefix(&p, "<font size=\"2\">("))
 		return FALSE;
 
 	stamp = p;
@@ -468,14 +581,18 @@ pidgin_backfill_parse_html_line(const char *line, GDateTime *file_start,
 	if (stamp_end == NULL || stamp_end - stamp > 64)
 		return FALSE;
 	p = stamp_end + 1;
-	if (!skip_prefix(&p, "</span>") && !skip_prefix(&p, "</font>"))
+	/* A colourless <span> line closed with </span> is a system line, even
+	 * if its text ends with a colon ("X reacted with :kekw:"); only the
+	 * "unhandled type" line, closed with </font>, has a sender there. */
+	system_form = color == NULL && span && skip_prefix(&p, "</span>");
+	if (!system_form && !skip_prefix(&p, "</span>") && !skip_prefix(&p, "</font>"))
 		return FALSE;
 
-	if (!resolve_stamp(stamp, stamp_end, file_start, last_time_inout, &time))
+	if (!parse_stamp(stamp, stamp_end, &st.year, &st.month, &st.day,
+			&st.hour, &st.min, &st.sec))
 		return FALSE;
 
 	message_reset(out);
-	out->time = time;
 	out->flags = color_flags(color);
 
 	end = p + strlen(p);
@@ -506,7 +623,7 @@ pidgin_backfill_parse_html_line(const char *line, GDateTime *file_start,
 			/* /me */
 			out->sender = unescape_range(b + 3, b_end);
 			out->body = html_to_plain(after, end);
-		} else if (b_end > b && b_end[-1] == ':') {
+		} else if (!system_form && b_end > b && b_end[-1] == ':') {
 			const char *s_end = b_end - 1;
 			static const char auto_reply[] = " &lt;AUTO-REPLY&gt;";
 			size_t alen = sizeof(auto_reply) - 1;
@@ -532,7 +649,8 @@ pidgin_backfill_parse_html_line(const char *line, GDateTime *file_start,
 	if (out->sender != NULL && *out->sender == '\0')
 		g_clear_pointer(&out->sender, g_free);
 
-	return TRUE;
+	/* Dated last: lines without a sender don't lead the clock. */
+	return clock_resolve(clock, &st, out->sender != NULL, &out->time);
 }
 
 /*
@@ -541,28 +659,11 @@ pidgin_backfill_parse_html_line(const char *line, GDateTime *file_start,
  *   (T) M  (system, error, raw)           (T) *F* M  (whisper)
  * The text log doesn't say whether a message was sent or received.
  */
-gboolean
-pidgin_backfill_parse_txt_line(const char *line, GDateTime *file_start,
-		GDateTime **last_time_inout, PidginIndexedMessage *out)
+/* The text after a text line's stamp. */
+static void
+parse_txt_body(const char *p, PidginIndexedMessage *out)
 {
-	const char *p, *stamp_end, *colon;
-	gint64 time;
-
-	g_return_val_if_fail(line != NULL, FALSE);
-	g_return_val_if_fail(file_start != NULL, FALSE);
-	g_return_val_if_fail(out != NULL, FALSE);
-
-	if (line[0] != '(')
-		return FALSE;
-	stamp_end = strchr(line, ')');
-	if (stamp_end == NULL || stamp_end - line > 64 || stamp_end[1] != ' ')
-		return FALSE;
-	if (!resolve_stamp(line + 1, stamp_end, file_start, last_time_inout, &time))
-		return FALSE;
-
-	message_reset(out);
-	out->time = time;
-	p = stamp_end + 2;
+	const char *colon;
 
 	if (strncmp(p, "***", 3) == 0 && p[3] != '\0' && p[3] != ' ') {
 		const char *sp = strchr(p + 3, ' ');
@@ -570,7 +671,7 @@ pidgin_backfill_parse_txt_line(const char *line, GDateTime *file_start,
 		out->flags = PURPLE_MESSAGE_RECV;
 		out->sender = g_strndup(p + 3, sp ? sp - (p + 3) : (gssize)strlen(p + 3));
 		out->body = pidgin_message_index_normalize_text(sp ? sp + 1 : "");
-		return TRUE;
+		return;
 	}
 
 	if (p[0] == '*' && p[1] != '*' && p[1] != ' ') {
@@ -580,7 +681,7 @@ pidgin_backfill_parse_txt_line(const char *line, GDateTime *file_start,
 			out->flags = PURPLE_MESSAGE_WHISPER;
 			out->sender = g_strndup(p + 1, star - (p + 1));
 			out->body = pidgin_message_index_normalize_text(star + 2);
-			return TRUE;
+			return;
 		}
 	}
 
@@ -605,15 +706,40 @@ pidgin_backfill_parse_txt_line(const char *line, GDateTime *file_start,
 			out->flags |= PURPLE_MESSAGE_RECV;
 			out->sender = g_strndup(p, s_end - p);
 			out->body = pidgin_message_index_normalize_text(colon + 2);
-			return TRUE;
+			return;
 		}
 		out->flags = 0;
 	}
 
 	out->flags = PURPLE_MESSAGE_SYSTEM;
 	out->body = pidgin_message_index_normalize_text(p);
+}
 
-	return TRUE;
+gboolean
+pidgin_backfill_parse_txt_line(const char *line, PidginLogClock *clock,
+		PidginIndexedMessage *out)
+{
+	const char *stamp_end;
+	Stamp st;
+
+	g_return_val_if_fail(line != NULL, FALSE);
+	g_return_val_if_fail(clock != NULL, FALSE);
+	g_return_val_if_fail(out != NULL, FALSE);
+
+	if (line[0] != '(')
+		return FALSE;
+	stamp_end = strchr(line, ')');
+	if (stamp_end == NULL || stamp_end - line > 64 || stamp_end[1] != ' ')
+		return FALSE;
+	if (!parse_stamp(line + 1, stamp_end, &st.year, &st.month, &st.day,
+			&st.hour, &st.min, &st.sec))
+		return FALSE;
+
+	message_reset(out);
+	parse_txt_body(stamp_end + 2, out);
+
+	/* Dated last: lines without a sender don't lead the clock. */
+	return clock_resolve(clock, &st, out->sender != NULL, &out->time);
 }
 
 /* Lines that are part of the file framing, never message text. */
@@ -945,8 +1071,9 @@ index_file(BackfillRun *run, LogFile *lf, gint64 offset)
 	PidginBackfill *bf = run->bf;
 	char **parts;
 	char *path, *account, *conv;
-	gboolean is_chat, html, cancelled = FALSE;
-	GDateTime *file_start, *last = NULL;
+	gboolean is_chat, html, cancelled = FALSE, messages;
+	GDateTime *file_start;
+	PidginLogClock *clock;
 	PidginIndexedMessage *pending = NULL;
 	PidginIndexedMessage parsed = { 0 };
 	LineReader reader = { 0 };
@@ -968,15 +1095,12 @@ index_file(BackfillRun *run, LogFile *lf, gint64 offset)
 	if (file_start == NULL)
 		file_start = g_date_time_new_from_unix_local(lf->mtime);
 	g_strfreev(parts);
+	clock = pidgin_log_clock_new(file_start, lf->mtime);
 
 	/* Resuming inside a file: restart the day cursor from its rows. */
-	if (offset > 0 && (last_time =
-			pidgin_message_index_last_time_for_file(bf->idx, lf->rel)) > 0) {
-		GDateTime *utc = g_date_time_new_from_unix_utc(last_time);
-
-		last = g_date_time_to_timezone(utc, g_date_time_get_timezone(file_start));
-		g_date_time_unref(utc);
-	}
+	if (offset > 0 && (last_time = pidgin_message_index_last_time_for_file(bf->idx,
+			lf->rel, &messages)) > 0)
+		pidgin_log_clock_resume(clock, last_time, messages);
 
 	path = g_build_filename(bf->logs_dir, lf->rel, NULL);
 	reader.fp = g_fopen(path, "rb");
@@ -989,7 +1113,7 @@ index_file(BackfillRun *run, LogFile *lf, gint64 offset)
 		g_free(account);
 		g_free(conv);
 		g_date_time_unref(file_start);
-		g_clear_pointer(&last, g_date_time_unref);
+		pidgin_log_clock_free(clock);
 		return TRUE;
 	}
 	reader.buf = g_malloc(READ_CHUNK);
@@ -1035,9 +1159,9 @@ index_file(BackfillRun *run, LogFile *lf, gint64 offset)
 		}
 
 		if (html)
-			ok = pidgin_backfill_parse_html_line(line->str, file_start, &last, &parsed);
+			ok = pidgin_backfill_parse_html_line(line->str, clock, &parsed);
 		else
-			ok = pidgin_backfill_parse_txt_line(line->str, file_start, &last, &parsed);
+			ok = pidgin_backfill_parse_txt_line(line->str, clock, &parsed);
 
 		if (ok) {
 			if (pending != NULL) {
@@ -1101,9 +1225,30 @@ index_file(BackfillRun *run, LogFile *lf, gint64 offset)
 	g_free(account);
 	g_free(conv);
 	g_date_time_unref(file_start);
-	g_clear_pointer(&last, g_date_time_unref);
+	pidgin_log_clock_free(clock);
 
 	return !cancelled;
+}
+
+/* Earlier builds added a day per stale line (up to years) and dated
+ * logged zero time_ts 1970: once per index, the files with such rows lose
+ * them and are indexed again by this run. */
+static void
+repair_dates_once(BackfillRun *run)
+{
+	PidginMessageIndex *idx = run->bf->idx;
+	char *done = pidgin_message_index_kv_get(idx, "", PIDGIN_BACKFILL_DATE_REPAIR_KEY);
+	int files;
+
+	if (done != NULL) {
+		g_free(done);
+		return;
+	}
+	files = pidgin_message_index_repair_misdated(idx, run->bf->logs_dir, run->cancellable);
+	if (files < 0)
+		return;     /* cancelled or failed: again next run */
+	g_debug("backfill: date repair: %d log files to index again", files);
+	pidgin_message_index_kv_set(idx, "", PIDGIN_BACKFILL_DATE_REPAIR_KEY, "1");
 }
 
 static gboolean
@@ -1120,6 +1265,7 @@ backfill_run(PidginBackfill *bf, GCancellable *cancellable, gboolean async,
 	run.files = g_array_new(FALSE, TRUE, sizeof(LogFile));
 	g_array_set_clear_func(run.files, log_file_clear);
 
+	repair_dates_once(&run);
 	scan_dir(&run, bf->logs_dir, NULL, 0);
 	run.have_unlogged = pidgin_message_index_has_unlogged(bf->idx);
 	report_progress(&run, TRUE);

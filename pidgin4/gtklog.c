@@ -202,12 +202,15 @@ log_get_rel_path(PurpleLog *log)
 	return rel;
 }
 
-/* The start time of the log's file for the line parsers. */
-static GDateTime *
-log_get_file_start(PurpleLog *log)
+/* The clock of the log's file for the line parsers: its start from the
+ * name, its end from the mtime. */
+static PidginLogClock *
+log_get_clock(PurpleLog *log)
 {
 	const char *path = log_get_path(log);
+	PidginLogClock *clock;
 	GDateTime *dt = NULL;
+	GStatBuf st;
 
 	if (path != NULL) {
 		char *base = g_path_get_basename(path);
@@ -216,7 +219,9 @@ log_get_file_start(PurpleLog *log)
 	}
 	if (dt == NULL)
 		dt = g_date_time_new_from_unix_local(log->time);
-	return dt;
+	clock = pidgin_log_clock_new(dt, path != NULL && g_stat(path, &st) == 0 ? st.st_mtime : 0);
+	g_date_time_unref(dt);
+	return clock;
 }
 
 static gboolean
@@ -299,8 +304,7 @@ log_read_messages(PurpleLog *log)
 	PurpleLogReadFlags flags = 0;
 	char *read = purple_log_read(log, &flags);
 	gboolean html = (flags & PURPLE_LOG_READ_NO_NEWLINE) != 0;
-	GDateTime *file_start = log_get_file_start(log);
-	GDateTime *last = NULL;
+	PidginLogClock *clock = log_get_clock(log);
 	GPtrArray *messages = g_ptr_array_new_with_free_func(g_object_unref);
 	PidginIndexedMessage *parsed = pidgin_indexed_message_new();
 	PidginMessage *prev = NULL;
@@ -321,10 +325,10 @@ log_read_messages(PurpleLog *log)
 			continue;
 
 		if (html) {
-			ok = pidgin_backfill_parse_html_line(line, file_start, &last, parsed);
+			ok = pidgin_backfill_parse_html_line(line, clock, parsed);
 		} else {
 			char *plain = purple_markup_strip_html(line);
-			ok = pidgin_backfill_parse_txt_line(plain, file_start, &last, parsed);
+			ok = pidgin_backfill_parse_txt_line(plain, clock, parsed);
 			g_free(plain);
 		}
 
@@ -355,8 +359,10 @@ log_read_messages(PurpleLog *log)
 			pidgin_message_set_html(prev, joined);
 			g_free(joined);
 		} else if (line_has_text(line)) {
+			time_t when = pidgin_log_clock_get_last(clock);
+
 			msg = pidgin_message_new(NULL, NULL, line, PURPLE_MESSAGE_RAW,
-			                         last ? (time_t)g_date_time_to_unix(last) : log->time);
+			                         when ? when : log->time);
 			g_ptr_array_add(messages, msg);
 			prev = NULL;
 		}
@@ -364,9 +370,7 @@ log_read_messages(PurpleLog *log)
 
 	g_strfreev(lines);
 	pidgin_indexed_message_free(parsed);
-	if (last != NULL)
-		g_date_time_unref(last);
-	g_date_time_unref(file_start);
+	pidgin_log_clock_free(clock);
 	return messages;
 }
 

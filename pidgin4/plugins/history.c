@@ -22,6 +22,8 @@
  */
 #include "pidgin4-plugin.h"
 
+#include <glib/gstdio.h>
+
 #include "pidginbackfill.h"
 #include "pidginmessageindex.h"
 
@@ -39,10 +41,12 @@ static PurplePlugin *my_plugin = NULL;
  * The HTML body of a log line as libpurple's html logger writes it
  *   <span style="color: #A82F2F"><span style="font-size: smaller">(time)</span> <b>who:</b></span> body<br/>
  *   <span style="font-size: smaller">(time)</span><b> system text</b><br/>
- * (or the older <font> forms). NULL if it doesn't look like one.
+ * (or the older <font> forms), for a line the parser found a sender in
+ * (@sender) or not: a system line's text can end with a colon too. NULL if
+ * it doesn't look like one.
  */
 static char *
-line_body_html(const char *line, gboolean *action)
+line_body_html(const char *line, gboolean sender, gboolean *action)
 {
 	const char *p, *end, *b, *b_end;
 
@@ -75,7 +79,7 @@ line_body_html(const char *line, gboolean *action)
 	while (b < b_end && *b == ' ')
 		b++;
 
-	if ((b_end > b && b_end[-1] == ':') || g_str_has_prefix(b, "***")) {
+	if (sender && ((b_end > b && b_end[-1] == ':') || g_str_has_prefix(b, "***"))) {
 		/* who: body */
 		const char *after = b_end + 4;
 
@@ -96,8 +100,8 @@ line_body_html(const char *line, gboolean *action)
 }
 
 static PidginMessage *
-message_from_line(const char *line, gboolean html, GDateTime *file_start,
-                  GDateTime **last_time, const char *protocol_sml)
+message_from_line(const char *line, gboolean html, PidginLogClock *clock,
+                  const char *protocol_sml)
 {
 	PidginIndexedMessage *parsed = pidgin_indexed_message_new();
 	PidginMarkupOptions options = { 0 };
@@ -107,16 +111,16 @@ message_from_line(const char *line, gboolean html, GDateTime *file_start,
 	char *body = NULL;
 
 	if (html)
-		ok = pidgin_backfill_parse_html_line(line, file_start, last_time, parsed);
+		ok = pidgin_backfill_parse_html_line(line, clock, parsed);
 	else
-		ok = pidgin_backfill_parse_txt_line(line, file_start, last_time, parsed);
+		ok = pidgin_backfill_parse_txt_line(line, clock, parsed);
 	if (!ok) {
 		pidgin_indexed_message_free(parsed);
 		return NULL;
 	}
 
 	if (html)
-		body = line_body_html(line, &action);
+		body = line_body_html(line, parsed->sender != NULL, &action);
 	if (body == NULL)
 		body = g_markup_escape_text(parsed->body ? parsed->body : "", -1);
 	if (action) {
@@ -295,7 +299,9 @@ historize(PurpleConversation *c)
 	char *contents, *escaped_alias, *header, *base;
 	char **lines;
 	GPtrArray *messages;
-	GDateTime *file_start, *last_time = NULL;
+	GDateTime *file_start;
+	PidginLogClock *clock;
+	GStatBuf st;
 	PidginMessage *msg;
 	PurplePlugin *prpl;
 	const char *sml = NULL;
@@ -336,6 +342,8 @@ historize(PurpleConversation *c)
 	g_free(base);
 	if (file_start == NULL)
 		file_start = g_date_time_new_from_unix_local(log->time);
+	clock = pidgin_log_clock_new(file_start, g_stat(data->path, &st) == 0 ? st.st_mtime : 0);
+	g_date_time_unref(file_start);
 
 	prpl = purple_find_prpl(purple_account_get_protocol_id(log->account));
 	if (prpl != NULL)
@@ -366,7 +374,7 @@ historize(PurpleConversation *c)
 		for (i = 0; lines[i] != NULL; i++) {
 			if (*lines[i] == '\0')
 				continue;
-			msg = message_from_line(lines[i], html, file_start, &last_time, sml);
+			msg = message_from_line(lines[i], html, clock, sml);
 			if (msg != NULL)
 				g_ptr_array_add(parsed, msg);
 		}
@@ -377,9 +385,7 @@ historize(PurpleConversation *c)
 		g_ptr_array_unref(parsed);
 	}
 	g_strfreev(lines);
-	if (last_time != NULL)
-		g_date_time_unref(last_time);
-	g_date_time_unref(file_start);
+	pidgin_log_clock_free(clock);
 
 	/* The separator between the history and what comes now. */
 	msg = pidgin_message_new_marker();
