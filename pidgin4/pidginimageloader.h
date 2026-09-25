@@ -161,6 +161,27 @@ GdkTexture *pidgin_image_loader_load_finish(PidginImageLoader *loader,
                                             GError **error);
 
 /**
+ * Fetches the body of @uri without decoding it: for inline audio and
+ * video. The same rules as images (the allowlist, redirects only to
+ * allowed URIs, aesgcm:// decrypted by the OMEMO plugin, cancellation);
+ * bodies above @max_size fail with ..._ERROR_TOO_LARGE. Plain https bodies
+ * go to the disk cache under a key of their own (a hit is mapped, not
+ * read); decrypted ones only to memory, in the result. Concurrent fetches
+ * of one URI share one download (the first one's @max_size applies).
+ * The callback runs on the calling thread's main context.
+ */
+void pidgin_image_loader_fetch_async(PidginImageLoader *loader,
+                                     const char *uri, gsize max_size,
+                                     GCancellable *cancellable,
+                                     GAsyncReadyCallback callback,
+                                     gpointer data);
+
+/** Returns the body (transfer full), or NULL with @error set. */
+GBytes *pidgin_image_loader_fetch_finish(PidginImageLoader *loader,
+                                         GAsyncResult *result,
+                                         GError **error);
+
+/**
  * Synchronous cache lookup (memory, then disk; never the network), for a
  * quick re-render of already-seen images. Returns a new reference or NULL
  * on a miss. A disk hit reads and decodes the file on the calling thread.

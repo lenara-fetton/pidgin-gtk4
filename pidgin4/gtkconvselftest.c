@@ -1281,6 +1281,9 @@ share_server_cb(SoupServer *server, SoupServerMessage *msg, const char *path,
 		soup_server_message_set_status(msg, 200, NULL);
 		soup_server_message_set_response(msg, "video/mp4", SOUP_MEMORY_STATIC,
 		                                 "0123456789", 10);
+	} else if (g_str_has_prefix(path, "/share/stall")) {
+		/* a download that never finishes */
+		soup_server_message_pause(msg);
 	} else if (g_str_has_prefix(path, "/share/doc")) {
 		soup_server_message_set_status(msg, 200, NULL);
 		soup_server_message_set_response(msg, "text/plain", SOUP_MEMORY_STATIC,
@@ -1569,11 +1572,12 @@ test_received_files(PurpleConversation *conv)
 }
 
 /* The media card of a row's attachment: shown in the view, Play and Open
- * Folder go to the launcher (test hook), and a player only with
- * @player (a media backend and inline playback on). */
+ * Folder go to the launcher (test hook), a "Play Here" poster only with
+ * @poster (a media backend and inline playback on) and no player until
+ * it is pressed. */
 static void
 check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentKind kind,
-                 const char *target, gboolean local, gboolean player, const char *what)
+                 const char *target, gboolean local, gboolean poster, const char *what)
 {
 	PidginAttachment *att = msg ? pidgin_message_get_attachment(msg) : NULL;
 	GtkWidget *card, *button;
@@ -1593,8 +1597,10 @@ check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentK
 	card = pidgin_attachment_widget_new(att);
 	g_object_ref_sink(card);
 	CHECK(find_widget(card, "pidgin-media-name", NULL) != NULL, "%s: no name", what);
-	CHECK((find_widget(card, "pidgin-media-player", NULL) != NULL) == player,
-	      "%s: %s", what, player ? "no player" : "a player");
+	CHECK((find_widget(card, "pidgin-media-poster", NULL) != NULL) == poster,
+	      "%s: %s", what, poster ? "no poster" : "a poster");
+	CHECK(find_widget(card, "pidgin-media-player", NULL) == NULL,
+	      "%s: a player before Play Here", what);
 	pidgin_attachment_set_launch_hook(launch_hook);
 	button = find_widget(card, "pidgin-media-play", NULL);
 	g_clear_pointer(&launched, g_free);
@@ -1617,25 +1623,31 @@ check_media_card(PurpleConversation *conv, PidginMessage *msg, PidginAttachmentK
 	g_object_unref(card);
 }
 
-/* Whether @card still has its player after up to @ms (it goes when the
- * file can't be opened or the backend reports an error) */
+/* Presses @card's "Play Here"; FALSE without one. */
 static gboolean
-player_after(GtkWidget *card, guint ms, gboolean until_gone)
+press_poster(GtkWidget *card)
 {
-	guint waited;
+	GtkWidget *poster = find_widget(card, "pidgin-media-poster", NULL);
 
-	for (waited = 0; waited < ms; waited += 50) {
-		gboolean has = find_widget(card, "pidgin-media-player", NULL) != NULL;
-
-		if (until_gone && !has)
-			return FALSE;
-		spin(50);
-	}
-	return find_widget(card, "pidgin-media-player", NULL) != NULL;
+	if (poster != NULL)
+		g_signal_emit_by_name(poster, "clicked");
+	return poster != NULL;
 }
 
-/* A card of its own for @att, with its player once the file is open or
- * failed (the caller unrefs it) */
+/* Waits up to @ms for @card's player (@player) or its "can't be played"
+ * note; whether it came. */
+static gboolean
+media_after(GtkWidget *card, guint ms, gboolean player)
+{
+	const char *css = player ? "pidgin-media-player" : "pidgin-media-error";
+	guint waited;
+
+	for (waited = 0; waited < ms && find_widget(card, css, NULL) == NULL; waited += 50)
+		spin(50);
+	return find_widget(card, css, NULL) != NULL;
+}
+
+/* A card of its own for @att (the caller unrefs it) */
 static GtkWidget *
 own_card(PidginAttachment *att)
 {
@@ -1647,9 +1659,11 @@ own_card(PidginAttachment *att)
 }
 
 /* The inline player (a media backend, detected at run time, and
- * /pidgin4/media/inline_playback on): a real (bundled) WAV keeps it; a
- * file that isn't media, a missing file and a URL GTK can't read lose it
- * (no critical from GTK's GStreamer backend) and keep the card. */
+ * /pidgin4/media/inline_playback on), made when "Play Here" is pressed: a
+ * real (bundled) WAV keeps it; a file that isn't media, a missing file and
+ * a URL that isn't media end in a note (no critical from GTK's GStreamer
+ * backend) and keep the card. A card going away while its file loads,
+ * even a download that never finishes, goes at once. */
 static void
 test_media_player(PurpleConversation *conv, const char *dir, const char *fake_mp4)
 {
@@ -1660,6 +1674,7 @@ test_media_player(PurpleConversation *conv, const char *dir, const char *fake_mp
 	GBytes *bytes = g_resources_lookup_data("/com/minowick/Pidgin4/media/silence.wav", 0, NULL);
 	PidginMessage *msg;
 	GtkWidget *card;
+	gint64 start;
 
 	CHECK(bytes != NULL && g_file_set_contents(wav, g_bytes_get_data(bytes, NULL),
 	                                           g_bytes_get_size(bytes), NULL),
@@ -1667,7 +1682,7 @@ test_media_player(PurpleConversation *conv, const char *dir, const char *fake_mp
 	g_clear_pointer(&bytes, g_bytes_unref);
 	purple_prefs_set_bool(PIDGIN4_PREFS_ROOT "/media/inline_playback", TRUE);
 
-	/* a received WAV: the card, with the player if there is a backend */
+	/* a received WAV: the card, with Play Here if there is a backend */
 	receive_file(conv, wav);
 	spin(600);
 	esc = g_markup_escape_text(wav, -1);
@@ -1675,34 +1690,68 @@ test_media_player(PurpleConversation *conv, const char *dir, const char *fake_mp
 	g_free(esc);
 	check_media_card(conv, msg, PIDGIN_ATTACHMENT_AUDIO, wav, TRUE, backend, "received wav");
 	card = own_card(pidgin_attachment_new_for_file(wav, PIDGIN_ATTACHMENT_AUDIO));
-	CHECK(player_after(card, 1500, FALSE) == backend, "wav: %s after it was opened",
+	CHECK(press_poster(card) == backend, "wav: Play Here %s", backend ? "missing" : "shown");
+	CHECK(media_after(card, 3000, TRUE) == backend, "wav: %s after Play Here",
 	      backend ? "no player" : "a player");
+	CHECK(!media_after(card, 1500, FALSE), "wav: it can't be played");
+	CHECK(find_widget(card, "pidgin-media-poster", NULL) == NULL || !backend,
+	      "wav: the poster stayed");
 	g_object_unref(card);
 
 	if (backend) {
-		/* not media: the backend's error removes the player */
+		/* not media: the backend's error replaces the player with a note */
 		card = own_card(pidgin_attachment_new_for_file(fake_mp4, PIDGIN_ATTACHMENT_VIDEO));
-		CHECK(find_widget(card, "pidgin-media-player", NULL) != NULL, "fake mp4: no player");
-		CHECK(!player_after(card, 5000, TRUE), "fake mp4: the player stayed");
+		press_poster(card);
+		CHECK(media_after(card, 5000, FALSE), "fake mp4: no note");
+		CHECK(find_widget(card, "pidgin-media-player", NULL) == NULL,
+		      "fake mp4: the player stayed");
 		CHECK(find_widget(card, "pidgin-media-name", NULL) != NULL, "fake mp4: no card");
 		g_object_unref(card);
 
 		/* a file that isn't there */
 		card = own_card(pidgin_attachment_new_for_file(missing, PIDGIN_ATTACHMENT_AUDIO));
-		CHECK(!player_after(card, 2000, TRUE), "missing file: the player stayed");
+		press_poster(card);
+		CHECK(media_after(card, 2000, FALSE), "missing file: no note");
 		CHECK(find_widget(card, "pidgin-media-play", NULL) != NULL, "missing file: no card");
 		g_object_unref(card);
 
-		/* a URL (no gvfs: not readable; with it: not media) */
+		/* a URL: fetched by the loader (the press allows it), not media */
 		url = g_strconcat(share_base, "/share/clip", NULL);
 		card = own_card(pidgin_attachment_new_for_uri(url, PIDGIN_ATTACHMENT_VIDEO, 10));
-		CHECK(!player_after(card, 5000, TRUE), "URL: the player stayed");
+		press_poster(card);
+		CHECK(media_after(card, 5000, FALSE), "URL: no note");
+		CHECK(find_widget(card, "pidgin-media-player", NULL) == NULL, "URL: the player stayed");
 		CHECK(find_widget(card, "pidgin-media-play", NULL) != NULL, "URL: no card");
 		g_object_unref(card);
 		g_free(url);
 
+		/* a URL known to be too large to fetch: no Play Here */
+		url = g_strconcat(share_base, "/share/clip-big", NULL);
+		card = own_card(pidgin_attachment_new_for_uri(url, PIDGIN_ATTACHMENT_VIDEO,
+		                                              PIDGIN_ATTACHMENT_MAX_FILE_SIZE + 1));
+		CHECK(find_widget(card, "pidgin-media-poster", NULL) == NULL, "big URL: Play Here");
+		g_object_unref(card);
+		g_free(url);
+
+		/* a download that stalls, then the card goes (a list row reused):
+		 * nothing waits for it */
+		url = g_strconcat(share_base, "/share/stall.mp4", NULL);
+		card = own_card(pidgin_attachment_new_for_uri(url, PIDGIN_ATTACHMENT_VIDEO, -1));
+		press_poster(card);
+		spin(300);
+		CHECK(!media_after(card, 0, TRUE) && !media_after(card, 0, FALSE),
+		      "stalled URL: done before the download");
+		start = g_get_monotonic_time();
+		g_object_unref(card);
+		spin(100);
+		CHECK(g_get_monotonic_time() - start < G_USEC_PER_SEC,
+		      "stalled URL: the card took %" G_GINT64_FORMAT " ms to go",
+		      (g_get_monotonic_time() - start) / 1000);
+		g_free(url);
+
 		/* a card going away before its file is open */
 		card = own_card(pidgin_attachment_new_for_file(wav, PIDGIN_ATTACHMENT_AUDIO));
+		press_poster(card);
 		g_object_unref(card);
 		spin(300);
 	}

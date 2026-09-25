@@ -873,15 +873,24 @@ folder_clicked_cb(GtkButton *button, PidginAttachment *att)
 }
 
 /*
- * The inline player gets a stream opened here, never a GFile: GTK 4.22's
- * GStreamer backend g_file_read()s a GtkMediaFile's GFile when the
- * pipeline sets up its source and fails an assertion (a critical) when
- * that fails (a URL without a gvfs backend, a file gone). So the file is
- * read asynchronously first; if that fails, or the backend reports an
- * error later (not media, no codec), the player is removed and only the
- * card stays.
+ * Inline playback. The card starts with a "Play Here" poster and the
+ * player is made only when it is pressed: a conversation full of clips
+ * doesn't run a GStreamer pipeline (a dozen threads and a GL context) for
+ * each one.
+ *
+ * The player never reads from the network. GTK 4.22's GStreamer backend
+ * tears a player down on the main thread, joining its streaming threads;
+ * a thread stuck in a read blocks that forever. A URL read through gvfs
+ * (gvfsd-http) that stalls does just that, cancel or not, and froze the
+ * whole UI when a list row holding such a player was recycled. So a
+ * remote file is fetched first by the image loader (libsoup: timeouts,
+ * cancellable, its allowlist; the press allows this one URI) and played
+ * from memory, and a local file from a stream opened here (the backend
+ * also asserts when it can't g_file_read() a GtkMediaFile's GFile). If
+ * loading fails, or the backend reports an error (not media, no codec),
+ * a short note takes the player's place and the card stays.
  */
-#define PLAYER_CANCEL_KEY "pidgin-media-player-cancel"
+#define POSTER_CANCEL_KEY "pidgin-media-poster-cancel"
 
 static void
 weak_ref_free(gpointer data)
@@ -890,29 +899,54 @@ weak_ref_free(gpointer data)
 	g_free(data);
 }
 
-static gboolean
-remove_player_idle(gpointer data)
+typedef struct
 {
-	GtkWidget *player = g_weak_ref_get(data);
+	GWeakRef widget;
+	char *message;
+} PlayError;
 
-	if (player != NULL) {
-		GtkWidget *parent = gtk_widget_get_parent(player);
+static void
+play_error_free(gpointer data)
+{
+	PlayError *pe = data;
 
-		if (GTK_IS_BOX(parent))
-			gtk_box_remove(GTK_BOX(parent), player);
-		g_object_unref(player);
+	g_weak_ref_clear(&pe->widget);
+	g_free(pe->message);
+	g_free(pe);
+}
+
+static gboolean
+play_error_idle(gpointer data)
+{
+	PlayError *pe = data;
+	GtkWidget *widget = g_weak_ref_get(&pe->widget);
+	GtkWidget *card = widget ? gtk_widget_get_parent(widget) : NULL;
+
+	if (GTK_IS_BOX(card)) {
+		GtkWidget *label = gtk_label_new(_("This can't be played here."));
+
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_add_css_class(label, "dim-label");
+		gtk_widget_add_css_class(label, "pidgin-media-error");
+		gtk_widget_set_tooltip_text(label, pe->message);
+		gtk_box_insert_child_after(GTK_BOX(card), label, widget);
+		gtk_box_remove(GTK_BOX(card), widget);
 	}
+	g_clear_object(&widget);
 	return G_SOURCE_REMOVE;
 }
 
-/* after the current emission (not from inside GtkVideo's own calls) */
+/* The poster or player gives way to a note, after the current emission
+ * (not from inside GtkVideo's own calls). */
 static void
-remove_player(GtkWidget *player)
+show_play_error(GtkWidget *widget, const char *message)
 {
-	GWeakRef *ref = g_new0(GWeakRef, 1);
+	PlayError *pe = g_new0(PlayError, 1);
 
-	g_weak_ref_init(ref, player);
-	g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, remove_player_idle, ref, weak_ref_free);
+	purple_debug_info("attachment", "inline playback failed (%s): the card only\n", message);
+	g_weak_ref_init(&pe->widget, widget);
+	pe->message = g_strdup(message);
+	g_idle_add_full(G_PRIORITY_DEFAULT_IDLE, play_error_idle, pe, play_error_free);
 }
 
 static void
@@ -923,9 +957,7 @@ player_stream_error_cb(GtkMediaStream *stream, GParamSpec *pspec, gpointer data)
 
 	if (error == NULL || (player = g_weak_ref_get(data)) == NULL)
 		return;
-	purple_debug_info("attachment", "inline playback failed (%s): the card only\n",
-	                  error->message);
-	remove_player(player);
+	show_play_error(player, error->message);
 	g_object_unref(player);
 }
 
@@ -935,37 +967,79 @@ player_error_ref_free(gpointer data, GClosure *closure)
 	weak_ref_free(data);
 }
 
+/* The player for @in, in @poster's place, playing. */
 static void
-player_read_cb(GObject *source, GAsyncResult *res, gpointer data)
+poster_play(GtkWidget *poster, GInputStream *in)
 {
-	GWeakRef *ref = data;
+	GtkWidget *card = gtk_widget_get_parent(poster);
+	GtkWidget *player;
+	GtkMediaStream *stream;
+	GWeakRef *error_ref;
+	int w, h;
+
+	if (!GTK_IS_BOX(card))
+		return;
+	player = gtk_video_new();
+	gtk_widget_get_size_request(poster, &w, &h);
+	gtk_widget_set_size_request(player, w, h);
+	gtk_widget_add_css_class(player, "pidgin-media-player");
+	gtk_video_set_autoplay(GTK_VIDEO(player), TRUE);
+	gtk_box_insert_child_after(GTK_BOX(card), player, poster);
+	gtk_box_remove(GTK_BOX(card), poster);
+
+	stream = gtk_media_file_new_for_input_stream(in);
+	error_ref = g_new0(GWeakRef, 1);
+	g_weak_ref_init(error_ref, player);
+	g_signal_connect_data(stream, "notify::error", G_CALLBACK(player_stream_error_cb),
+	                      error_ref, player_error_ref_free, 0);
+	gtk_video_set_media_stream(GTK_VIDEO(player), stream);
+	/* an error right away (no notify then) */
+	if (gtk_media_stream_get_error(stream) != NULL)
+		player_stream_error_cb(stream, NULL, error_ref);
+	g_object_unref(stream);
+}
+
+/* The file is open (@in) or failed (@error); @poster may be gone. */
+static void
+poster_loaded(GtkWidget *poster, GInputStream *in, const GError *error)
+{
+	if (poster == NULL)
+		return;
+	g_object_set_data(G_OBJECT(poster), POSTER_CANCEL_KEY, NULL);
+	if (in != NULL)
+		poster_play(poster, in);
+	else if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
+		show_play_error(poster, error->message);
+}
+
+static void
+poster_read_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
 	GError *error = NULL;
 	GFileInputStream *in = g_file_read_finish(G_FILE(source), res, &error);
-	GtkWidget *player = g_weak_ref_get(ref);
+	GtkWidget *poster = g_weak_ref_get(data);
 
-	if (in == NULL) {
-		if (!g_error_matches(error, G_IO_ERROR, G_IO_ERROR_CANCELLED))
-			purple_debug_info("attachment", "no inline playback: %s\n", error->message);
-		g_error_free(error);
-		if (player != NULL)
-			remove_player(player);
-	} else if (player != NULL) {
-		GtkMediaStream *stream = gtk_media_file_new_for_input_stream(G_INPUT_STREAM(in));
-		GWeakRef *error_ref = g_new0(GWeakRef, 1);
-
-		g_weak_ref_init(error_ref, player);
-		g_signal_connect_data(stream, "notify::error", G_CALLBACK(player_stream_error_cb),
-		                      error_ref, player_error_ref_free, 0);
-		g_object_set_data(G_OBJECT(player), PLAYER_CANCEL_KEY, NULL);
-		gtk_video_set_media_stream(GTK_VIDEO(player), stream);
-		/* an error right away (no notify then) */
-		if (gtk_media_stream_get_error(stream) != NULL)
-			player_stream_error_cb(stream, NULL, error_ref);
-		g_object_unref(stream);
-	}
+	poster_loaded(poster, G_INPUT_STREAM(in), error);
 	g_clear_object(&in);
-	g_clear_object(&player);
-	weak_ref_free(ref);
+	g_clear_error(&error);
+	g_clear_object(&poster);
+	weak_ref_free(data);
+}
+
+static void
+poster_fetch_cb(GObject *source, GAsyncResult *res, gpointer data)
+{
+	GError *error = NULL;
+	GBytes *bytes = pidgin_image_loader_fetch_finish(PIDGIN_IMAGE_LOADER(source), res, &error);
+	GInputStream *in = bytes ? g_memory_input_stream_new_from_bytes(bytes) : NULL;
+	GtkWidget *poster = g_weak_ref_get(data);
+
+	poster_loaded(poster, in, error);
+	g_clear_object(&in);
+	g_clear_pointer(&bytes, g_bytes_unref);
+	g_clear_error(&error);
+	g_clear_object(&poster);
+	weak_ref_free(data);
 }
 
 static void
@@ -975,23 +1049,69 @@ cancel_and_unref(gpointer data)
 	g_object_unref(data);
 }
 
-static GtkWidget *
-media_player_new(PidginAttachment *att)
+static void
+poster_clicked_cb(GtkButton *button, PidginAttachment *att)
 {
-	GFile *file = att->path ? g_file_new_for_path(att->path) : g_file_new_for_uri(att->uri);
-	GtkWidget *player = gtk_video_new();
-	GCancellable *cancellable = g_cancellable_new();
-	GWeakRef *ref = g_new0(GWeakRef, 1);
+	GCancellable *cancellable;
+	GtkWidget *spinner;
+	GWeakRef *ref;
 
-	gtk_video_set_autoplay(GTK_VIDEO(player), FALSE);
-	/* cancelled if the player goes before the file is open */
-	g_object_set_data_full(G_OBJECT(player), PLAYER_CANCEL_KEY, g_object_ref(cancellable),
+	if (g_object_get_data(G_OBJECT(button), POSTER_CANCEL_KEY) != NULL)
+		return;     /* loading */
+	cancellable = g_cancellable_new();
+	/* cancelled if the poster goes before the file is open */
+	g_object_set_data_full(G_OBJECT(button), POSTER_CANCEL_KEY, g_object_ref(cancellable),
 	                       cancel_and_unref);
-	g_weak_ref_init(ref, player);
-	g_file_read_async(file, G_PRIORITY_DEFAULT, cancellable, player_read_cb, ref);
+	spinner = gtk_spinner_new();
+	gtk_spinner_start(GTK_SPINNER(spinner));
+	gtk_button_set_child(button, spinner);
+	gtk_widget_set_tooltip_text(GTK_WIDGET(button), _("Loading\xe2\x80\xa6"));
+
+	ref = g_new0(GWeakRef, 1);
+	g_weak_ref_init(ref, button);
+	if (att->path != NULL) {
+		GFile *file = g_file_new_for_path(att->path);
+
+		g_file_read_async(file, G_PRIORITY_DEFAULT, cancellable, poster_read_cb, ref);
+		g_object_unref(file);
+	} else {
+		PidginImageLoader *loader = pidgin_image_loader_get_default();
+
+		/* asked for: this URI, whatever its host */
+		if (!pidgin_image_loader_is_allowed(loader, att->uri))
+			pidgin_image_loader_allow_uri(loader, att->uri);
+		pidgin_image_loader_fetch_async(loader, att->uri, PIDGIN_ATTACHMENT_MAX_FILE_SIZE,
+		                                cancellable, poster_fetch_cb, ref);
+	}
 	g_object_unref(cancellable);
-	g_object_unref(file);
-	return player;
+}
+
+/* "Play Here", the player's size for a video. */
+static GtkWidget *
+media_poster_new(PidginAttachment *att)
+{
+	gboolean video = att->kind == PIDGIN_ATTACHMENT_VIDEO;
+	GtkWidget *poster = gtk_button_new();
+	GtkWidget *icon = gtk_image_new_from_icon_name("media-playback-start-symbolic");
+
+	if (video) {
+		gtk_image_set_pixel_size(GTK_IMAGE(icon), 48);
+		gtk_button_set_child(GTK_BUTTON(poster), icon);
+		gtk_widget_set_tooltip_text(poster, _("Play Here"));
+	} else {
+		GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+
+		gtk_widget_set_halign(box, GTK_ALIGN_CENTER);
+		gtk_box_append(GTK_BOX(box), icon);
+		gtk_box_append(GTK_BOX(box), gtk_label_new(_("Play Here")));
+		gtk_button_set_child(GTK_BUTTON(poster), box);
+	}
+	gtk_widget_set_size_request(poster, PIDGIN_ATTACHMENT_VIDEO_WIDTH,
+	                            video ? PIDGIN_ATTACHMENT_VIDEO_WIDTH * 9 / 16 : -1);
+	gtk_widget_add_css_class(poster, "pidgin-media-poster");
+	g_signal_connect_data(poster, "clicked", G_CALLBACK(poster_clicked_cb), g_object_ref(att),
+	                      (GClosureNotify)g_object_unref, 0);
+	return poster;
 }
 
 static gboolean
@@ -1014,15 +1134,11 @@ media_card(PidginAttachment *att)
 	gtk_widget_add_css_class(card, "card");
 	gtk_widget_set_halign(card, GTK_ALIGN_START);
 
-	/* the player, when GTK has a media backend */
-	if (inline_playback() && pidgin_media_backend_available()) {
-		GtkWidget *player = media_player_new(att);
-
-		gtk_widget_set_size_request(player, PIDGIN_ATTACHMENT_VIDEO_WIDTH,
-		                            video ? PIDGIN_ATTACHMENT_VIDEO_WIDTH * 9 / 16 : -1);
-		gtk_widget_add_css_class(player, "pidgin-media-player");
-		gtk_box_append(GTK_BOX(card), player);
-	}
+	/* the player, on demand, when GTK has a media backend; not for a
+	 * remote file known to be too large to fetch */
+	if (inline_playback() && pidgin_media_backend_available() &&
+	    (att->path != NULL || att->size <= PIDGIN_ATTACHMENT_MAX_FILE_SIZE))
+		gtk_box_append(GTK_BOX(card), media_poster_new(att));
 
 	icon = gtk_image_new_from_icon_name(video ? "video-x-generic-symbolic"
 	                                          : "audio-x-generic-symbolic");

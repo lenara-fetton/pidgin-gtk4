@@ -120,6 +120,9 @@ server_cb(SoupServer *server, SoupServerMessage *msg, const char *path,
 		soup_server_message_set_status(msg, 200, NULL);
 		soup_server_message_set_response(msg, "video/mp4", SOUP_MEMORY_STATIC,
 		                                 "not really a video", 18);
+	} else if (g_str_equal(path, "/stall")) {
+		/* never answers (a stalled download) */
+		soup_server_message_pause(msg);
 	} else if (g_str_equal(path, "/redirect-ok")) {
 		soup_server_message_set_redirect(msg, 302, "/png-redirected");
 	} else if (g_str_equal(path, "/redirect-evil")) {
@@ -789,6 +792,137 @@ test_aesgcm_without_omemo(Fixture *f, gconstpointer data)
 	g_object_unref(loader);
 }
 
+typedef struct {
+	gboolean done;
+	GBytes *bytes;
+	GError *error;
+} FetchResult;
+
+static void
+fetch_cb(GObject *source, GAsyncResult *result, gpointer data)
+{
+	FetchResult *r = data;
+
+	r->bytes = pidgin_image_loader_fetch_finish(PIDGIN_IMAGE_LOADER(source),
+	                                            result, &r->error);
+	g_assert_true((r->bytes == NULL) != (r->error == NULL));
+	r->done = TRUE;
+}
+
+static void
+fetch_result_clear(FetchResult *r)
+{
+	g_clear_pointer(&r->bytes, g_bytes_unref);
+	g_clear_error(&r->error);
+	r->done = FALSE;
+}
+
+/* Fetches @path (relative to the server, or a full URI) and waits. */
+static void
+fetch(PidginImageLoader *loader, Fixture *f, const char *path, gsize max_size,
+      FetchResult *r)
+{
+	char *uri = strstr(path, "://") ? g_strdup(path) : url(f, path);
+
+	fetch_result_clear(r);
+	pidgin_image_loader_fetch_async(loader, uri, max_size, NULL, fetch_cb, r);
+	while (!r->done)
+		g_main_context_iteration(NULL, TRUE);
+	g_free(uri);
+}
+
+static void
+assert_bytes(GBytes *bytes, gconstpointer data, gsize len)
+{
+	g_assert_nonnull(bytes);
+	g_assert_cmpmem(g_bytes_get_data(bytes, NULL), g_bytes_get_size(bytes), data, len);
+}
+
+/* The raw body (inline audio and video): not decoded, cached apart from
+ * images, capped, and under the same allowlist and redirect rules. */
+static void
+test_fetch(Fixture *f, gconstpointer data)
+{
+	PidginImageLoader *loader = test_loader(f, "cache");
+	FetchResult r = { 0 };
+	LoadResult img = { 0 };
+
+	fetch(loader, f, "/garbage", 1024, &r);
+	g_assert_no_error(r.error);
+	assert_bytes(r.bytes, "this is not an image", 20);
+	g_assert_cmpuint(hits(f, "/garbage"), ==, 1);
+
+	/* The same URI as an image: its own fetch, which fails to decode and
+	 * leaves the raw copy alone. */
+	load(loader, f, "/garbage", &img);
+	g_assert_error(img.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_DECODE);
+	g_assert_cmpuint(hits(f, "/garbage"), ==, 2);
+	g_object_unref(loader);
+
+	/* A fresh loader finds the raw body on disk, with the server failing. */
+	f->fail_all = TRUE;
+	loader = test_loader(f, "cache");
+	fetch(loader, f, "/garbage", 1024, &r);
+	g_assert_no_error(r.error);
+	assert_bytes(r.bytes, "this is not an image", 20);
+	g_assert_cmpuint(hits(f, "/garbage"), ==, 2);
+	/* ... but not as an image */
+	load(loader, f, "/garbage", &img);
+	g_assert_error(img.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_HTTP);
+	f->fail_all = FALSE;
+
+	/* The cap: Content-Length, and chunked */
+	fetch(loader, f, "/big", SMALL_CAP, &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_TOO_LARGE);
+	fetch(loader, f, "/big-chunked", SMALL_CAP, &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_TOO_LARGE);
+	fetch(loader, f, "/big-chunked", BIG_SIZE, &r);
+	g_assert_no_error(r.error);
+	g_assert_cmpuint(g_bytes_get_size(r.bytes), ==, BIG_SIZE);
+
+	/* The allowlist and redirects */
+	fetch(loader, f, "https://evil.example.com/x.mp4", 1024, &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_NOT_ALLOWED);
+	fetch(loader, f, "/redirect-evil", 1024, &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_NOT_ALLOWED);
+	fetch(loader, f, "/redirect-ok", 1024, &r);
+	g_assert_no_error(r.error);
+	assert_bytes(r.bytes, g_bytes_get_data(f->png, NULL), g_bytes_get_size(f->png));
+	fetch(loader, f, "/missing", 1024, &r);
+	g_assert_error(r.error, PIDGIN_IMAGE_LOADER_ERROR, PIDGIN_IMAGE_LOADER_ERROR_HTTP);
+
+	fetch_result_clear(&r);
+	load_result_clear(&img);
+	g_object_unref(loader);
+}
+
+/* A download that stalls ends at once when its caller cancels (the inline
+ * player waits for the whole file, so it never holds a stalled read). */
+static void
+test_fetch_cancel(Fixture *f, gconstpointer data)
+{
+	PidginImageLoader *loader = test_loader(f, NULL);
+	GCancellable *cancellable = g_cancellable_new();
+	FetchResult r = { 0 };
+	char *uri = url(f, "/stall");
+	gint64 start;
+
+	pidgin_image_loader_fetch_async(loader, uri, 1024, cancellable, fetch_cb, &r);
+	while (hits(f, "/stall") == 0)
+		g_main_context_iteration(NULL, TRUE);
+	start = g_get_monotonic_time();
+	g_cancellable_cancel(cancellable);
+	while (!r.done)
+		g_main_context_iteration(NULL, TRUE);
+	g_assert_error(r.error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+	g_assert_cmpint(g_get_monotonic_time() - start, <, G_USEC_PER_SEC);
+
+	fetch_result_clear(&r);
+	g_object_unref(cancellable);
+	g_free(uri);
+	g_object_unref(loader);
+}
+
 static void
 test_default(void)
 {
@@ -834,6 +968,8 @@ main(int argc, char *argv[])
 	ADD("errors", test_errors);
 	ADD("eviction", test_eviction);
 	ADD("aesgcm-without-omemo", test_aesgcm_without_omemo);
+	ADD("fetch", test_fetch);
+	ADD("fetch-cancel", test_fetch_cancel);
 #undef ADD
 
 	return g_test_run();

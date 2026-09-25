@@ -58,6 +58,7 @@ struct _PidginImageLoader {
 	SoupSession *session;       /* created on first use */
 
 	GHashTable *fetches;        /* uri -> Fetch, in progress */
+	GHashTable *raw_fetches;    /* uri -> Fetch (pidgin_image_loader_fetch_async()) */
 
 	GQueue memory_lru;          /* MemoryEntry, most recent first */
 	GHashTable *memory_cache;   /* uri -> GList link in memory_lru */
@@ -109,6 +110,8 @@ typedef struct {
 	char *fetch_uri;     /* what goes over the wire */
 	gboolean encrypted;  /* aesgcm:// */
 	char *cache_path;    /* NULL: no disk cache for this one */
+	gboolean raw;        /* the body as GBytes, not decoded */
+	gsize max_size;
 	GList *waiters;      /* Waiter */
 	GCancellable *cancellable;
 	gboolean done;
@@ -137,8 +140,14 @@ typedef struct {
 typedef struct {
 	GBytes *data;
 	char *cache_path;
+	gboolean raw;        /* store only */
 	gsize stored;        /* set by the thread: bytes written to the cache */
 } DecodeJob;
+
+typedef struct {
+	char *path;
+	gboolean raw;
+} DiskLookup;
 
 typedef struct {
 	char *path;
@@ -249,18 +258,24 @@ aesgcm_fragment_valid(const char *fragment)
 	return TRUE;
 }
 
+/* Raw bodies (pidgin_image_loader_fetch_async()) are keyed apart from
+ * images, so an image load never finds (and, failing to decode it,
+ * deletes) a video. */
 static char *
-cache_path_for(PidginImageLoader *loader, const char *uri, gboolean encrypted)
+cache_path_for(PidginImageLoader *loader, const char *uri, gboolean encrypted,
+               gboolean raw)
 {
-	char *digest;
+	char *key, *digest;
 	char *path;
 
 	if (loader->cache_dir == NULL || encrypted)
 		return NULL;
 
-	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, uri, -1);
+	key = raw ? g_strconcat("raw\n", uri, NULL) : g_strdup(uri);
+	digest = g_compute_checksum_for_string(G_CHECKSUM_SHA256, key, -1);
 	path = g_build_filename(loader->cache_dir, digest, NULL);
 	g_free(digest);
+	g_free(key);
 
 	return path;
 }
@@ -355,6 +370,30 @@ read_cache_file(const char *path)
 		g_unlink(path);
 
 	return texture;
+}
+
+/* Maps a raw cache file, refreshing its mtime (the mapping outlives a
+ * later trim: that only unlinks the file). */
+static GBytes *
+read_raw_cache_file(const char *path)
+{
+	GMappedFile *file = g_mapped_file_new(path, FALSE, NULL);
+	GBytes *bytes;
+
+	if (file == NULL)
+		return NULL;
+
+	bytes = g_mapped_file_get_bytes(file);
+	g_mapped_file_unref(file);
+
+	if (g_bytes_get_size(bytes) == 0) {
+		g_bytes_unref(bytes);
+		g_unlink(path);
+		return NULL;
+	}
+
+	g_utime(path, NULL);
+	return bytes;
 }
 
 /**************************************************************************
@@ -637,16 +676,20 @@ fetch_unref(Fetch *fetch)
 	g_free(fetch);
 }
 
+/* @result is a GdkTexture, or GBytes for a raw fetch. */
 static void
-waiter_finish(Waiter *waiter, GdkTexture *texture, const GError *error)
+waiter_finish(Waiter *waiter, gpointer result, gboolean raw, const GError *error)
 {
 	if (waiter->cancellable != NULL) {
 		g_cancellable_disconnect(waiter->cancellable, waiter->cancelled_id);
 		g_object_unref(waiter->cancellable);
 	}
 
-	if (texture != NULL) {
-		g_task_return_pointer(waiter->task, g_object_ref(texture),
+	if (result != NULL && raw) {
+		g_task_return_pointer(waiter->task, g_bytes_ref(result),
+		                      (GDestroyNotify)g_bytes_unref);
+	} else if (result != NULL) {
+		g_task_return_pointer(waiter->task, g_object_ref(result),
 		                      g_object_unref);
 	} else {
 		g_task_return_error(waiter->task, g_error_copy(error));
@@ -656,8 +699,15 @@ waiter_finish(Waiter *waiter, GdkTexture *texture, const GError *error)
 	g_free(waiter);
 }
 
+static GHashTable *
+fetch_table(Fetch *fetch)
+{
+	return fetch->raw ? fetch->loader->raw_fetches : fetch->loader->fetches;
+}
+
+/* @result is a GdkTexture, or GBytes for a raw fetch. */
 static void
-fetch_complete(Fetch *fetch, GdkTexture *texture, const GError *error)
+fetch_complete(Fetch *fetch, gpointer result, const GError *error)
 {
 	PidginImageLoader *loader = fetch->loader;
 	GList *waiters, *l;
@@ -668,16 +718,16 @@ fetch_complete(Fetch *fetch, GdkTexture *texture, const GError *error)
 
 	fetch_ref(fetch);
 
-	if (g_hash_table_lookup(loader->fetches, fetch->uri) == fetch)
-		g_hash_table_remove(loader->fetches, fetch->uri);
+	if (g_hash_table_lookup(fetch_table(fetch), fetch->uri) == fetch)
+		g_hash_table_remove(fetch_table(fetch), fetch->uri);
 
-	if (texture != NULL)
-		memory_store(loader, fetch->uri, texture);
+	if (result != NULL && !fetch->raw)
+		memory_store(loader, fetch->uri, result);
 
 	waiters = fetch->waiters;
 	fetch->waiters = NULL;
 	for (l = waiters; l != NULL; l = l->next)
-		waiter_finish(l->data, texture, error);
+		waiter_finish(l->data, result, fetch->raw, error);
 	g_list_free(waiters);
 
 	g_clear_object(&fetch->stream);
@@ -730,16 +780,14 @@ waiter_cancelled_idle(gpointer data)
 	fetch->waiters = g_list_delete_link(fetch->waiters, l);
 	error = g_error_new_literal(G_IO_ERROR, G_IO_ERROR_CANCELLED,
 	                            _("Operation was cancelled"));
-	waiter_finish(waiter, NULL, error);
+	waiter_finish(waiter, NULL, fetch->raw, error);
 	g_error_free(error);
 
 	/* Nobody wants it any more: stop the fetch, and let new requests for
 	 * the URI start afresh rather than join the dying one. */
 	if (fetch->waiters == NULL && !fetch->done) {
-		PidginImageLoader *loader = fetch->loader;
-
-		if (g_hash_table_lookup(loader->fetches, fetch->uri) == fetch)
-			g_hash_table_remove(loader->fetches, fetch->uri);
+		if (g_hash_table_lookup(fetch_table(fetch), fetch->uri) == fetch)
+			g_hash_table_remove(fetch_table(fetch), fetch->uri);
 		g_cancellable_cancel(fetch->cancellable);
 	}
 
@@ -800,11 +848,10 @@ decode_thread(GTask *task, gpointer source, gpointer task_data,
               GCancellable *cancellable)
 {
 	DecodeJob *job = task_data;
-	GdkTexture *texture;
+	GdkTexture *texture = NULL;
 	GError *error = NULL;
 
-	texture = decode_bytes(job->data, &error);
-	if (texture == NULL) {
+	if (!job->raw && (texture = decode_bytes(job->data, &error)) == NULL) {
 		g_task_return_error(task, error);
 		return;
 	}
@@ -826,7 +873,21 @@ decode_thread(GTask *task, gpointer source, gpointer task_data,
 		g_free(dir);
 	}
 
-	g_task_return_pointer(task, texture, g_object_unref);
+	if (job->raw)
+		g_task_return_pointer(task, g_bytes_ref(job->data), (GDestroyNotify)g_bytes_unref);
+	else
+		g_task_return_pointer(task, texture, g_object_unref);
+}
+
+static void
+result_free(Fetch *fetch, gpointer result)
+{
+	if (result == NULL)
+		return;
+	if (fetch->raw)
+		g_bytes_unref(result);
+	else
+		g_object_unref(result);
 }
 
 static void
@@ -834,17 +895,17 @@ decode_cb(GObject *source, GAsyncResult *result, gpointer data)
 {
 	Fetch *fetch = data;
 	DecodeJob *job = g_task_get_task_data(G_TASK(result));
-	GdkTexture *texture;
+	gpointer decoded;
 	GError *error = NULL;
 
-	texture = g_task_propagate_pointer(G_TASK(result), &error);
+	decoded = g_task_propagate_pointer(G_TASK(result), &error);
 
 	if (job->stored > 0)
 		cache_stored(fetch->loader, job->stored);
 
-	fetch_complete(fetch, texture, error);
+	fetch_complete(fetch, decoded, error);
 
-	g_clear_object(&texture);
+	result_free(fetch, decoded);
 	g_clear_error(&error);
 	fetch_unref(fetch);
 }
@@ -857,6 +918,7 @@ fetch_decode(Fetch *fetch, GBytes *data)
 
 	job->data = data;
 	job->cache_path = g_strdup(fetch->cache_path);
+	job->raw = fetch->raw;
 
 	task = g_task_new(NULL, fetch->cancellable, decode_cb, fetch_ref(fetch));
 	g_task_set_source_tag(task, fetch_decode);
@@ -878,7 +940,8 @@ fetch_body_done(Fetch *fetch)
 		if (!omemo_decrypt(fetch->uri, body)) {
 			g_byte_array_unref(body);
 			fetch_fail(fetch, PIDGIN_IMAGE_LOADER_ERROR_DECRYPT,
-			           _("The encrypted image could not be decrypted"));
+			           fetch->raw ? _("The encrypted file could not be decrypted") :
+			                        _("The encrypted image could not be decrypted"));
 			return;
 		}
 	}
@@ -909,10 +972,10 @@ fetch_read_cb(GObject *source, GAsyncResult *result, gpointer data)
 	if (size == 0) {
 		g_bytes_unref(bytes);
 		fetch_body_done(fetch);
-	} else if (fetch->body->len + size > fetch->loader->max_image_size) {
+	} else if (fetch->body->len + size > fetch->max_size) {
 		g_bytes_unref(bytes);
 		fetch_fail(fetch, PIDGIN_IMAGE_LOADER_ERROR_TOO_LARGE,
-		           _("The image is too large"));
+		           fetch->raw ? _("The file is too large") : _("The image is too large"));
 	} else {
 		g_byte_array_append(fetch->body, g_bytes_get_data(bytes, NULL), size);
 		g_bytes_unref(bytes);
@@ -1007,10 +1070,10 @@ fetch_send_cb(GObject *source, GAsyncResult *result, gpointer data)
 		g_free(message);
 	} else if (soup_message_headers_get_encoding(headers) == SOUP_ENCODING_CONTENT_LENGTH &&
 	           soup_message_headers_get_content_length(headers) >
-	           (goffset)fetch->loader->max_image_size) {
+	           (goffset)fetch->max_size) {
 		g_object_unref(stream);
 		fetch_fail(fetch, PIDGIN_IMAGE_LOADER_ERROR_TOO_LARGE,
-		           _("The image is too large"));
+		           fetch->raw ? _("The file is too large") : _("The image is too large"));
 	} else {
 		fetch->stream = stream;
 		fetch->body = g_byte_array_new();
@@ -1055,30 +1118,45 @@ fetch_start_network(Fetch *fetch)
 /* Disk cache lookup in a worker thread; a miss goes to the network. */
 
 static void
+disk_lookup_free(DiskLookup *lookup)
+{
+	g_free(lookup->path);
+	g_free(lookup);
+}
+
+static void
 disk_lookup_thread(GTask *task, gpointer source, gpointer task_data,
                    GCancellable *cancellable)
 {
-	g_task_return_pointer(task, read_cache_file(task_data), g_object_unref);
+	DiskLookup *lookup = task_data;
+
+	if (lookup->raw)
+		g_task_return_pointer(task, read_raw_cache_file(lookup->path),
+		                      (GDestroyNotify)g_bytes_unref);
+	else
+		g_task_return_pointer(task, read_cache_file(lookup->path), g_object_unref);
 }
 
 static void
 disk_lookup_cb(GObject *source, GAsyncResult *result, gpointer data)
 {
 	Fetch *fetch = data;
-	GdkTexture *texture;
+	gpointer found;
 	GError *error = NULL;
 
-	texture = g_task_propagate_pointer(G_TASK(result), &error);
+	found = g_task_propagate_pointer(G_TASK(result), &error);
 	if (error != NULL) {
 		fetch_complete(fetch, NULL, error);
 		g_error_free(error);
-	} else if (texture != NULL) {
-		fetch_complete(fetch, texture, NULL);
-		g_object_unref(texture);
+	} else if (found != NULL && fetch->raw && g_bytes_get_size(found) > fetch->max_size) {
+		fetch_fail(fetch, PIDGIN_IMAGE_LOADER_ERROR_TOO_LARGE, _("The file is too large"));
+	} else if (found != NULL) {
+		fetch_complete(fetch, found, NULL);
 	} else if (!fetch->done) {
 		fetch_start_network(fetch);
 	}
 
+	result_free(fetch, found);
 	fetch_unref(fetch);
 }
 
@@ -1086,16 +1164,20 @@ static void
 fetch_start(Fetch *fetch)
 {
 	GTask *task;
+	DiskLookup *lookup;
 
 	if (fetch->cache_path == NULL) {
 		fetch_start_network(fetch);
 		return;
 	}
 
+	lookup = g_new0(DiskLookup, 1);
+	lookup->path = g_strdup(fetch->cache_path);
+	lookup->raw = fetch->raw;
 	task = g_task_new(NULL, fetch->cancellable, disk_lookup_cb,
 	                  fetch_ref(fetch));
 	g_task_set_source_tag(task, fetch_start);
-	g_task_set_task_data(task, g_strdup(fetch->cache_path), g_free);
+	g_task_set_task_data(task, lookup, (GDestroyNotify)disk_lookup_free);
 	g_task_run_in_thread(task, disk_lookup_thread);
 	g_object_unref(task);
 }
@@ -1114,6 +1196,7 @@ pidgin_image_loader_finalize(GObject *object)
 	g_clear_object(&loader->session);
 
 	g_hash_table_destroy(loader->fetches);
+	g_hash_table_destroy(loader->raw_fetches);
 	g_hash_table_destroy(loader->memory_cache);
 	g_queue_clear_full(&loader->memory_lru, (GDestroyNotify)memory_entry_free);
 	g_hash_table_destroy(loader->allowed_hosts);
@@ -1154,6 +1237,8 @@ pidgin_image_loader_init(PidginImageLoader *loader)
 	/* The key is the fetch's own uri; the table holds a reference. */
 	loader->fetches = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
 	                                        (GDestroyNotify)fetch_unref);
+	loader->raw_fetches = g_hash_table_new_full(g_str_hash, g_str_equal, NULL,
+	                                            (GDestroyNotify)fetch_unref);
 	loader->memory_cache = g_hash_table_new(g_str_hash, g_str_equal);
 	g_queue_init(&loader->memory_lru);
 }
@@ -1367,6 +1452,36 @@ pidgin_image_loader_set_allow_http_for_tests(PidginImageLoader *loader,
 	loader->allow_http = allow;
 }
 
+/* Adds @task to the fetch of @uri in progress, or starts one. */
+static void
+fetch_join(PidginImageLoader *loader, GTask *task, const char *uri, GUri *guri,
+           gboolean encrypted, gboolean raw, gsize max_size)
+{
+	GHashTable *table = raw ? loader->raw_fetches : loader->fetches;
+	Fetch *fetch = g_hash_table_lookup(table, uri);
+
+	if (fetch != NULL) {
+		fetch_add_waiter(fetch, task);
+		return;
+	}
+
+	fetch = g_new0(Fetch, 1);
+	fetch->ref = 1;
+	fetch->loader = g_object_ref(loader);
+	fetch->uri = g_strdup(uri);
+	fetch->fetch_uri = make_fetch_uri(loader, guri, encrypted);
+	fetch->encrypted = encrypted;
+	fetch->cache_path = cache_path_for(loader, uri, encrypted, raw);
+	fetch->raw = raw;
+	fetch->max_size = max_size;
+	fetch->cancellable = g_cancellable_new();
+
+	/* The table takes the initial reference. */
+	g_hash_table_insert(table, fetch->uri, fetch);
+	fetch_add_waiter(fetch, task);
+	fetch_start(fetch);
+}
+
 void
 pidgin_image_loader_load_async(PidginImageLoader *loader, const char *uri,
                                GCancellable *cancellable,
@@ -1375,7 +1490,6 @@ pidgin_image_loader_load_async(PidginImageLoader *loader, const char *uri,
 	GTask *task;
 	GUri *guri;
 	GdkTexture *texture;
-	Fetch *fetch;
 	gboolean encrypted = FALSE;
 
 	g_return_if_fail(PIDGIN_IS_IMAGE_LOADER(loader));
@@ -1417,24 +1531,7 @@ pidgin_image_loader_load_async(PidginImageLoader *loader, const char *uri,
 		return;
 	}
 
-	fetch = g_hash_table_lookup(loader->fetches, uri);
-	if (fetch != NULL) {
-		fetch_add_waiter(fetch, task);
-	} else {
-		fetch = g_new0(Fetch, 1);
-		fetch->ref = 1;
-		fetch->loader = g_object_ref(loader);
-		fetch->uri = g_strdup(uri);
-		fetch->fetch_uri = make_fetch_uri(loader, guri, encrypted);
-		fetch->encrypted = encrypted;
-		fetch->cache_path = cache_path_for(loader, uri, encrypted);
-		fetch->cancellable = g_cancellable_new();
-
-		/* The table takes the initial reference. */
-		g_hash_table_insert(loader->fetches, fetch->uri, fetch);
-		fetch_add_waiter(fetch, task);
-		fetch_start(fetch);
-	}
+	fetch_join(loader, task, uri, guri, encrypted, FALSE, loader->max_image_size);
 
 	g_uri_unref(guri);
 	g_object_unref(task);
@@ -1448,6 +1545,64 @@ pidgin_image_loader_load_finish(PidginImageLoader *loader,
 	g_return_val_if_fail(g_task_is_valid(result, loader), NULL);
 	g_return_val_if_fail(g_task_get_source_tag(G_TASK(result)) ==
 	                     pidgin_image_loader_load_async, NULL);
+
+	return g_task_propagate_pointer(G_TASK(result), error);
+}
+
+void
+pidgin_image_loader_fetch_async(PidginImageLoader *loader, const char *uri,
+                                gsize max_size, GCancellable *cancellable,
+                                GAsyncReadyCallback callback, gpointer data)
+{
+	GTask *task;
+	GUri *guri;
+	gboolean encrypted = FALSE;
+
+	g_return_if_fail(PIDGIN_IS_IMAGE_LOADER(loader));
+	g_return_if_fail(max_size > 0);
+
+	task = g_task_new(loader, cancellable, callback, data);
+	g_task_set_source_tag(task, pidgin_image_loader_fetch_async);
+
+	guri = parse_allowed(loader, uri, &encrypted);
+	if (guri == NULL) {
+		g_task_return_new_error(task, PIDGIN_IMAGE_LOADER_ERROR,
+		                        PIDGIN_IMAGE_LOADER_ERROR_NOT_ALLOWED,
+		                        _("Files from this address are not loaded"));
+		g_object_unref(task);
+		return;
+	}
+
+	if (g_task_return_error_if_cancelled(task)) {
+		g_uri_unref(guri);
+		g_object_unref(task);
+		return;
+	}
+
+	if (encrypted && (!aesgcm_fragment_valid(g_uri_get_fragment(guri)) ||
+	                  omemo_plugin() == NULL)) {
+		g_task_return_new_error(task, PIDGIN_IMAGE_LOADER_ERROR,
+		                        PIDGIN_IMAGE_LOADER_ERROR_DECRYPT,
+		                        _("The encrypted file cannot be decrypted"));
+		g_uri_unref(guri);
+		g_object_unref(task);
+		return;
+	}
+
+	fetch_join(loader, task, uri, guri, encrypted, TRUE, max_size);
+
+	g_uri_unref(guri);
+	g_object_unref(task);
+}
+
+GBytes *
+pidgin_image_loader_fetch_finish(PidginImageLoader *loader, GAsyncResult *result,
+                                 GError **error)
+{
+	g_return_val_if_fail(PIDGIN_IS_IMAGE_LOADER(loader), NULL);
+	g_return_val_if_fail(g_task_is_valid(result, loader), NULL);
+	g_return_val_if_fail(g_task_get_source_tag(G_TASK(result)) ==
+	                     pidgin_image_loader_fetch_async, NULL);
 
 	return g_task_propagate_pointer(G_TASK(result), error);
 }
@@ -1471,7 +1626,7 @@ pidgin_image_loader_lookup_cached(PidginImageLoader *loader, const char *uri)
 	if (texture != NULL)
 		return texture;
 
-	path = cache_path_for(loader, uri, encrypted);
+	path = cache_path_for(loader, uri, encrypted, FALSE);
 	if (path == NULL)
 		return NULL;
 
@@ -1512,5 +1667,5 @@ pidgin_image_loader_cache_path(PidginImageLoader *loader, const char *uri)
 		g_uri_unref(guri);
 	}
 
-	return cache_path_for(loader, uri, encrypted);
+	return cache_path_for(loader, uri, encrypted, FALSE);
 }

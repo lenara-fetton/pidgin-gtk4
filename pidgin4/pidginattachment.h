@@ -31,13 +31,16 @@
  *    GtkUriLauncher for a URL) and, for a file, "Open Folder". When GTK
  *    has a media backend (pidgin_media_backend_available()) and
  *    /pidgin4/media/inline_playback is on (the default), the card also
- *    embeds a GtkVideo (controls, no autoplay, at most
- *    PIDGIN_ATTACHMENT_VIDEO_WIDTH px wide); without one (GTK built
- *    without GStreamer) only the card shows. The player is given a stream
- *    opened asynchronously, never the GFile (GTK's GStreamer backend
- *    fails an assertion on a file it can't open); if the file can't be
- *    opened, or the backend reports an error (not media, no codec), the
- *    player is removed and the card stays.
+ *    has a "Play Here" poster (PIDGIN_ATTACHMENT_VIDEO_WIDTH px wide);
+ *    pressing it makes a GtkVideo in its place that plays at once.
+ *    Without a backend (GTK built without GStreamer) only the card shows.
+ *    The player never reads from the network: a URL is fetched first by
+ *    the image loader (pidgin_image_loader_fetch_async(), at most
+ *    PIDGIN_ATTACHMENT_MAX_FILE_SIZE) and played from memory, a file from
+ *    a stream opened asynchronously (never the GFile: GTK's GStreamer
+ *    backend fails an assertion on a file it can't open). If loading
+ *    fails, or the backend reports an error (not media, no codec), a note
+ *    ("pidgin-media-error") takes the player's place and the card stays.
  */
 #ifndef _PIDGINATTACHMENT_H_
 #define _PIDGINATTACHMENT_H_
