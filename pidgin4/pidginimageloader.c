@@ -32,6 +32,13 @@
 #include "pidginimageloader.h"
 
 #define MEMORY_CACHE_ENTRIES 48
+/* Decoded pixels kept in the memory cache, at most (the newest entry is
+ * always kept). */
+#define MEMORY_CACHE_BYTES (64 * 1024 * 1024)
+/* Images are shown at most 320 px wide: a decoded image is scaled down to
+ * this on its longer side, which keeps HiDPI sharp without holding 50 MB
+ * of pixels for a phone photo. */
+#define MAX_TEXTURE_DIMENSION 1024
 #define READ_CHUNK_SIZE (64 * 1024)
 #define MAX_REDIRECTS 5
 #define TRIM_EVERY_N_STORES 32
@@ -62,6 +69,7 @@ struct _PidginImageLoader {
 
 	GQueue memory_lru;          /* MemoryEntry, most recent first */
 	GHashTable *memory_cache;   /* uri -> GList link in memory_lru */
+	gsize memory_bytes;         /* sum of the entries' bytes */
 
 	guint64 cache_size;         /* estimate, or CACHE_SIZE_UNKNOWN */
 	guint stores_since_trim;
@@ -135,6 +143,7 @@ typedef struct {
 typedef struct {
 	char *uri;
 	GdkTexture *texture;
+	gsize bytes;         /* the texture's pixels, estimated */
 } MemoryEntry;
 
 typedef struct {
@@ -306,6 +315,70 @@ texture_from_pixbuf(GdkPixbuf *pixbuf)
 	return texture;
 }
 
+/* Whether @width x @height is over MAX_TEXTURE_DIMENSION, and if so the
+ * size to scale it down to, keeping its shape. */
+static gboolean
+scaled_size(int width, int height, int *scaled_width, int *scaled_height)
+{
+	double scale;
+
+	if (MAX(width, height) <= MAX_TEXTURE_DIMENSION)
+		return FALSE;
+
+	scale = (double)MAX_TEXTURE_DIMENSION / MAX(width, height);
+	*scaled_width = MAX(1, (int)(width * scale + 0.5));
+	*scaled_height = MAX(1, (int)(height * scale + 0.5));
+	return TRUE;
+}
+
+/* @pixbuf, or a smaller copy of it (transfer full). */
+static GdkPixbuf *
+pixbuf_scale_down(GdkPixbuf *pixbuf)
+{
+	int w, h;
+
+	if (!scaled_size(gdk_pixbuf_get_width(pixbuf), gdk_pixbuf_get_height(pixbuf), &w, &h))
+		return g_object_ref(pixbuf);
+
+	return gdk_pixbuf_scale_simple(pixbuf, w, h, GDK_INTERP_BILINEAR);
+}
+
+/* @texture (transfer full), or a smaller copy of it in its place. */
+static GdkTexture *
+texture_scale_down(GdkTexture *texture)
+{
+	GdkTextureDownloader *downloader;
+	GdkPixbuf *full, *small;
+	GdkTexture *scaled;
+	GBytes *pixels;
+	gsize stride;
+	int w, h;
+
+	if (!scaled_size(gdk_texture_get_width(texture), gdk_texture_get_height(texture), &w, &h))
+		return texture;
+
+	/* R8G8B8A8 is the layout of an 8-bit RGBA GdkPixbuf. */
+	downloader = gdk_texture_downloader_new(texture);
+	gdk_texture_downloader_set_format(downloader, GDK_MEMORY_R8G8B8A8);
+	pixels = gdk_texture_downloader_download_bytes(downloader, &stride);
+	gdk_texture_downloader_free(downloader);
+
+	full = gdk_pixbuf_new_from_bytes(pixels, GDK_COLORSPACE_RGB, TRUE, 8,
+	                                 gdk_texture_get_width(texture),
+	                                 gdk_texture_get_height(texture), stride);
+	g_bytes_unref(pixels);
+	small = gdk_pixbuf_scale_simple(full, w, h, GDK_INTERP_BILINEAR);
+	g_object_unref(full);
+
+	scaled = small != NULL ? texture_from_pixbuf(small) : NULL;
+	g_clear_object(&small);
+	if (scaled == NULL)
+		return texture;     /* out of memory: keep the full one */
+
+	g_object_unref(texture);
+	return scaled;
+}
+
 static GdkTexture *
 decode_bytes(GBytes *bytes, GError **error)
 {
@@ -324,7 +397,7 @@ decode_bytes(GBytes *bytes, GError **error)
 	/* PNG, JPEG and TIFF. */
 	texture = gdk_texture_new_from_bytes(bytes, NULL);
 	if (texture != NULL)
-		return texture;
+		return texture_scale_down(texture);
 
 	/* GIF, WebP and whatever else gdk-pixbuf has loaders for; for
 	 * animations this is the first frame. */
@@ -334,8 +407,14 @@ decode_bytes(GBytes *bytes, GError **error)
 	ok = gdk_pixbuf_loader_close(pixbuf_loader, NULL) && ok;
 
 	pixbuf = ok ? gdk_pixbuf_loader_get_pixbuf(pixbuf_loader) : NULL;
-	if (pixbuf != NULL)
-		texture = texture_from_pixbuf(pixbuf);
+	if (pixbuf != NULL) {
+		GdkPixbuf *small = pixbuf_scale_down(pixbuf);
+
+		if (small != NULL) {
+			texture = texture_from_pixbuf(small);
+			g_object_unref(small);
+		}
+	}
 	g_object_unref(pixbuf_loader);
 
 	if (texture == NULL) {
@@ -556,6 +635,13 @@ cache_stored(PidginImageLoader *loader, gsize size)
  * Memory cache
  **************************************************************************/
 
+/* Pixel bytes, assuming 4 per pixel (what GTK uploads). */
+static gsize
+texture_bytes(GdkTexture *texture)
+{
+	return (gsize)gdk_texture_get_width(texture) * gdk_texture_get_height(texture) * 4;
+}
+
 static void
 memory_entry_free(MemoryEntry *entry)
 {
@@ -589,21 +675,28 @@ memory_store(PidginImageLoader *loader, const char *uri, GdkTexture *texture)
 	if (link != NULL) {
 		entry = link->data;
 		g_set_object(&entry->texture, texture);
+		loader->memory_bytes -= entry->bytes;
+		entry->bytes = texture_bytes(texture);
+		loader->memory_bytes += entry->bytes;
 		g_queue_unlink(&loader->memory_lru, link);
 		g_queue_push_head_link(&loader->memory_lru, link);
-		return;
+	} else {
+		entry = g_new0(MemoryEntry, 1);
+		entry->uri = g_strdup(uri);
+		entry->texture = g_object_ref(texture);
+		entry->bytes = texture_bytes(texture);
+		loader->memory_bytes += entry->bytes;
+		g_queue_push_head(&loader->memory_lru, entry);
+		g_hash_table_insert(loader->memory_cache, entry->uri,
+		                    loader->memory_lru.head);
 	}
 
-	entry = g_new0(MemoryEntry, 1);
-	entry->uri = g_strdup(uri);
-	entry->texture = g_object_ref(texture);
-	g_queue_push_head(&loader->memory_lru, entry);
-	g_hash_table_insert(loader->memory_cache, entry->uri,
-	                    loader->memory_lru.head);
-
-	while (loader->memory_lru.length > MEMORY_CACHE_ENTRIES) {
+	while (loader->memory_lru.length > MEMORY_CACHE_ENTRIES ||
+	       (loader->memory_lru.length > 1 &&
+	        loader->memory_bytes > MEMORY_CACHE_BYTES)) {
 		entry = g_queue_pop_tail(&loader->memory_lru);
 		g_hash_table_remove(loader->memory_cache, entry->uri);
+		loader->memory_bytes -= entry->bytes;
 		memory_entry_free(entry);
 	}
 }

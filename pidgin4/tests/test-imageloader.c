@@ -34,6 +34,8 @@ typedef struct {
 	SoupServer *server;
 	char *base;          /* http://127.0.0.1:<port> */
 	GBytes *png;         /* 7x5 */
+	GBytes *wide_png;    /* 3000x600: decoded smaller */
+	GBytes *square_png;  /* 1024x1024: 4 MB decoded */
 	GHashTable *hits;    /* path -> GUINT_TO_POINTER(count) */
 	gboolean fail_all;   /* answer everything with 500 */
 	const char *cache_dir;
@@ -89,6 +91,16 @@ server_cb(SoupServer *server, SoupServerMessage *msg, const char *path,
 		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
 		                                 g_bytes_get_data(f->png, NULL),
 		                                 g_bytes_get_size(f->png));
+	} else if (g_str_equal(path, "/wide")) {
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
+		                                 g_bytes_get_data(f->wide_png, NULL),
+		                                 g_bytes_get_size(f->wide_png));
+	} else if (g_str_equal(path, "/square")) {
+		soup_server_message_set_status(msg, 200, NULL);
+		soup_server_message_set_response(msg, "image/png", SOUP_MEMORY_COPY,
+		                                 g_bytes_get_data(f->square_png, NULL),
+		                                 g_bytes_get_size(f->square_png));
 	} else if (g_str_equal(path, "/gif")) {
 		soup_server_message_set_status(msg, 200, NULL);
 		soup_server_message_set_response(msg, "image/gif", SOUP_MEMORY_STATIC,
@@ -144,6 +156,8 @@ fixture_setup(Fixture *f, gconstpointer data)
 	f->cache_dir = profile;
 
 	f->png = make_png(7, 5);
+	f->wide_png = make_png(3000, 600);
+	f->square_png = make_png(1024, 1024);
 	f->hits = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	f->server = soup_server_new(NULL, NULL);
 	soup_server_add_handler(f->server, NULL, server_cb, f, NULL);
@@ -165,6 +179,8 @@ fixture_teardown(Fixture *f, gconstpointer data)
 	g_object_unref(f->server);
 	g_hash_table_destroy(f->hits);
 	g_bytes_unref(f->png);
+	g_bytes_unref(f->wide_png);
+	g_bytes_unref(f->square_png);
 	g_free(f->base);
 
 	/* Let finished sources and threads settle. */
@@ -533,6 +549,69 @@ test_gif(Fixture *f, gconstpointer data)
 	g_assert_cmpint(gdk_texture_get_height(r.texture), ==, 1);
 
 	load_result_clear(&r);
+	g_object_unref(loader);
+}
+
+static void
+test_scaled_down(Fixture *f, gconstpointer data)
+{
+	PidginImageLoader *loader = test_loader(f, NULL);
+	LoadResult r = { 0 };
+
+	/* Larger than shown: scaled to 1024 on the longer side, same shape. */
+	load(loader, f, "/wide", &r);
+	g_assert_no_error(r.error);
+	g_assert_cmpint(gdk_texture_get_width(r.texture), ==, 1024);
+	g_assert_cmpint(gdk_texture_get_height(r.texture), ==, 205);
+
+	/* At the limit: left alone. */
+	load(loader, f, "/square", &r);
+	g_assert_no_error(r.error);
+	g_assert_cmpint(gdk_texture_get_width(r.texture), ==, 1024);
+	g_assert_cmpint(gdk_texture_get_height(r.texture), ==, 1024);
+
+	load_result_clear(&r);
+	g_object_unref(loader);
+}
+
+static void
+test_memory_budget(Fixture *f, gconstpointer data)
+{
+	PidginImageLoader *loader = test_loader(f, NULL);
+	LoadResult r = { 0 };
+	GdkTexture *cached;
+	char *path, *uri;
+	int i, kept = 0;
+
+	/* 20 distinct 4 MB images: fewer than the entry limit, more than
+	 * the 64 MB of pixels the memory cache keeps. No disk cache, so a
+	 * lookup only finds what memory kept. */
+	for (i = 0; i < 20; i++) {
+		path = g_strdup_printf("/square?n=%d", i);
+		load(loader, f, path, &r);
+		g_assert_no_error(r.error);
+		g_free(path);
+	}
+	load_result_clear(&r);
+
+	for (i = 0; i < 20; i++) {
+		path = g_strdup_printf("/square?n=%d", i);
+		uri = url(f, path);
+		cached = pidgin_image_loader_lookup_cached(loader, uri);
+		if (cached != NULL) {
+			kept++;
+			g_object_unref(cached);
+		}
+		/* the newest 16 are kept, the oldest went */
+		if (i < 4)
+			g_assert_null(cached);
+		else
+			g_assert_nonnull(cached);
+		g_free(uri);
+		g_free(path);
+	}
+	g_assert_cmpint(kept, ==, 16);
+
 	g_object_unref(loader);
 }
 
@@ -963,6 +1042,8 @@ main(int argc, char *argv[])
 	ADD("load-and-disk-cache", test_load_and_disk_cache);
 	ADD("no-disk-cache", test_no_disk_cache);
 	ADD("gif", test_gif);
+	ADD("scaled-down", test_scaled_down);
+	ADD("memory-budget", test_memory_budget);
 	ADD("coalescing", test_coalescing);
 	ADD("cancel", test_cancel);
 	ADD("errors", test_errors);
